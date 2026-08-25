@@ -275,17 +275,8 @@ module core_top (
   // there is no pin for it. ngpc_machine's header explains why that is safe
   // with this controller.
 
-  assign cram0_a                 = 'h0;
-  assign cram0_dq                = {16{1'bZ}};
-  assign cram0_clk               = 0;
-  assign cram0_adv_n             = 1;
-  assign cram0_cre               = 0;
-  assign cram0_ce0_n             = 1;
-  assign cram0_ce1_n             = 1;
-  assign cram0_oe_n              = 1;
-  assign cram0_we_n              = 1;
-  assign cram0_ub_n              = 1;
-  assign cram0_lb_n              = 1;
+  // cram0 is the pristine cartridge shadow -- see ngpc_ddr_psram. cram1 stays
+  // unused and is available for phase 4 if the savestate path ever needs it.
 
   assign cram1_a                 = 'h0;
   assign cram1_dq                = {16{1'bZ}};
@@ -324,6 +315,11 @@ module core_top (
         bridge_rd_data <= cmd_bridge_rd_data;
       end
     endcase
+
+    // The save block buffer, which APF drains during a target write.
+    if (bridge_addr[31:28] == 4'h5) begin
+      bridge_rd_data <= sd_bridge_rd_data;
+    end
   end
 
   // ----------------------------------------------------------------------
@@ -358,6 +354,12 @@ module core_top (
   // because it costs one flop and it is the only evidence either way.
   reg       opt_de_gated = 0;
 
+  // Cartridge saves. The two actions are toggles rather than levels: APF
+  // writes a value on every menu selection, and the machine wants an edge.
+  reg       opt_autosave_off = 0;
+  reg       save_pulse_74 = 0;
+  reg       load_pulse_74 = 0;
+
   reg [31:0] reset_delay = 0;
   wire       external_reset = reset_delay > 0;
 
@@ -375,6 +377,9 @@ module core_top (
         32'h114: opt_lcd_response <= bridge_wr_data[0];
         32'h118: opt_use_host_rtc <= bridge_wr_data[0];
         32'h11C: opt_de_gated     <= bridge_wr_data[0];
+        32'h120: opt_autosave_off <= bridge_wr_data[0];
+        32'h124: save_pulse_74    <= ~save_pulse_74;
+        32'h128: load_pulse_74    <= ~load_pulse_74;
       endcase
     end
   end
@@ -389,16 +394,31 @@ module core_top (
   wire       opt_auto_power_s;
   wire       opt_lcd_response_s;
   wire       opt_de_gated_s;
+  wire       opt_autosave_off_s;
+  wire       save_pulse_s;
+  wire       load_pulse_s;
 
   synch_3 #(
-      .WIDTH(11)
+      .WIDTH(14)
   ) settings_sync (
       {opt_system, opt_language_jp, opt_palette, opt_skip_anim,
-       opt_use_host_rtc, opt_auto_power, opt_lcd_response, opt_de_gated},
+       opt_use_host_rtc, opt_auto_power, opt_lcd_response, opt_de_gated,
+       opt_autosave_off, save_pulse_74, load_pulse_74},
       {opt_system_s, opt_language_jp_s, opt_palette_s, opt_skip_anim_s,
-       opt_use_host_rtc_s, opt_auto_power_s, opt_lcd_response_s, opt_de_gated_s},
+       opt_use_host_rtc_s, opt_auto_power_s, opt_lcd_response_s, opt_de_gated_s,
+       opt_autosave_off_s, save_pulse_s, load_pulse_s},
       clk_sys
   );
+
+  // Edge-detect the two action toggles in the machine's own domain.
+  reg  save_pulse_q, load_pulse_q;
+  wire save_request = save_pulse_s ^ save_pulse_q;
+  wire load_request = load_pulse_s ^ load_pulse_q;
+
+  always @(posedge clk_sys) begin
+    save_pulse_q <= save_pulse_s;
+    load_pulse_q <= load_pulse_s;
+  end
 
   // ----------------------------------------------------------------------
   //  Host/target command handler
@@ -412,7 +432,7 @@ module core_top (
   wire status_running    = reset_n;
 
   wire        dataslot_requestread;
-  wire [15:0] dataslot_requestread_id;
+  wire [15:0] dataslot_requestread_id;  // declared here, driven by the cmd block
   wire        dataslot_requestread_ack = 1;
   wire        dataslot_requestread_ok = 1;
 
@@ -491,7 +511,128 @@ module core_top (
       .datatable_addr(10'd0),
       .datatable_wren(1'b0),
       .datatable_data(32'd0),
-      .datatable_q   ()
+      .datatable_q   (),
+
+      .dataslot_requestread_id  (dataslot_requestread_id),
+      .dataslot_update          (dataslot_update),
+      .dataslot_update_id       (dataslot_update_id),
+      .dataslot_update_size     (dataslot_update_size),
+
+      .osnotify_inmenu(osnotify_inmenu),
+
+      .target_dataslot_read      (target_dataslot_read),
+      .target_dataslot_write     (target_dataslot_write),
+      .target_dataslot_getfile   (1'b0),
+      .target_dataslot_openfile  (1'b0),
+      .target_dataslot_ack       (target_dataslot_ack),
+      .target_dataslot_done      (target_dataslot_done),
+      .target_dataslot_err       (target_dataslot_err),
+      .target_dataslot_id        (target_dataslot_id),
+      .target_dataslot_slotoffset(target_dataslot_slotoffset),
+      .target_dataslot_bridgeaddr(target_dataslot_bridgeaddr),
+      .target_dataslot_length    (target_dataslot_length),
+      .target_buffer_param_struct(32'h60000000),
+      .target_buffer_resp_struct (32'h60000400)
+  );
+
+  // ---- Cartridge saves --------------------------------------------------
+
+  wire        osnotify_inmenu;
+  wire        dataslot_update;
+  wire [15:0] dataslot_update_id;
+  wire [31:0] dataslot_update_size;
+
+  wire        target_dataslot_read;
+  wire        target_dataslot_write;
+  wire        target_dataslot_ack;
+  wire        target_dataslot_done;
+  wire  [2:0] target_dataslot_err;
+  wire [15:0] target_dataslot_id;
+  wire [31:0] target_dataslot_slotoffset;
+  wire [31:0] target_dataslot_bridgeaddr;
+  wire [31:0] target_dataslot_length;
+
+  localparam [15:0] SAVE_SLOT_ID = 16'd10;
+
+  // The overlay needs to know a save file exists and how big it is before it
+  // will consider applying one. APF announces that with a data slot update.
+  reg        save_mount_74 = 0;
+  reg [31:0] save_size_74 = 0;
+
+  always @(posedge clk_74a) begin
+    save_mount_74 <= 0;
+
+    if (dataslot_update && dataslot_update_id == SAVE_SLOT_ID) begin
+      save_size_74  <= dataslot_update_size;
+      save_mount_74 <= 1;
+    end
+  end
+
+  wire        save_mount_s;
+  wire [31:0] save_size_s;
+
+  synch_3 #(
+      .WIDTH(33)
+  ) save_mount_sync (
+      {save_mount_74, save_size_74},
+      {save_mount_s, save_size_s},
+      clk_sys
+  );
+
+  wire        host_in_menu_s;
+
+  synch_3 menu_sync (
+      osnotify_inmenu,
+      host_in_menu_s,
+      clk_sys
+  );
+
+  wire [31:0] sd_lba;
+  wire        sd_rd;
+  wire        sd_wr;
+  wire        sd_ack;
+  wire [12:0] sd_buff_addr;
+  wire [15:0] sd_buff_dout;
+  wire        sd_buff_wr;
+  wire [15:0] sd_buff_din;
+  wire [31:0] sd_bridge_rd_data;
+  wire        sd_bridge_err;
+
+  ngpc_sd_bridge #(
+      .SAVE_SLOT_ID(SAVE_SLOT_ID),
+      .BUFFER_BRIDGE_ADDR(32'h5000_0000)
+  ) sd_bridge (
+      .clk_sys(clk_sys),
+      .clk_74a(clk_74a),
+      .reset  (reset_in),
+
+      .bridge_wr           (bridge_wr),
+      .bridge_rd           (bridge_rd),
+      .bridge_endian_little(bridge_endian_little),
+      .bridge_addr         (bridge_addr),
+      .bridge_wr_data      (bridge_wr_data),
+      .bridge_rd_data      (sd_bridge_rd_data),
+
+      .target_dataslot_read      (target_dataslot_read),
+      .target_dataslot_write     (target_dataslot_write),
+      .target_dataslot_ack       (target_dataslot_ack),
+      .target_dataslot_done      (target_dataslot_done),
+      .target_dataslot_err       (target_dataslot_err),
+      .target_dataslot_id        (target_dataslot_id),
+      .target_dataslot_slotoffset(target_dataslot_slotoffset),
+      .target_dataslot_bridgeaddr(target_dataslot_bridgeaddr),
+      .target_dataslot_length    (target_dataslot_length),
+
+      .sd_lba_i      (sd_lba),
+      .sd_rd_i       (sd_rd),
+      .sd_wr_i       (sd_wr),
+      .sd_ack_o      (sd_ack),
+      .sd_buff_addr_o(sd_buff_addr),
+      .sd_buff_dout_o(sd_buff_dout),
+      .sd_buff_wr_o  (sd_buff_wr),
+      .sd_buff_din_i (sd_buff_din),
+
+      .err_o(sd_bridge_err)
   );
 
   // ----------------------------------------------------------------------
@@ -723,6 +864,36 @@ module core_top (
       .audio_l(audio_l),
       .audio_r(audio_r),
 
+      .sd_lba      (sd_lba),
+      .sd_rd       (sd_rd),
+      .sd_wr       (sd_wr),
+      .sd_ack      (sd_ack),
+      .sd_buff_addr(sd_buff_addr),
+      .sd_buff_dout(sd_buff_dout),
+      .sd_buff_wr  (sd_buff_wr),
+      .sd_buff_din (sd_buff_din),
+
+      .save_mount      (save_mount_s),
+      .save_readonly   (1'b0),
+      .save_size       ({32'd0, save_size_s}),
+      .save_request    (save_request),
+      .load_request    (load_request),
+      .opt_autosave_off(opt_autosave_off_s),
+      .host_in_menu    (host_in_menu_s),
+
+      .cram_a    (cram0_a),
+      .cram_dq   (cram0_dq),
+      .cram_wait (cram0_wait),
+      .cram_clk  (cram0_clk),
+      .cram_adv_n(cram0_adv_n),
+      .cram_cre  (cram0_cre),
+      .cram_ce0_n(cram0_ce0_n),
+      .cram_ce1_n(cram0_ce1_n),
+      .cram_oe_n (cram0_oe_n),
+      .cram_we_n (cram0_we_n),
+      .cram_ub_n (cram0_ub_n),
+      .cram_lb_n (cram0_lb_n),
+
       .SDRAM_A   (dram_a),
       .SDRAM_BA  (dram_ba),
       .SDRAM_DQ  (dram_dq),
@@ -840,7 +1011,7 @@ module core_top (
                      led_user, vga_hbl, vga_vbl, audio_adc, dbg_rx, user2,
                      cont1_joy, cont2_joy, cont3_joy, cont4_joy,
                      cont1_trig, cont2_trig, cont3_trig, cont4_trig,
-                     cont2_key, cont3_key, cont4_key, vblank, cram0_wait,
-                     cram1_wait, port_ir_rx, 1'b0};
+                     cont2_key, cont3_key, cont4_key, vblank,
+                     cram1_wait, port_ir_rx, sd_bridge_err, 1'b0};
 
 endmodule

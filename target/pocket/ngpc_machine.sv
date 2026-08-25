@@ -73,6 +73,40 @@ module ngpc_machine
 	output wire [15:0] audio_l,
 	output wire [15:0] audio_r,
 
+	// ---- Cartridge saves --------------------------------------------------
+	// The block device is ngpc_sd_bridge, which lives in the top level because
+	// it needs the APF bridge and target-command buses.
+	output wire [31:0] sd_lba,
+	output wire        sd_rd,
+	output wire        sd_wr,
+	input  wire        sd_ack,
+	input  wire [12:0] sd_buff_addr,
+	input  wire [15:0] sd_buff_dout,
+	input  wire        sd_buff_wr,
+	output wire [15:0] sd_buff_din,
+
+	input  wire        save_mount,       // pulse: the save slot's size is known
+	input  wire        save_readonly,
+	input  wire [63:0] save_size,
+	input  wire        save_request,     // menu: save now
+	input  wire        load_request,     // menu: reload from file
+	input  wire        opt_autosave_off,
+	input  wire        host_in_menu,     // APF osnotify_inmenu
+
+	// ---- Pristine cartridge shadow, on PSRAM ------------------------------
+	output wire [21:16] cram_a,
+	inout  wire [15:0]  cram_dq,
+	input  wire         cram_wait,
+	output wire         cram_clk,
+	output wire         cram_adv_n,
+	output wire         cram_cre,
+	output wire         cram_ce0_n,
+	output wire         cram_ce1_n,
+	output wire         cram_oe_n,
+	output wire         cram_we_n,
+	output wire         cram_ub_n,
+	output wire         cram_lb_n,
+
 	// ---- SDRAM ------------------------------------------------------------
 	// The Pocket has no chip-select pin; CS is tied low on the board, so every
 	// clock is a live command. That is safe with this controller because its
@@ -194,7 +228,13 @@ module ngpc_machine
 
 	// cart_download asserts before the clear start pulse, so the CPU cannot get
 	// one running edge ahead of the walker.
-	wire reset = base_reset | strap_reset | cart_download | wram_clear_busy;
+		// The overlay holds boot while it decides whether a save applies to the
+	// cartridge just loaded, and while it applies one. That is a cold,
+	// reset-held transaction on MiSTer and stays one here.
+	wire overlay_boot_hold;
+
+	wire reset = base_reset | strap_reset | cart_download | wram_clear_busy |
+	             overlay_boot_hold;
 
 	//////////////////////////////// Inputs //////////////////////////////////
 
@@ -457,20 +497,20 @@ module ngpc_machine
 		.mem_rvalid_o (cart_mem_rvalid),
 		.mem_done_o   (cart_mem_done),
 
-		.load_req_i   (cart_load_req),
-		.load_addr_i  (cart_load_addr),
-		.load_data_i  (cart_load_data),
-		.load_ready_o (cart_load_ready),
-		.load_done_o  (cart_load_done),
+		.load_req_i   (cart_live_load_req),
+		.load_addr_i  (cart_live_load_addr),
+		.load_data_i  (cart_live_load_data),
+		.load_ready_o (cart_live_load_ready),
+		.load_done_o  (cart_live_load_done),
 
-		.bg_req_i     (1'b0),
-		.bg_we_i      (1'b0),
-		.bg_addr_i    (25'd0),
-		.bg_wdata_i   (16'd0),
-		.bg_be_i      (2'd0),
-		.bg_ready_o   (),
-		.bg_done_o    (),
-		.bg_rdata_o   (),
+		.bg_req_i     (overlay_p2_req),
+		.bg_we_i      (overlay_p2_we),
+		.bg_addr_i    (overlay_p2_addr),
+		.bg_wdata_i   (overlay_p2_wdata),
+		.bg_be_i      (overlay_p2_be),
+		.bg_ready_o   (overlay_p2_ready),
+		.bg_done_o    (overlay_p2_done),
+		.bg_rdata_o   (cart_bg_rdata),
 
 		.SDRAM_A      (SDRAM_A),
 		.SDRAM_BA     (SDRAM_BA),
@@ -483,6 +523,275 @@ module ngpc_machine
 		.SDRAM_nCAS   (SDRAM_nCAS),
 		.SDRAM_nRAS   (SDRAM_nRAS),
 		.SDRAM_nWE    (SDRAM_nWE)
+	);
+
+	/////////////////// Cartridge-flash persistence (.sav) ///////////////////
+
+	// The live array stays in cartridge SDRAM. The shadow loader fans the
+	// loader's stream -- ROM words and the physical 0xFF tail alike -- into
+	// both that live image and an immutable pristine copy, so `cart_ready`
+	// proves the two are identical. The overlay diffs against that copy to
+	// decide which physical erase blocks a save must carry.
+	//
+	// On MiSTer the pristine copy lives in DDR3. Here it is in PSRAM, behind
+	// ngpc_ddr_psram, which presents the same channel interface.
+
+	wire        cart_live_load_req;
+	wire [24:0] cart_live_load_addr;
+	wire [15:0] cart_live_load_data;
+	wire        cart_live_load_ready;
+	wire        cart_live_load_done;
+	wire [31:0] cart_pristine_crc32;
+
+	wire [27:1] shadow_ddr_addr;
+	wire [63:0] shadow_ddr_din;
+	wire        shadow_ddr_req;
+	wire        shadow_ddr_rnw;
+	wire  [7:0] shadow_ddr_be;
+	wire [63:0] shadow_ddr_dout;
+	wire        shadow_ddr_ready;
+
+	ngp_cart_shadow_loader cart_shadow_loader
+	(
+		.clk              (clk_sys),
+		.reset            (hard_reset),
+
+		.load_req_i       (cart_load_req),
+		.load_addr_i      (cart_load_addr),
+		.load_data_i      (cart_load_data),
+		.identity_reset_i (cart_download_start),
+		.load_ready_o     (cart_load_ready),
+		.load_done_o      (cart_load_done),
+		.pristine_crc32_o (cart_pristine_crc32),
+
+		.live_req_o       (cart_live_load_req),
+		.live_addr_o      (cart_live_load_addr),
+		.live_data_o      (cart_live_load_data),
+		.live_ready_i     (cart_live_load_ready),
+		.live_done_i      (cart_live_load_done),
+
+		.ddr_addr_o       (shadow_ddr_addr),
+		.ddr_din_o        (shadow_ddr_din),
+		.ddr_req_o        (shadow_ddr_req),
+		.ddr_rnw_o        (shadow_ddr_rnw),
+		.ddr_be_o         (shadow_ddr_be),
+		.ddr_ready_i      (shadow_ddr_ready)
+	);
+
+	// Persistence identity cannot come from ngp_cart's resettable flash-command
+	// registers: S0 boot application holds that block in reset. Derive the
+	// physical geometry from the retained loader/header identity instead, so it
+	// stays valid for the whole reset-held transaction.
+	wire [1:0] persist_die0_code = (cart_image_bytes == 25'd0) ? 2'd0 :
+		((cart_image_bytes <= 25'h080000) && !cart_force_8m_die0) ? 2'd1 :
+		(cart_image_bytes <= 25'h100000) ? 2'd2 : 2'd3;
+	wire [1:0] persist_die1_code = (cart_image_bytes > 25'h200000) ? 2'd3 : 2'd0;
+	wire [24:0] persist_cart_bytes = (cart_image_bytes == 25'd0) ? 25'd0 :
+		((cart_image_bytes <= 25'h080000) && !cart_force_8m_die0) ? 25'h080000 :
+		(cart_image_bytes <= 25'h100000) ? 25'h100000 :
+		(cart_image_bytes <= 25'h200000) ? 25'h200000 : 25'h400000;
+
+	wire        overlay_busy;
+	wire        overlay_pending;
+	wire        overlay_pause_req;
+	wire        overlay_force_flash_read;
+	wire        overlay_operation_enable;
+	wire        persistent_transaction_busy;
+
+	// PHASE 4 will add the savestate engine as the second client here. Until
+	// then nothing else contends for a persistent transaction.
+	ngp_persistence_admission persistence_admission
+	(
+		.clk               (clk_sys),
+		.ce                (1'b1),
+		.reset             (hard_reset),
+		.cart_download_i   (cart_downloading),
+		.overlay_busy_i    (overlay_busy),
+		.savestate_busy_i  (1'b0),
+		.seed_busy_i       (seed_busy),
+		.ss_save_i         (1'b0),
+		.ss_load_i         (1'b0),
+		.state_reserved_o  (),
+		.persistent_busy_o (persistent_transaction_busy),
+		.overlay_enable_o  (overlay_operation_enable)
+	);
+
+	wire        overlay_p2_req;
+	wire        overlay_p2_we;
+	wire [24:0] overlay_p2_addr;
+	wire [15:0] overlay_p2_wdata;
+	wire  [1:0] overlay_p2_be;
+	wire        overlay_p2_ready;
+	wire        overlay_p2_done;
+	wire [15:0] cart_bg_rdata;
+
+	wire [27:1] overlay_s0_ddr_addr;
+	wire [63:0] overlay_s0_ddr_din;
+	wire        overlay_s0_ddr_req;
+	wire        overlay_s0_ddr_rnw;
+	wire  [7:0] overlay_s0_ddr_be;
+	wire [63:0] overlay_s0_ddr_dout;
+	wire        overlay_s0_ddr_ready;
+
+	wire        cart_dirty0_event;
+	wire  [5:0] cart_dirty0_block;
+	wire        cart_dirty1_event;
+	wire  [5:0] cart_dirty1_block;
+	wire  [1:0] cart_die_busy;
+
+	wire overlay_safe_stopped = reset | pause_ready;
+
+	ngp_cart_overlay cart_overlay
+	(
+		.clk                         (clk_sys),
+		.reset                       (hard_reset),
+		.cart_replace_i              (cart_download_start),
+		.cart_ready_i                (cart_ready),
+		.identity_raw_crc32_i        (cart_image_crc32),
+		.identity_raw_bytes_i        ({7'd0, cart_image_bytes}),
+		.identity_pristine_crc32_i   (cart_pristine_crc32),
+		.identity_physical_bytes_i   ({7'd0, persist_cart_bytes}),
+		.identity_die0_code_i        (persist_die0_code),
+		.identity_die1_code_i        (persist_die1_code),
+		.identity_catalog_i          (cart_header_catalog),
+		.identity_subcatalog_i       (cart_header_subcatalog),
+		.identity_title_i            (cart_header_title),
+		.event0_i                    (cart_dirty0_event),
+		.block0_i                    (cart_dirty0_block),
+		.event1_i                    (cart_dirty1_event),
+		.block1_i                    (cart_dirty1_block),
+		.die_busy_i                  (cart_die_busy),
+		.mount_i                     (save_mount),
+		.mount_readonly_i            (save_readonly),
+		.mount_size_i                (save_size),
+		.save_i                      (save_request),
+		.load_i                      (load_request),
+		.operation_enable_i          (overlay_operation_enable),
+		.autosave_disable_i          (opt_autosave_off),
+		.osd_open_i                  (host_in_menu),
+		// PHASE 4: the savestate engine adopts the overlay's ledgers.
+		.state_adopt_i               (1'b0),
+		.state_map0_i                (35'd0),
+		.state_map1_i                (35'd0),
+		.state_force_flash_read_i    (1'b0),
+		.pause_ready_i               (overlay_safe_stopped),
+		.pause_req_o                 (overlay_pause_req),
+		.force_flash_read_o          (overlay_force_flash_read),
+		.busy_o                      (overlay_busy),
+		.boot_hold_o                 (overlay_boot_hold),
+		.pending_o                   (overlay_pending),
+		.mounted_writable_o          (),
+		.save_done_o                 (),
+		.save_rejected_o             (),
+		.load_done_o                 (),
+		.load_rejected_o             (),
+		.live0_o                     (),
+		.live1_o                     (),
+		.pending0_o                  (),
+		.pending1_o                  (),
+		.file0_o                     (),
+		.file1_o                     (),
+
+		.sd_lba_o                    (sd_lba),
+		.sd_rd_o                     (sd_rd),
+		.sd_wr_o                     (sd_wr),
+		.sd_ack_i                    (sd_ack),
+		.sd_buff_addr_i              (sd_buff_addr),
+		.sd_buff_dout_i              (sd_buff_dout),
+		.sd_buff_wr_i                (sd_buff_wr),
+		.sd_buff_din_o               (sd_buff_din),
+
+		.p2_req_o                    (overlay_p2_req),
+		.p2_we_o                     (overlay_p2_we),
+		.p2_addr_o                   (overlay_p2_addr),
+		.p2_wdata_o                  (overlay_p2_wdata),
+		.p2_be_o                     (overlay_p2_be),
+		.p2_ready_i                  (overlay_p2_ready),
+		.p2_done_i                   (overlay_p2_done),
+		.p2_rdata_i                  (cart_bg_rdata),
+
+		.ddr_addr_o                  (overlay_s0_ddr_addr),
+		.ddr_din_o                   (overlay_s0_ddr_din),
+		.ddr_req_o                   (overlay_s0_ddr_req),
+		.ddr_rnw_o                   (overlay_s0_ddr_rnw),
+		.ddr_be_o                    (overlay_s0_ddr_be),
+		.ddr_dout_i                  (overlay_s0_ddr_dout),
+		.ddr_ready_i                 (overlay_s0_ddr_ready)
+	);
+
+	// Cartridge download has strict priority over every mutable staging
+	// client: cart_ready cannot rise until every pristine-shadow write is
+	// acknowledged. MiSTer puts a second arbiter above this one to separate S0
+	// from the savestate sparse store; that one arrives with phase 4.
+	wire [27:1] ch2_addr;
+	wire [63:0] ch2_din;
+	wire        ch2_req;
+	wire        ch2_rnw;
+	wire  [7:0] ch2_be;
+	wire [63:0] ch2_dout;
+	wire        ch2_ready;
+
+	ngp_ddr_ch2_arbiter ddr_ch2_arbiter
+	(
+		.clk             (clk_sys),
+		.reset           (hard_reset),
+		.loader_prefer_i (cart_download),
+		.loader_addr_i   (shadow_ddr_addr),
+		.loader_din_i    (shadow_ddr_din),
+		.loader_req_i    (shadow_ddr_req),
+		.loader_rnw_i    (shadow_ddr_rnw),
+		.loader_be_i     (shadow_ddr_be),
+		.loader_dout_o   (shadow_ddr_dout),
+		.loader_ready_o  (shadow_ddr_ready),
+		.overlay_addr_i  (overlay_s0_ddr_addr),
+		.overlay_din_i   (overlay_s0_ddr_din),
+		.overlay_req_i   (overlay_s0_ddr_req),
+		.overlay_rnw_i   (overlay_s0_ddr_rnw),
+		.overlay_be_i    (overlay_s0_ddr_be),
+		.overlay_dout_o  (overlay_s0_ddr_dout),
+		.overlay_ready_o (overlay_s0_ddr_ready),
+		.ddr_addr_o      (ch2_addr),
+		.ddr_din_o       (ch2_din),
+		.ddr_req_o       (ch2_req),
+		.ddr_rnw_o       (ch2_rnw),
+		.ddr_be_o        (ch2_be),
+		.ddr_dout_i      (ch2_dout),
+		.ddr_ready_i     (ch2_ready)
+	);
+
+	ngpc_ddr_psram ddr_psram
+	(
+		.clk        (clk_sys),
+
+		// PHASE 4: the savestate engine takes channel 1.
+		.ch1_addr   (27'd0),
+		.ch1_dout   (),
+		.ch1_din    (64'd0),
+		.ch1_req    (1'b0),
+		.ch1_rnw    (1'b1),
+		.ch1_be     (8'd0),
+		.ch1_ready  (),
+
+		.ch2_addr   (ch2_addr),
+		.ch2_dout   (ch2_dout),
+		.ch2_din    (ch2_din),
+		.ch2_req    (ch2_req),
+		.ch2_rnw    (ch2_rnw),
+		.ch2_be     (ch2_be),
+		.ch2_ready  (ch2_ready),
+
+		.cram_a     (cram_a),
+		.cram_dq    (cram_dq),
+		.cram_wait  (cram_wait),
+		.cram_clk   (cram_clk),
+		.cram_adv_n (cram_adv_n),
+		.cram_cre   (cram_cre),
+		.cram_ce0_n (cram_ce0_n),
+		.cram_ce1_n (cram_ce1_n),
+		.cram_oe_n  (cram_oe_n),
+		.cram_we_n  (cram_we_n),
+		.cram_ub_n  (cram_ub_n),
+		.cram_lb_n  (cram_lb_n)
 	);
 
 	///////////////////////// The machine: mainboard //////////////////////////
@@ -545,7 +854,7 @@ module ngpc_machine
 		.cart_image_bytes     (cart_image_bytes),
 		.cart_config_load     (cart_config_load),
 		.cart_force_8m_die0   (cart_force_8m_die0),
-		.cart_force_flash_read(1'b0),
+		.cart_force_flash_read(overlay_force_flash_read),
 		.cart_size_code0      (cart_size_code0),
 		.cart_size_code1      (cart_size_code1),
 		.cart_bytes           (cart_bytes),
@@ -566,13 +875,13 @@ module ngpc_machine
 		.cart_dirty_pulse     (),
 		.cart_dirty0          (),
 		.cart_dirty1          (),
-		.cart_dirty0_event    (),
-		.cart_dirty0_block    (),
-		.cart_dirty1_event    (),
-		.cart_dirty1_block    (),
+		.cart_dirty0_event    (cart_dirty0_event),
+		.cart_dirty0_block    (cart_dirty0_block),
+		.cart_dirty1_event    (cart_dirty1_event),
+		.cart_dirty1_block    (cart_dirty1_block),
 		.cart_dirty_clear     (1'b0),
 		.cart_flash_busy      (),
-		.cart_die_busy        (),
+		.cart_die_busy        (cart_die_busy),
 
 		// ---- Savestate buses: seed and the RAM clear (PHASE 4 adds the engine)
 		.ss_bus_adr           (seed_ss_bus_adr),
@@ -590,7 +899,7 @@ module ngpc_machine
 		.ss_mem_rdata         (ss_mem_rdata),
 		.loading_savestate    (1'b0),
 
-		.pause_req            (seed_pause_req),
+		.pause_req            (seed_pause_req | overlay_pause_req),
 		.pause_ready          (pause_ready)
 	);
 
@@ -598,7 +907,8 @@ module ngpc_machine
 
 	wire unused_ok = &{1'b0, link_txd, link_rts_n, seed_busy, ss_bus_dout,
 	                   ss_mem_rdata, cart_image_crc32, cart_size_code0,
-	                   cart_size_code1, wram_clear_done, 1'b0};
+	                   cart_size_code1, wram_clear_done, overlay_pending,
+	                   persistent_transaction_busy, 1'b0};
 
 endmodule
 

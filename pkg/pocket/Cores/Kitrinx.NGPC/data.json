@@ -38,6 +38,18 @@
         ],
         "address": "0x30000000",
         "size_maximum": "0x400000"
+      },
+      {
+        "name": "Save",
+        "id": 10,
+        "required": false,
+        "parameters": "0x86",
+        "nonvolatile": true,
+        "extensions": [
+          "sav"
+        ],
+        "address": "0x50000000",
+        "size_maximum": "0x400000"
       }
     ]
   }

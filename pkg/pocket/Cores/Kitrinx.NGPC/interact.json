@@ -127,6 +127,42 @@
             "name": "DE gated"
           }
         ]
+      },
+      {
+        "name": "Save Cartridge",
+        "id": 40,
+        "type": "action",
+        "enabled": true,
+        "address": "0x124",
+        "value": 1
+      },
+      {
+        "name": "Reload Cartridge Save",
+        "id": 41,
+        "type": "action",
+        "enabled": true,
+        "address": "0x128",
+        "value": 1
+      },
+      {
+        "name": "Autosave",
+        "id": 42,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "address": "0x120",
+        "defaultval": 0,
+        "options": [
+          {
+            "value": 0,
+            "name": "On"
+          },
+          {
+            "value": 1,
+            "name": "Off"
+          }
+        ]
       }
     ]
   }
