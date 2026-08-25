@@ -74,3 +74,5 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/mem/sdram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/mem/cart_sdram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/cart/ngp_cart_sdram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/cart/ngp_cart_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/Savestates/savestates.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/Savestates/ngp_ss_glue.sv

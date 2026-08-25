@@ -109,26 +109,6 @@
         "value": 1
       },
       {
-        "name": "Video Mode (test)",
-        "id": 30,
-        "type": "list",
-        "enabled": true,
-        "persist": true,
-        "writeonly": true,
-        "address": "0x11C",
-        "defaultval": 0,
-        "options": [
-          {
-            "value": 0,
-            "name": "DE + skip"
-          },
-          {
-            "value": 1,
-            "name": "DE gated"
-          }
-        ]
-      },
-      {
         "name": "Save Cartridge",
         "id": 40,
         "type": "action",

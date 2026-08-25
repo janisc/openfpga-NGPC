@@ -331,6 +331,9 @@ module core_top (
     // The save block buffer, which APF drains during a target write.
     if (bridge_addr[31:28] == 4'h5) begin
       bridge_rd_data <= sd_bridge_rd_data;
+    end else if (bridge_addr[31:28] == 4'h4) begin
+      // The savestate blob, which APF drains after asking for a state.
+      bridge_rd_data <= savestate_rd_data;
     end
   end
 
@@ -350,21 +353,6 @@ module core_top (
   reg       opt_auto_power = 1;     // status[18]
   reg       opt_lcd_response = 0;   // status[20]    accepted, presenter ignores
 
-  // Which of the two legal ways to present a pixel-per-N-clocks raster to APF
-  // this build uses. Analogue documents `video_skip` as "may be optionally
-  // asserted while DE is high to prevent latching the pixel for that cycle",
-  // which says DE stays high across the window and skip does the gating (0).
-  // The community notes instead warn that DE must be high "exclusively during
-  // pixels you've specified in video.json", which reads as DE high exactly 160
-  // times per line (1).
-  //
-  // ANSWERED on hardware, 2026-08-25: mode 0 is correct. A Pocket running
-  // firmware 2.6 displays the native 515 x 199 raster correctly with DE held
-  // across the whole active window and `video_skip` suppressing the seven
-  // cycles in eight that carry no new pixel -- picture, geometry and frame rate
-  // all right. Analogue's reading is the operative one. The setting stays
-  // because it costs one flop and it is the only evidence either way.
-  reg       opt_de_gated = 0;
 
   // Cartridge saves. The two actions are toggles rather than levels: APF
   // writes a value on every menu selection, and the machine wants an edge.
@@ -388,7 +376,6 @@ module core_top (
         32'h110: opt_auto_power   <= bridge_wr_data[0];
         32'h114: opt_lcd_response <= bridge_wr_data[0];
         32'h118: opt_use_host_rtc <= bridge_wr_data[0];
-        32'h11C: opt_de_gated     <= bridge_wr_data[0];
         32'h120: opt_autosave_off <= bridge_wr_data[0];
         32'h124: save_pulse_74    <= ~save_pulse_74;
         32'h128: load_pulse_74    <= ~load_pulse_74;
@@ -405,19 +392,18 @@ module core_top (
   wire       opt_use_host_rtc_s;
   wire       opt_auto_power_s;
   wire       opt_lcd_response_s;
-  wire       opt_de_gated_s;
   wire       opt_autosave_off_s;
   wire       save_pulse_s;
   wire       load_pulse_s;
 
   synch_3 #(
-      .WIDTH(14)
+      .WIDTH(13)
   ) settings_sync (
       {opt_system, opt_language_jp, opt_palette, opt_skip_anim,
-       opt_use_host_rtc, opt_auto_power, opt_lcd_response, opt_de_gated,
+       opt_use_host_rtc, opt_auto_power, opt_lcd_response,
        opt_autosave_off, save_pulse_74, load_pulse_74},
       {opt_system_s, opt_language_jp_s, opt_palette_s, opt_skip_anim_s,
-       opt_use_host_rtc_s, opt_auto_power_s, opt_lcd_response_s, opt_de_gated_s,
+       opt_use_host_rtc_s, opt_auto_power_s, opt_lcd_response_s,
        opt_autosave_off_s, save_pulse_s, load_pulse_s},
       clk_sys
   );
@@ -455,26 +441,25 @@ module core_top (
 
   wire        dataslot_allcomplete;
 
-  // PHASE 4. The machine already carries the whole savestate engine; what is
-  // missing is the controller that streams it over the bridge instead of into
-  // MiSTer's DDR3. Until that exists, tell APF the core cannot make states --
-  // and therefore cannot sleep -- rather than letting it try.
-  wire        savestate_supported = 0;
+  // 8,416 words of internals at 8 bytes each, plus the three memory regions.
+  // Cartridge flash is deliberately NOT in the blob; ngpc_savestate_bridge
+  // explains where it goes instead and why the ordering works.
+  wire        savestate_supported = 1;
   wire [31:0] savestate_addr = 32'h40000000;
-  wire [31:0] savestate_size = 32'd0;
-  wire [31:0] savestate_maxloadsize = savestate_size;
+  wire [31:0] savestate_size = (32'd8416 * 32'd8) + 32'd12288 + 32'd4096 + 32'd16384;
+  wire [31:0] savestate_maxloadsize = savestate_size + 32'h1000;
 
   wire        savestate_start;
-  wire        savestate_start_ack = 0;
-  wire        savestate_start_busy = 0;
-  wire        savestate_start_ok = 0;
-  wire        savestate_start_err = 0;
+  wire        savestate_start_ack;
+  wire        savestate_start_busy;
+  wire        savestate_start_ok;
+  wire        savestate_start_err;
 
   wire        savestate_load;
-  wire        savestate_load_ack = 0;
-  wire        savestate_load_busy = 0;
-  wire        savestate_load_ok = 0;
-  wire        savestate_load_err = 0;
+  wire        savestate_load_ack;
+  wire        savestate_load_busy;
+  wire        savestate_load_ok;
+  wire        savestate_load_err;
 
   core_bridge_cmd icb (
       .clk    (clk_74a),
@@ -824,6 +809,62 @@ module core_top (
 
   wire cart_fifo_overflow;
 
+  // ---- Savestates, and therefore sleep ----------------------------------
+
+  wire [31:0] savestate_rd_data;
+  wire        ss_save;
+  wire        ss_load;
+  wire        ss_busy;
+  wire        ss_cart_save_req;
+  wire        ss_cart_save_busy;
+
+  wire [63:0] bus_out_Din;
+  wire [63:0] bus_out_Dout;
+  wire [25:0] bus_out_Adr;
+  wire        bus_out_rnw;
+  wire        bus_out_ena;
+  wire  [7:0] bus_out_be;
+  wire        bus_out_done;
+
+  ngpc_savestate_bridge savestate_bridge (
+      .clk_sys(clk_sys),
+      .clk_74a(clk_74a),
+      .reset  (reset_in),
+
+      .savestate_start     (savestate_start),
+      .savestate_start_ack (savestate_start_ack),
+      .savestate_start_busy(savestate_start_busy),
+      .savestate_start_ok  (savestate_start_ok),
+      .savestate_start_err (savestate_start_err),
+
+      .savestate_load     (savestate_load),
+      .savestate_load_ack (savestate_load_ack),
+      .savestate_load_busy(savestate_load_busy),
+      .savestate_load_ok  (savestate_load_ok),
+      .savestate_load_err (savestate_load_err),
+
+      .bridge_wr     (bridge_wr),
+      .bridge_rd     (bridge_rd),
+      .bridge_addr   (bridge_addr),
+      .bridge_wr_data(bridge_wr_data),
+      .bridge_rd_data(savestate_rd_data),
+
+      .cart_save_req (ss_cart_save_req),
+      .cart_save_busy(ss_cart_save_busy),
+
+      .ss_save(ss_save),
+      .ss_load(ss_load),
+      .ss_busy(ss_busy),
+
+      .bus_out_Din (bus_out_Din),
+      .bus_out_Dout(bus_out_Dout),
+      .bus_out_Adr (bus_out_Adr),
+      .bus_out_rnw (bus_out_rnw),
+      .bus_out_ena (bus_out_ena),
+      .bus_out_be  (bus_out_be),
+      .bus_out_done(bus_out_done)
+  );
+
   ngpc_machine machine (
       .clk_sys (clk_sys),
       .clk_ram (clk_ram),
@@ -885,6 +926,20 @@ module core_top (
       .opt_autosave_off(opt_autosave_off_s),
       .host_in_menu    (host_in_menu_s),
 
+      .ss_save_i       (ss_save),
+      .ss_load_i       (ss_load),
+      .ss_busy_o       (ss_busy),
+      .cart_save_req_i (ss_cart_save_req),
+      .cart_save_busy_o(ss_cart_save_busy),
+
+      .bus_out_Din (bus_out_Din),
+      .bus_out_Dout(bus_out_Dout),
+      .bus_out_Adr (bus_out_Adr),
+      .bus_out_rnw (bus_out_rnw),
+      .bus_out_ena (bus_out_ena),
+      .bus_out_be  (bus_out_be),
+      .bus_out_done(bus_out_done),
+
       .SDRAM_A   (dram_a),
       .SDRAM_BA  (dram_ba),
       .SDRAM_DQ  (dram_dq),
@@ -935,9 +990,12 @@ module core_top (
     video_skip_reg <= 0;
     video_rgb_reg  <= 24'h0;
 
-    if (vga_de && (ce_pix || ~opt_de_gated_s)) begin
+    // DE is held across the active window and video_skip suppresses the
+    // cycles that carry no new pixel. Confirmed correct on hardware
+    // 2026-08-25; the runtime alternative it used to offer is gone.
+    if (vga_de) begin
       video_de_reg   <= 1;
-      video_skip_reg <= ~ce_pix && ~opt_de_gated_s;
+      video_skip_reg <= ~ce_pix;
       video_rgb_reg  <= {vga_r, vga_g, vga_b};
     end
 
@@ -998,7 +1056,7 @@ module core_top (
   // the moment there is somewhere to report it.
   wire unused_ok = &{1'b0, cart_fifo_overflow,
                      dataslot_requestread, dataslot_requestread_id,
-                     savestate_start, savestate_load, clk_dot,
+                     clk_dot,
                      led_user, vga_hbl, vga_vbl, audio_adc, dbg_rx, user2,
                      cont1_joy, cont2_joy, cont3_joy, cont4_joy,
                      cont1_trig, cont2_trig, cont3_trig, cont4_trig,

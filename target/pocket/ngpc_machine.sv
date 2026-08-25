@@ -92,6 +92,23 @@ module ngpc_machine
 	input  wire        opt_autosave_off,
 	input  wire        host_in_menu,     // APF osnotify_inmenu
 
+	// ---- Savestates --------------------------------------------------------
+	// The engine lives here, beside the machine it serialises; the controller
+	// that streams its output over the APF bridge is in the top level.
+	input  wire        ss_save_i,
+	input  wire        ss_load_i,
+	output wire        ss_busy_o,
+	input  wire        cart_save_req_i,
+	output wire        cart_save_busy_o,
+
+	output wire [63:0] bus_out_Din,
+	input  wire [63:0] bus_out_Dout,
+	output wire [25:0] bus_out_Adr,
+	output wire        bus_out_rnw,
+	output wire        bus_out_ena,
+	output wire  [7:0] bus_out_be,
+	input  wire        bus_out_done,
+
 	// ---- SDRAM ------------------------------------------------------------
 	// The Pocket has no chip-select pin; CS is tied low on the board, so every
 	// clock is a live command. That is safe with this controller because its
@@ -341,15 +358,35 @@ module ngpc_machine
 		.seed_done              (seed_done)
 	);
 
-	// The work-RAM clear walker and the seed engine share the machine's
-	// savestate memory port. The walker wins while it runs; the savestate
-	// engine will join this mux in phase 4.
-	wire  [1:0] mb_ss_mem_type   = wram_clear_busy ? clear_ss_mem_type   : seed_ss_mem_type;
-	wire        mb_ss_mem_active = wram_clear_busy ? clear_ss_mem_active : seed_ss_mem_active;
-	wire [13:0] mb_ss_mem_addr   = wram_clear_busy ? clear_ss_mem_addr   : seed_ss_mem_addr;
-	wire  [7:0] mb_ss_mem_wdata  = wram_clear_busy ? clear_ss_mem_wdata  : seed_ss_mem_wdata;
-	wire        mb_ss_mem_wren   = wram_clear_busy ? clear_ss_mem_wren   : seed_ss_mem_wren;
-	wire        mb_ss_mem_rden   = wram_clear_busy ? clear_ss_mem_rden   : seed_ss_mem_rden;
+	// Three owners share the internals bus and the flat memory tap. They are
+	// separated in time rather than by an arbiter, so a static priority is
+	// enough, and it is upstream's:
+	//
+	//   1. the work-RAM clear walker, which only runs while reset is held for a
+	//      cartridge download and nothing else can be running at all;
+	//   2. the savestate engine, because it has already frozen the machine and
+	//      a restore that lost a word would be silently wrong;
+	//   3. the BIOS setup seeder, the only one that can be preempted harmlessly
+	//      -- it retries at the next standby.
+	wire ss_eng_owner = eng_busy;
+
+	wire  [9:0] mb_ss_bus_adr  = ss_eng_owner ? eng_ss_bus_adr  : seed_ss_bus_adr;
+	wire [63:0] mb_ss_bus_din  = ss_eng_owner ? eng_ss_bus_din  : seed_ss_bus_din;
+	wire        mb_ss_bus_wren = ss_eng_owner ? eng_ss_bus_wren : seed_ss_bus_wren;
+	wire        mb_ss_bus_rst  = ss_eng_owner ? eng_ss_bus_rst  : 1'b0;
+
+	wire  [1:0] mb_ss_mem_type   = wram_clear_busy ? clear_ss_mem_type   :
+	                               ss_eng_owner    ? eng_ss_mem_type     : seed_ss_mem_type;
+	wire        mb_ss_mem_active = wram_clear_busy ? clear_ss_mem_active :
+	                               ss_eng_owner    ? eng_ss_mem_active   : seed_ss_mem_active;
+	wire [13:0] mb_ss_mem_addr   = wram_clear_busy ? clear_ss_mem_addr   :
+	                               ss_eng_owner    ? eng_ss_mem_addr     : seed_ss_mem_addr;
+	wire  [7:0] mb_ss_mem_wdata  = wram_clear_busy ? clear_ss_mem_wdata  :
+	                               ss_eng_owner    ? eng_ss_mem_wdata    : seed_ss_mem_wdata;
+	wire        mb_ss_mem_wren   = wram_clear_busy ? clear_ss_mem_wren   :
+	                               ss_eng_owner    ? eng_ss_mem_wren     : seed_ss_mem_wren;
+	wire        mb_ss_mem_rden   = wram_clear_busy ? clear_ss_mem_rden   :
+	                               ss_eng_owner    ? eng_ss_mem_rden     : seed_ss_mem_rden;
 
 	//////////////////// Cartridge backing store and loader //////////////////
 
@@ -536,6 +573,8 @@ module ngpc_machine
 	wire        save_pause_req;
 	wire        save_busy;
 
+	assign cart_save_busy_o = save_busy;
+
 	ngpc_cart_save cart_save
 	(
 		.clk             (clk_sys),
@@ -554,7 +593,7 @@ module ngpc_machine
 		.block1_i        (cart_dirty1_block),
 		.die_busy_i      (cart_die_busy),
 
-		.save_req_i      (save_request),
+		.save_req_i      (save_request | cart_save_req_i),
 		.load_req_i      (load_request),
 		.autosave_off_i  (opt_autosave_off),
 		.host_in_menu_i  (host_in_menu),
@@ -585,6 +624,124 @@ module ngpc_machine
 		.buf_rdata_i     (sd_buf_rdata)
 	);
 
+	//////////////////////////// Savestates //////////////////////////////////
+	//
+	// savestates.sv walks the machine's internals bus and its memories and
+	// turns them into a stream of 64-bit words. It is driven directly rather
+	// than through upstream's ngp_savestate wrapper, because that wrapper
+	// orchestrates a sparse cartridge-flash tail whose store and manifest come
+	// to 1,752 lines this device has no room for.
+	//
+	// So savetype3_size is zero: the state does NOT carry cartridge flash.
+	// ngpc_savestate_bridge triggers a cartridge save first, so the flash
+	// reaches the .sav instead. Its header explains why that ordering works.
+	//
+	// restore_prepare_ready_i is tied high for the same reason -- it exists to
+	// wait for that sparse tail to be applied, and there is no tail to wait for.
+
+	wire        eng_core_reset;
+	wire        eng_loading;
+	wire        eng_pause_req;
+	wire        eng_busy;
+
+	wire  [9:0] eng_ss_bus_adr;
+	wire [63:0] eng_ss_bus_din;
+	wire        eng_ss_bus_wren;
+	wire        eng_ss_bus_rst;
+
+	wire  [2:0] eng_ram_type;
+	wire [24:0] eng_ram_addr;
+	wire        eng_ram_rden;
+	wire        eng_ram_wren;
+	wire  [7:0] eng_ram_wdata;
+	wire  [7:0] eng_ram_rdata;
+	wire        eng_ram_ready;
+
+	wire  [1:0] eng_ss_mem_type;
+	wire        eng_ss_mem_active;
+	wire [13:0] eng_ss_mem_addr;
+	wire  [7:0] eng_ss_mem_wdata;
+	wire        eng_ss_mem_wren;
+	wire        eng_ss_mem_rden;
+
+	assign ss_busy_o = eng_busy;
+
+	savestates #(
+		.STATESIZE_PARAM      (8416),
+		.SETTLECOUNT_PARAM    (16),
+		.INTERNALSCOUNT_PARAM (112),
+		.SAVETYPESCOUNT_PARAM (3),
+		.SAVETYPE0_SIZE       (12288),
+		.SAVETYPE1_SIZE       (4096),
+		.SAVETYPE2_SIZE       (16384),
+		.SAVETYPE3_SIZE       (0)
+	) savestate_engine
+	(
+		.clk                     (clk_sys),
+		.reset_in                (hard_reset),
+		.reset_ss                (eng_core_reset),
+		.reset_delay             (),
+		.restore_begin           (),
+		.load_done               (),
+		.restore_prepare_ready_i (1'b1),
+		.restore_prepare_failed_i(1'b0),
+		.increaseSSHeaderCount   (1'b0),
+		.save                    (ss_save_i),
+		.load                    (ss_load_i),
+		.state_size_i            (32'd8416),
+		.savetype3_size_i        (25'd0),
+		.is_rewind_i             (1'b0),
+		.savestate_address       (0),
+		.savestate_busy          (eng_busy),
+		.paused                  (pause_ready),
+
+		.BUS_Din                 (eng_ss_bus_din),
+		.BUS_Adr                 (eng_ss_bus_adr),
+		.BUS_wren                (eng_ss_bus_wren),
+		.BUS_rst                 (eng_ss_bus_rst),
+		.BUS_Dout                (ss_bus_dout),
+
+		.loading_savestate       (eng_loading),
+		.saving_savestate        (),
+		.sleep_savestate         (eng_pause_req),
+
+		.Save_RAMAddr            (eng_ram_addr),
+		.Save_RAMRdEn            (eng_ram_rden),
+		.Save_RAMWrEn            (eng_ram_wren),
+		.Save_RAMWriteData       (eng_ram_wdata),
+		.Save_RAMReadData        (eng_ram_rdata),
+		.Save_RAMReady           (eng_ram_ready),
+		.Save_RAMType            (eng_ram_type),
+
+		.bus_out_Din             (bus_out_Din),
+		.bus_out_Dout            (bus_out_Dout),
+		.bus_out_Adr             (bus_out_Adr),
+		.bus_out_rnw             (bus_out_rnw),
+		.bus_out_ena             (bus_out_ena),
+		.bus_out_be              (bus_out_be),
+		.bus_out_done            (bus_out_done)
+	);
+
+	ngp_ss_glue ss_glue
+	(
+		.clk          (clk_sys),
+		.reset        (hard_reset),
+		.ss_ram_type  (eng_ram_type),
+		.ss_ram_addr  (eng_ram_addr),
+		.ss_ram_rden  (eng_ram_rden),
+		.ss_ram_wren  (eng_ram_wren),
+		.ss_ram_wdata (eng_ram_wdata),
+		.ss_ram_rdata (eng_ram_rdata),
+		.ss_ram_ready (eng_ram_ready),
+		.mem_type     (eng_ss_mem_type),
+		.mem_active   (eng_ss_mem_active),
+		.mem_addr     (eng_ss_mem_addr),
+		.mem_wdata    (eng_ss_mem_wdata),
+		.mem_wren     (eng_ss_mem_wren),
+		.mem_rden     (eng_ss_mem_rden),
+		.mem_rdata    (ss_mem_rdata)
+	);
+
 	///////////////////////// The machine: mainboard //////////////////////////
 
 	// The link port has no host on the Pocket. TMP95C061 Port 8 pulls P81/RXD0
@@ -600,7 +757,7 @@ module ngpc_machine
 	(
 		.clk_sys              (clk_sys),
 		.reset                (reset),
-		.restore_reset        (1'b0),
+		.restore_reset        (eng_core_reset),
 		.mono_strap           (mono_strap),
 		.lcd_persistence      (opt_lcd_response),
 		.palette_frame_boundary (1'b0),
@@ -675,10 +832,10 @@ module ngpc_machine
 		.cart_die_busy        (cart_die_busy),
 
 		// ---- Savestate buses: seed and the RAM clear (PHASE 4 adds the engine)
-		.ss_bus_adr           (seed_ss_bus_adr),
-		.ss_bus_din           (seed_ss_bus_din),
-		.ss_bus_wren          (seed_ss_bus_wren),
-		.ss_bus_rst           (1'b0),
+		.ss_bus_adr           (mb_ss_bus_adr),
+		.ss_bus_din           (mb_ss_bus_din),
+		.ss_bus_wren          (mb_ss_bus_wren),
+		.ss_bus_rst           (mb_ss_bus_rst),
 		.ss_restore_is_rewind (1'b0),
 		.ss_bus_dout          (ss_bus_dout),
 		.ss_mem_type          (mb_ss_mem_type),
@@ -688,9 +845,9 @@ module ngpc_machine
 		.ss_mem_wren          (mb_ss_mem_wren),
 		.ss_mem_rden          (mb_ss_mem_rden),
 		.ss_mem_rdata         (ss_mem_rdata),
-		.loading_savestate    (1'b0),
+		.loading_savestate    (eng_loading),
 
-		.pause_req            (seed_pause_req | save_pause_req),
+		.pause_req            (seed_pause_req | save_pause_req | eng_pause_req),
 		.pause_ready          (pause_ready)
 	);
 
