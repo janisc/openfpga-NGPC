@@ -27,13 +27,22 @@
 //     in another's flash.
 //
 // WHAT IS GIVEN UP, stated plainly. Upstream's saver is transactional: an
-// interrupted save cannot leave a half-written file that looks valid. This one
-// writes sectors in order, so a power cut mid-save leaves a file whose header
-// promises blocks the tail does not contain. The header is written FIRST and
-// the bitmap it carries is the one being written, so the failure mode is a
-// short read at apply time rather than silent corruption of the wrong block --
-// but it is a real difference and a future version should write the header
-// last, after the payload, so a torn save is simply not recognised.
+// interrupted save cannot leave a half-written file that looks valid, because
+// the new state is staged and then committed. This one is not, and on a
+// battery-powered handheld an interrupted save is a real event rather than a
+// theoretical one.
+//
+// What it does instead is order the writes so that the cheap failure mode is
+// the one you get: the payload blocks are written FIRST and the header LAST.
+// A save cut short therefore leaves a file whose header is still the previous
+// save's -- or absent entirely on the first ever save -- so the torn payload is
+// never read. You lose the save you were making; you do not lose the one you
+// had, and you cannot half-apply a block into the cartridge.
+//
+// The remaining hole is a cut during the header sector itself, which is one
+// 512-byte write out of a whole save. Closing that needs two header slots
+// written alternately with a sequence number, which is a real transaction and
+// costs more than it is worth here.
 
 `default_nettype none
 
@@ -108,6 +117,12 @@ module ngpc_cart_save
 	reg [63:0] dirty0;
 	reg [63:0] dirty1;
 
+	// The set being written, frozen when the save starts. The machine is paused
+	// by then so nothing should move, but the header and the payload must
+	// describe the same set even if that assumption is ever wrong.
+	reg [63:0] save_dirty0;
+	reg [63:0] save_dirty1;
+
 	wire dirty_any = |dirty0 || |dirty1;
 
 	// ---- Block geometry -----------------------------------------------------
@@ -129,8 +144,10 @@ module ngpc_cart_save
 		.words_o     (geo_words)
 	);
 
+	// Saving walks the frozen set; loading walks the set read from the header,
+	// which is placed into save_dirty* before the walk begins.
 	wire block_selected = geo_valid &&
-		(geo_die ? dirty1[geo_block] : dirty0[geo_block]);
+		(geo_die ? save_dirty1[geo_block] : save_dirty0[geo_block]);
 
 	// Linear cartridge byte address, die1 starting at 2 MiB -- the same mapping
 	// ngp_cart_overlay_mover uses.
@@ -147,6 +164,7 @@ module ngpc_cart_save
 	localparam S_SAVE_FILL_W   = 5'd6;
 	localparam S_SAVE_SECTOR   = 5'd7;
 	localparam S_SAVE_NEXT     = 5'd8;
+	localparam S_SAVE_COMMIT   = 5'd18;
 	localparam S_LOAD_HDR      = 5'd9;
 	localparam S_LOAD_HDR_W    = 5'd10;
 	localparam S_LOAD_CHECK    = 5'd11;
@@ -226,13 +244,17 @@ module ngpc_cart_save
 					// The flash FSM must be idle or a block could change under
 					// the read.
 					if (pause_ready_i && die_busy_i == 2'b00) begin
-						state <= S_SAVE_HEADER;
+						save_dirty0 <= dirty0;
+						save_dirty1 <= dirty1;
+						lba_o       <= 23'd1;   // sector 0 is the header, written last
+						geo_die     <= 1'b0;
+						geo_block   <= 6'd0;
+						state       <= S_SAVE_SCAN;
 					end
 				end
 
 				S_SAVE_HEADER: begin
-					// Header first. See the module header for why that is the
-					// weaker of the two orderings.
+					// Reached only after every payload block is on the card.
 					hdr[0]  <= MAGIC0;
 					hdr[1]  <= MAGIC1;
 					hdr[2]  <= MAGIC2;
@@ -253,21 +275,19 @@ module ngpc_cart_save
 					buf_addr_o  <= word_idx;
 					buf_we_o    <= 1'b1;
 					buf_wdata_o <= (word_idx < 8'd12)  ? hdr[word_idx[3:0]] :
-					               (word_idx == 8'd16) ? dirty0[15:0]   :
-					               (word_idx == 8'd17) ? dirty0[31:16]  :
-					               (word_idx == 8'd18) ? dirty0[47:32]  :
-					               (word_idx == 8'd19) ? dirty0[63:48]  :
-					               (word_idx == 8'd20) ? dirty1[15:0]   :
-					               (word_idx == 8'd21) ? dirty1[31:16]  :
-					               (word_idx == 8'd22) ? dirty1[47:32]  :
-					               (word_idx == 8'd23) ? dirty1[63:48]  : 16'd0;
+					               (word_idx == 8'd16) ? save_dirty0[15:0]  :
+					               (word_idx == 8'd17) ? save_dirty0[31:16] :
+					               (word_idx == 8'd18) ? save_dirty0[47:32] :
+					               (word_idx == 8'd19) ? save_dirty0[63:48] :
+					               (word_idx == 8'd20) ? save_dirty1[15:0]  :
+					               (word_idx == 8'd21) ? save_dirty1[31:16] :
+					               (word_idx == 8'd22) ? save_dirty1[47:32] :
+					               (word_idx == 8'd23) ? save_dirty1[63:48] : 16'd0;
 
 					if (word_idx == 8'd255) begin
-						lba_o    <= 23'd0;
-						wr_o     <= 1'b1;
-						geo_die  <= 1'b0;
-						geo_block <= 6'd0;
-						state    <= S_SAVE_SCAN;
+						lba_o <= 23'd0;
+						wr_o  <= 1'b1;
+						state <= S_SAVE_COMMIT;
 					end else begin
 						word_idx <= word_idx + 8'd1;
 					end
@@ -276,13 +296,12 @@ module ngpc_cart_save
 				S_SAVE_SCAN: begin
 					if (!sd_busy_i && !wr_o) begin
 						if (block_selected) begin
-							lba_o      <= lba_o + 23'd1;
 							block_word <= 16'd0;
 							word_idx   <= 8'd0;
 							state      <= S_SAVE_FILL;
 						end else if (geo_block == 6'd63) begin
 							if (geo_die) begin
-								state <= S_FINISH;
+								state <= S_SAVE_HEADER;
 							end else begin
 								geo_die   <= 1'b1;
 								geo_block <= 6'd0;
@@ -319,12 +338,13 @@ module ngpc_cart_save
 
 				S_SAVE_SECTOR: begin
 					if (!sd_busy_i && !wr_o) begin
+						lba_o <= lba_o + 23'd1;
+
 						if (block_word + 16'd1 >= geo_words) begin
 							state <= S_SAVE_NEXT;
 						end else begin
 							block_word <= block_word + 16'd1;
 							word_idx   <= 8'd0;
-							lba_o      <= lba_o + 23'd1;
 							state      <= S_SAVE_FILL;
 						end
 					end
@@ -333,7 +353,7 @@ module ngpc_cart_save
 				S_SAVE_NEXT: begin
 					if (geo_block == 6'd63) begin
 						if (geo_die) begin
-							state <= S_FINISH;
+							state <= S_SAVE_HEADER;
 						end else begin
 							geo_die   <= 1'b1;
 							geo_block <= 6'd0;
@@ -343,6 +363,12 @@ module ngpc_cart_save
 						geo_block <= geo_block + 6'd1;
 						state     <= S_SAVE_SCAN;
 					end
+				end
+
+				S_SAVE_COMMIT: begin
+					// The header is the commit point: until this sector lands,
+					// the file on the card still describes the previous save.
+					if (!sd_busy_i && !wr_o) state <= S_FINISH;
 				end
 
 				// ---------------- load ----------------------------------------
@@ -373,15 +399,20 @@ module ngpc_cart_save
 						8'd4: if (buf_rdata_i != MAGIC3) state <= S_FINISH;
 						8'd5: if (buf_rdata_i != cart_crc32_i[15:0])  state <= S_FINISH;
 						8'd6: if (buf_rdata_i != cart_crc32_i[31:16]) state <= S_FINISH;
-						8'd17: dirty0[15:0]  <= buf_rdata_i;
-						8'd18: dirty0[31:16] <= buf_rdata_i;
-						8'd19: dirty0[47:32] <= buf_rdata_i;
-						8'd20: dirty0[63:48] <= buf_rdata_i;
-						8'd21: dirty1[15:0]  <= buf_rdata_i;
-						8'd22: dirty1[31:16] <= buf_rdata_i;
-						8'd23: dirty1[47:32] <= buf_rdata_i;
+						// The set goes into BOTH: save_dirty* drives the walk
+						// below, dirty* makes a later save rewrite these blocks
+						// even if the game does not touch them again.
+						8'd17: begin dirty0[15:0]  <= buf_rdata_i; save_dirty0[15:0]  <= buf_rdata_i; end
+						8'd18: begin dirty0[31:16] <= buf_rdata_i; save_dirty0[31:16] <= buf_rdata_i; end
+						8'd19: begin dirty0[47:32] <= buf_rdata_i; save_dirty0[47:32] <= buf_rdata_i; end
+						8'd20: begin dirty0[63:48] <= buf_rdata_i; save_dirty0[63:48] <= buf_rdata_i; end
+						8'd21: begin dirty1[15:0]  <= buf_rdata_i; save_dirty1[15:0]  <= buf_rdata_i; end
+						8'd22: begin dirty1[31:16] <= buf_rdata_i; save_dirty1[31:16] <= buf_rdata_i; end
+						8'd23: begin dirty1[47:32] <= buf_rdata_i; save_dirty1[47:32] <= buf_rdata_i; end
 						8'd24: begin
-							dirty1[63:48] <= buf_rdata_i;
+							dirty1[63:48]      <= buf_rdata_i;
+							save_dirty1[63:48] <= buf_rdata_i;
+							lba_o     <= 23'd1;
 							geo_die   <= 1'b0;
 							geo_block <= 6'd0;
 							state     <= S_LOAD_SCAN;
@@ -392,7 +423,6 @@ module ngpc_cart_save
 
 				S_LOAD_SCAN: begin
 					if (block_selected) begin
-						lba_o      <= lba_o + 23'd1;
 						block_word <= 16'd0;
 						state      <= S_LOAD_SECTOR;
 					end else if (geo_block == 6'd63) begin
@@ -438,6 +468,8 @@ module ngpc_cart_save
 				end
 
 				S_LOAD_NEXT: begin
+					lba_o <= lba_o + 23'd1;
+
 					if (block_word + 16'd1 >= geo_words) begin
 						if (geo_block == 6'd63) begin
 							if (geo_die) begin
@@ -453,7 +485,6 @@ module ngpc_cart_save
 						end
 					end else begin
 						block_word <= block_word + 16'd1;
-						lba_o      <= lba_o + 23'd1;
 						state      <= S_LOAD_SECTOR;
 					end
 				end
