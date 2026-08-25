@@ -279,10 +279,14 @@ module ngpc_machine
 		.cart_config_load     (1'b0),
 		.cart_force_8m_die0   (1'b0),
 		.cart_force_flash_read(1'b0),
-		.cart_size_code0      (2'd0),
-		.cart_size_code1      (2'd0),
-		.cart_bytes           (25'd0),
-		.cart_present         (1'b0),
+		// These four are mainboard OUTPUTS -- the board derives them from
+		// cart_image_bytes and cart_config_load. With no image loaded it
+		// reports an empty slot on its own; leave them open rather than
+		// tying them off, which would read as an attempt to drive them.
+		.cart_size_code0      (),
+		.cart_size_code1      (),
+		.cart_bytes           (),
+		.cart_present         (),
 		.cart_mem_req         (cart_mem_req),
 		.cart_mem_we          (cart_mem_we),
 		.cart_mem_addr        (cart_mem_addr),
