@@ -119,6 +119,39 @@ module ngpc_machine
 	wire bios_reset = bios_downloading || (bios_reset_cnt != 8'd0);
 	wire base_reset = hard_reset | bios_reset;
 
+	// System select. 0 = NGPC (colour), 1 = Auto, 2 = NGP (mono).
+	//
+	// MiSTer resolves Auto from the file extension, which it learns from
+	// ioctl_index. APF does not tell a core which of a slot's extensions
+	// matched, so Auto resolves to colour here and a mono-only title needs the
+	// explicit menu choice. Recovering the extension would mean asking APF for
+	// the slot's filename (target command 0x0190) and parsing it, which is a
+	// job of its own.
+	wire mono_strap = (opt_system == 2'd2);
+
+	// k2_soc latches the model strap only while reset is asserted, and on
+	// MiSTer the cartridge-load reset is what carries a new choice in. APF
+	// gives no such ordering guarantee: a persisted setting can arrive after
+	// the data slots have loaded and the machine has already left reset. The
+	// result is an NGP session still running on the colour image -- which shows
+	// as a colour boot logo in front of a correctly monochrome game, because
+	// the colour BIOS runs mono titles in compatibility mode and our default
+	// palette is B&W. So a change of strap resets the console itself.
+	//
+	// The cartridge survives it: the loader and its SDRAM image sit on
+	// hard_reset, and cart_reconfig_q re-straps the board once reset releases.
+	reg       mono_strap_q;
+	reg [7:0] strap_reset_cnt;
+
+	always @(posedge clk_sys) begin
+		mono_strap_q <= mono_strap;
+		if (hard_reset)                      strap_reset_cnt <= 8'd0;
+		else if (mono_strap != mono_strap_q) strap_reset_cnt <= 8'hFF;
+		else if (strap_reset_cnt != 8'd0)    strap_reset_cnt <= strap_reset_cnt - 8'd1;
+	end
+
+	wire strap_reset = (strap_reset_cnt != 8'd0);
+
 	wire        cart_download;
 	wire        cart_download_start;
 	wire        wram_clear_busy;
@@ -147,7 +180,7 @@ module ngpc_machine
 
 	// cart_download asserts before the clear start pulse, so the CPU cannot get
 	// one running edge ahead of the walker.
-	wire reset = base_reset | cart_download | wram_clear_busy;
+	wire reset = base_reset | strap_reset | cart_download | wram_clear_busy;
 
 	//////////////////////////////// Inputs //////////////////////////////////
 
@@ -202,16 +235,6 @@ module ngpc_machine
 	end
 
 	wire power_btn = pwr_pad || (pwr_hold_q != 25'd0);
-
-	// System select. 0 = NGPC (colour), 1 = Auto, 2 = NGP (mono).
-	//
-	// MiSTer resolves Auto from the file extension, which it learns from
-	// ioctl_index. APF does not tell a core which of a slot's extensions
-	// matched, so Auto resolves to colour here and a mono-only title needs the
-	// explicit menu choice. Recovering the extension would mean asking APF for
-	// the slot's filename (target command 0x0190) and parsing it, which is a
-	// job of its own.
-	wire mono_strap = (opt_system == 2'd2);
 
 	//////////////////////////// BIOS setup seed /////////////////////////////
 
