@@ -14,3 +14,4 @@ utils/
 # Upstream is cloned by scripts/setup.sh and patched from patches/
 upstream/
 projects/build_seed*.log
+builds/
