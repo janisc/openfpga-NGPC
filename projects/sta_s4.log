@@ -1,0 +1,280 @@
+Info: *******************************************************************
+Info: Running Quartus Prime TimeQuest Timing Analyzer
+    Info: Version 17.1.0 Build 590 10/25/2017 SJ Lite Edition
+    Info: Copyright (C) 2017  Intel Corporation. All rights reserved.
+    Info: Your use of Intel Corporation's design tools, logic functions 
+    Info: and other software and tools, and its AMPP partner logic 
+    Info: functions, and any output files from any of the foregoing 
+    Info: (including device programming or simulation files), and any 
+    Info: associated documentation or information are expressly subject 
+    Info: to the terms and conditions of the Intel Program License 
+    Info: Subscription Agreement, the Intel Quartus Prime License Agreement,
+    Info: the Intel FPGA IP License Agreement, or other applicable license
+    Info: agreement, including, without limitation, that your use is for
+    Info: the sole purpose of programming logic devices manufactured by
+    Info: Intel and sold by Intel or its authorized distributors.  Please
+    Info: refer to the applicable agreement for further details.
+    Info: Processing started: Tue Aug 25 18:35:56 2026
+Info: Command: quartus_sta ngpc_pocket
+Info: qsta_default_script.tcl version: #3
+Info (293031): Detected changes in Quartus Prime Settings File (.qsf).
+    Info (293028): Assignment ROUTER_TIMING_OPTIMIZATION_LEVEL changed value from MAXIMUM to NORMAL.
+    Info (293028): Assignment PLACEMENT_EFFORT_MULTIPLIER changed value from 4.0 to 1.0.
+Info (20032): Parallel compilation is enabled and will use up to 6 processors
+Info (21077): Low junction temperature is 0 degrees C
+Info (21077): High junction temperature is 85 degrees C
+Info (332164): Evaluating HDL-embedded SDC commands
+    Info (332165): Entity dcfifo_06o1
+        Info (332166): set_false_path -from *delayed_wrptr_g* -to *rs_dgwp|dffpipe_su8:dffpipe7|dffe8a* 
+    Info (332165): Entity dcfifo_vqk1
+        Info (332166): set_false_path -from *rdptr_g* -to *ws_dgrp|dffpipe_uu8:dffpipe9|dffe10a* 
+        Info (332166): set_false_path -from *delayed_wrptr_g* -to *rs_dgwp|dffpipe_tu8:dffpipe6|dffe7a* 
+Info (332104): Reading SDC File: '../platform/pocket/apf_constraints.sdc'
+Info (332110): Deriving PLL clocks
+    Info (332110): create_generated_clock -source {ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~FRACTIONAL_PLL|refclkin} -divide_by 512 -multiply_by 4745 -duty_cycle 50.00 -name {ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~FRACTIONAL_PLL|vcoph[0]} {ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~FRACTIONAL_PLL|vcoph[0]}
+    Info (332110): create_generated_clock -source {ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|vco0ph[0]} -divide_by 14 -duty_cycle 50.00 -name {ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk} {ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk}
+    Info (332110): create_generated_clock -source {ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|vco0ph[0]} -divide_by 7 -duty_cycle 50.00 -name {ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk} {ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk}
+    Info (332110): create_generated_clock -source {ic|mp1|ngpc_pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER|vco0ph[0]} -divide_by 14 -phase 90.00 -duty_cycle 50.00 -name {ic|mp1|ngpc_pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER|divclk} {ic|mp1|ngpc_pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER|divclk}
+Info (332104): Reading SDC File: '../target/pocket/core_constraints.sdc'
+Warning (332174): Ignored filter at core_constraints.sdc(19): ic|mp1|ngpc_pll_inst|altera_pll_i|*[3].*|divclk could not be matched with a clock File: C:/FPGA/openfpga-NGPC/target/pocket/core_constraints.sdc Line: 19
+Info (332151): Clock uncertainty is not calculated until you update the timing netlist.
+Info (332104): Reading SDC File: '../upstream/NGPC.sdc'
+Info (332151): Clock uncertainty is not calculated until you update the timing netlist.
+Info (332104): Reading SDC File: '../target/pocket/ngpc_pocket_timing.sdc'
+Info (332104): Reading SDC File: '../target/pocket/ngpc_pocket_sdram.sdc'
+Info (332097): The following timing edges are non-unate.  TimeQuest will assume pos-unate behavior for these edges in the clock network.
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~FRACTIONAL_PLL  from: refclkin  to: fbclk
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER  from: vco0ph[0]  to: divclk
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_REFCLK_SELECT  from: clkin[0]  to: clkout
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER  from: vco0ph[0]  to: divclk
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER  from: vco0ph[0]  to: divclk
+Info (332123): Deriving Clock Uncertainty. Please refer to report_sdc in TimeQuest to see clock uncertainties.
+Info: Found TIMEQUEST_REPORT_SCRIPT_INCLUDE_DEFAULT_ANALYSIS = ON
+Info: Analyzing Slow 1100mV 85C Model
+Critical Warning (332148): Timing requirements not met
+    Info (11105): For recommendations on closing timing, run Report Timing Closure Recommendations in the TimeQuest Timing Analyzer.
+Info (332146): Worst-case setup slack is -1.505
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):    -1.505             -31.637 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     0.036               0.000 sdram_clk_pin 
+    Info (332119):     0.480               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     2.456               0.000 clk_74a 
+    Info (332119):     8.724               0.000 bridge_spiclk 
+Info (332146): Worst-case hold slack is 0.344
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     0.344               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     0.369               0.000 clk_74a 
+    Info (332119):     0.397               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     0.507               0.000 bridge_spiclk 
+    Info (332119):     3.998               0.000 sdram_clk_pin 
+Info (332146): Worst-case recovery slack is 5.005
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     5.005               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     8.933               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+Info (332146): Worst-case removal slack is 0.887
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     0.887               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     3.592               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+Info (332146): Worst-case minimum pulse width slack is 0.726
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     0.726               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~FRACTIONAL_PLL|vcoph[0] 
+    Info (332119):     4.062               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     5.350               0.000 clk_74a 
+    Info (332119):     5.823               0.000 bridge_spiclk 
+    Info (332119):     8.558               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     9.110               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER|divclk 
+Info (332114): Report Metastability: Found 56 synchronizer chains.
+    Info (332114): Worst-Case MTBF of Design is 1e+09 years or 3.15e+16 seconds.
+    Info (332114): Typical MTBF of Design is 1e+09 years or 3.15e+16 seconds.
+
+    Info (332114): Number of Synchronizer Chains Found: 56
+    Info (332114): Shortest Synchronizer Chain: 1 Registers
+    Info (332114): Fraction of Chains for which MTBFs Could Not be Calculated: 0.589
+    Info (332114): Worst Case Available Settling Time: 7.142 ns
+    Info (332114): Worst-Case MTBF values are calculated based on the worst-case silicon characteristics, with worst-case operating conditions.
+    Info (332114):   - Under worst-case conditions, an increase of 100ps in available settling time will increase MTBF values by a factor of 3.8
+    Info (332114): Typical MTBF values are calculated based on the nominal silicon characteristics, at nominal operating conditions.
+    Info (332114):   - Under typical conditions, an increase of 100ps in available settling time will increase MTBF values by a factor of 17.8
+Info: Analyzing Slow 1100mV 0C Model
+Info (334003): Started post-fitting delay annotation
+Info (334004): Delay annotation completed successfully
+Info (332097): The following timing edges are non-unate.  TimeQuest will assume pos-unate behavior for these edges in the clock network.
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~FRACTIONAL_PLL  from: refclkin  to: fbclk
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER  from: vco0ph[0]  to: divclk
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_REFCLK_SELECT  from: clkin[0]  to: clkout
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER  from: vco0ph[0]  to: divclk
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER  from: vco0ph[0]  to: divclk
+Info (332123): Deriving Clock Uncertainty. Please refer to report_sdc in TimeQuest to see clock uncertainties.
+Critical Warning (332148): Timing requirements not met
+    Info (11105): For recommendations on closing timing, run Report Timing Closure Recommendations in the TimeQuest Timing Analyzer.
+Info (332146): Worst-case setup slack is -1.550
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):    -1.550             -37.700 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     0.132               0.000 sdram_clk_pin 
+    Info (332119):     0.587               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     2.661               0.000 clk_74a 
+    Info (332119):     8.976               0.000 bridge_spiclk 
+Info (332146): Worst-case hold slack is 0.334
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     0.334               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     0.363               0.000 clk_74a 
+    Info (332119):     0.388               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     0.534               0.000 bridge_spiclk 
+    Info (332119):     4.062               0.000 sdram_clk_pin 
+Info (332146): Worst-case recovery slack is 5.143
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     5.143               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     9.299               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+Info (332146): Worst-case removal slack is 0.780
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     0.780               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     3.327               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+Info (332146): Worst-case minimum pulse width slack is 0.726
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     0.726               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~FRACTIONAL_PLL|vcoph[0] 
+    Info (332119):     3.982               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     5.291               0.000 clk_74a 
+    Info (332119):     5.792               0.000 bridge_spiclk 
+    Info (332119):     8.500               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     9.044               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER|divclk 
+Info (332114): Report Metastability: Found 56 synchronizer chains.
+    Info (332114): Worst-Case MTBF of Design is 1e+09 years or 3.15e+16 seconds.
+    Info (332114): Typical MTBF of Design is 1e+09 years or 3.15e+16 seconds.
+
+    Info (332114): Number of Synchronizer Chains Found: 56
+    Info (332114): Shortest Synchronizer Chain: 1 Registers
+    Info (332114): Fraction of Chains for which MTBFs Could Not be Calculated: 0.589
+    Info (332114): Worst Case Available Settling Time: 7.410 ns
+    Info (332114): Worst-Case MTBF values are calculated based on the worst-case silicon characteristics, with worst-case operating conditions.
+    Info (332114):   - Under worst-case conditions, an increase of 100ps in available settling time will increase MTBF values by a factor of 1.8
+    Info (332114): Typical MTBF values are calculated based on the nominal silicon characteristics, at nominal operating conditions.
+    Info (332114):   - Under typical conditions, an increase of 100ps in available settling time will increase MTBF values by a factor of 17.8
+Info: Analyzing Fast 1100mV 85C Model
+Info (334003): Started post-fitting delay annotation
+Info (334004): Delay annotation completed successfully
+Info (332097): The following timing edges are non-unate.  TimeQuest will assume pos-unate behavior for these edges in the clock network.
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~FRACTIONAL_PLL  from: refclkin  to: fbclk
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER  from: vco0ph[0]  to: divclk
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_REFCLK_SELECT  from: clkin[0]  to: clkout
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER  from: vco0ph[0]  to: divclk
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER  from: vco0ph[0]  to: divclk
+Info (332123): Deriving Clock Uncertainty. Please refer to report_sdc in TimeQuest to see clock uncertainties.
+Info (332146): Worst-case setup slack is 1.846
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     1.846               0.000 sdram_clk_pin 
+    Info (332119):     5.564               0.000 clk_74a 
+    Info (332119):     6.056               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     7.269               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):    11.011               0.000 bridge_spiclk 
+Info (332146): Worst-case hold slack is 0.135
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     0.135               0.000 clk_74a 
+    Info (332119):     0.162               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     0.173               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     0.186               0.000 bridge_spiclk 
+    Info (332119):     4.267               0.000 sdram_clk_pin 
+Info (332146): Worst-case recovery slack is 7.591
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     7.591               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):    14.344               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+Info (332146): Worst-case removal slack is 0.416
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     0.416               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     1.510               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+Info (332146): Worst-case minimum pulse width slack is 0.726
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     0.726               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~FRACTIONAL_PLL|vcoph[0] 
+    Info (332119):     4.629               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     5.210               0.000 clk_74a 
+    Info (332119):     6.333               0.000 bridge_spiclk 
+    Info (332119):     9.060               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     9.685               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER|divclk 
+Info (332114): Report Metastability: Found 56 synchronizer chains.
+    Info (332114): Worst-Case MTBF of Design is 1e+09 years or 3.15e+16 seconds.
+    Info (332114): Typical MTBF of Design is 1e+09 years or 3.15e+16 seconds.
+
+    Info (332114): Number of Synchronizer Chains Found: 56
+    Info (332114): Shortest Synchronizer Chain: 1 Registers
+    Info (332114): Fraction of Chains for which MTBFs Could Not be Calculated: 0.589
+    Info (332114): Worst Case Available Settling Time: 8.872 ns
+    Info (332114): Worst-Case MTBF values are calculated based on the worst-case silicon characteristics, with worst-case operating conditions.
+    Info (332114):   - Under worst-case conditions, an increase of 100ps in available settling time will increase MTBF values by a factor of 3.8
+    Info (332114): Typical MTBF values are calculated based on the nominal silicon characteristics, at nominal operating conditions.
+    Info (332114):   - Under typical conditions, an increase of 100ps in available settling time will increase MTBF values by a factor of 17.8
+Info: Analyzing Fast 1100mV 0C Model
+Info (332097): The following timing edges are non-unate.  TimeQuest will assume pos-unate behavior for these edges in the clock network.
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~FRACTIONAL_PLL  from: refclkin  to: fbclk
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER  from: vco0ph[0]  to: divclk
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_REFCLK_SELECT  from: clkin[0]  to: clkout
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER  from: vco0ph[0]  to: divclk
+    Info (332098): Cell: ic|mp1|ngpc_pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER  from: vco0ph[0]  to: divclk
+Info (332123): Deriving Clock Uncertainty. Please refer to report_sdc in TimeQuest to see clock uncertainties.
+Info (332146): Worst-case setup slack is 1.936
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     1.936               0.000 sdram_clk_pin 
+    Info (332119):     5.841               0.000 clk_74a 
+    Info (332119):     6.383               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     7.600               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):    11.317               0.000 bridge_spiclk 
+Info (332146): Worst-case hold slack is 0.100
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     0.100               0.000 clk_74a 
+    Info (332119):     0.145               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     0.149               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     0.176               0.000 bridge_spiclk 
+    Info (332119):     4.277               0.000 sdram_clk_pin 
+Info (332146): Worst-case recovery slack is 7.905
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     7.905               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):    15.076               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+Info (332146): Worst-case removal slack is 0.357
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     0.357               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     1.330               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+Info (332146): Worst-case minimum pulse width slack is 0.726
+    Info (332119):     Slack       End Point TNS Clock 
+    Info (332119): ========= =================== =====================
+    Info (332119):     0.726               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~FRACTIONAL_PLL|vcoph[0] 
+    Info (332119):     4.621               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     5.161               0.000 clk_74a 
+    Info (332119):     6.337               0.000 bridge_spiclk 
+    Info (332119):     9.063               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk 
+    Info (332119):     9.688               0.000 ic|mp1|ngpc_pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER|divclk 
+Info (332114): Report Metastability: Found 56 synchronizer chains.
+    Info (332114): Worst-Case MTBF of Design is 1e+09 years or 3.15e+16 seconds.
+    Info (332114): Typical MTBF of Design is 1e+09 years or 3.15e+16 seconds.
+
+    Info (332114): Number of Synchronizer Chains Found: 56
+    Info (332114): Shortest Synchronizer Chain: 1 Registers
+    Info (332114): Fraction of Chains for which MTBFs Could Not be Calculated: 0.589
+    Info (332114): Worst Case Available Settling Time: 9.006 ns
+    Info (332114): Worst-Case MTBF values are calculated based on the worst-case silicon characteristics, with worst-case operating conditions.
+    Info (332114):   - Under worst-case conditions, an increase of 100ps in available settling time will increase MTBF values by a factor of 1.8
+    Info (332114): Typical MTBF values are calculated based on the nominal silicon characteristics, at nominal operating conditions.
+    Info (332114):   - Under typical conditions, an increase of 100ps in available settling time will increase MTBF values by a factor of 17.8
+Info (332102): Design is not fully constrained for setup requirements
+Info (332102): Design is not fully constrained for hold requirements
+Info: Quartus Prime TimeQuest Timing Analyzer was successful. 0 errors, 3 warnings
+    Info: Peak virtual memory: 6132 megabytes
+    Info: Processing ended: Tue Aug 25 18:36:54 2026
+    Info: Elapsed time: 00:00:58
+    Info: Total CPU time (on all processors): 00:02:03

@@ -140,17 +140,31 @@ module ngpc_machine
 	//
 	// The cartridge survives it: the loader and its SDRAM image sit on
 	// hard_reset, and cart_reconfig_q re-straps the board once reset releases.
+	// strap_reset is a REGISTER, not a comparator output. The first version
+	// exposed `strap_reset_cnt != 0` directly, which put an 8-bit compare into
+	// the cone of `reset` -- a net that fans out to the entire machine -- and
+	// cost 1.3 ns of clk_sys slack across every seed tried. Driving the reset
+	// term from a flop keeps the counter out of that cone entirely.
 	reg       mono_strap_q;
 	reg [7:0] strap_reset_cnt;
+	reg       strap_reset;
 
 	always @(posedge clk_sys) begin
 		mono_strap_q <= mono_strap;
-		if (hard_reset)                      strap_reset_cnt <= 8'd0;
-		else if (mono_strap != mono_strap_q) strap_reset_cnt <= 8'hFF;
-		else if (strap_reset_cnt != 8'd0)    strap_reset_cnt <= strap_reset_cnt - 8'd1;
-	end
 
-	wire strap_reset = (strap_reset_cnt != 8'd0);
+		if (hard_reset) begin
+			strap_reset_cnt <= 8'd0;
+			strap_reset     <= 1'b0;
+		end else if (mono_strap != mono_strap_q) begin
+			strap_reset_cnt <= 8'hFF;
+			strap_reset     <= 1'b1;
+		end else if (strap_reset_cnt != 8'd0) begin
+			strap_reset_cnt <= strap_reset_cnt - 8'd1;
+			strap_reset     <= 1'b1;
+		end else begin
+			strap_reset     <= 1'b0;
+		end
+	end
 
 	wire        cart_download;
 	wire        cart_download_start;
