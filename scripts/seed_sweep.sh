@@ -6,11 +6,17 @@
 #
 # Two rules this script learned the hard way:
 #
-#   1. It does NOT edit the .qsf. An earlier version rewrote the SEED line
-#      between runs; Quartus noticed the file changing under a live compile,
-#      declared it corrupt, and "helpfully" rewrote it -- inlining every pin
-#      assignment from Analogue's pocket.tcl and dropping a constraint line.
-#      quartus_fit takes --seed on the command line, so nothing on disk moves.
+#   1. quartus_fit --seed DOES write the seed back into the .qsf -- passing it
+#      on the command line is not the escape hatch it looks like. What matters
+#      is that nothing edits the file WHILE a compile is live: an earlier
+#      version did, Quartus declared the file corrupt, and "helpfully" rewrote
+#      it, inlining every pin assignment from Analogue's pocket.tcl and dropping
+#      a constraint line. The seed is restored at the end here.
+#
+#   1b. NOTHING ELSE MAY RUN A QUARTUS FLOW while this is going. The per-seed
+#      fits reuse whatever netlist is in db/, so a concurrent full compile
+#      silently swaps the design out from under the sweep. That is how a
+#      half-fixed bitstream once reached the SD card.
 #
 #   2. It refuses to start on a dirty tree, and it checks each build actually
 #      succeeded before reading a slack number. The first version did neither,
@@ -58,5 +64,8 @@ for seed in $SEEDS; do
 	[ -f output_files/ngpc_pocket.rbf ] && cp output_files/ngpc_pocket.rbf "../$OUT/seed$seed.rbf"
 done
 
+cd ..
+git checkout -- projects/ngpc_pocket.qsf
+
 echo "--- results (worst corner, higher is better) ---"
-sort -k2 -g -r "../$OUT/results.txt"
+sort -k2 -g -r "$OUT/results.txt"
