@@ -3,7 +3,7 @@
 A port of [MiSTer-devel/NGPC_MiSTer](https://github.com/MiSTer-devel/NGPC_MiSTer)
 (Kitrinx / Jamie Blanks) to openFPGA.
 
-**Status: work in progress. Not yet run on hardware.**
+**Status: running on hardware. BIOS, cartridges and saves work; sleep does not yet.**
 
 ## Layout
 
@@ -107,10 +107,10 @@ controls, video and audio pads.
 
 | | |
 |---|---|
-| 1 | BIOS boots with the cartridge slot empty. The stock BIOS treats that as a valid launch target -- it is how the built-in utilities are reached. **Current.** |
-| 2 | Cartridge in SDRAM. Upstream's `sdram.sv` is a generic 3-port SDR controller whose pin shape already matches the Pocket's `dram`; the DDR3 "pristine shadow" becomes a second region of the same 64 MB chip. |
-| 3 | `.sav` persistence over APF data slots, and the host RTC so the BIOS date is right. |
-| 4 | Savestates and sleep. `ngp_savestate` already exposes a DDR-shaped bus; what is missing is a controller that streams it over the bridge instead. |
+| 1 | BIOS boots, both console models. **Done, verified on hardware.** |
+| 2 | Cartridges in SDRAM, 512 KB to 4 MB. **Done, verified on hardware.** Upstream's `sdram.sv` ported with a clock parameter; the Pocket has no SDRAM chip select, which is safe only because the controller's one nCS-high encoding also drives RAS/CAS/WE high. |
+| 3 | Cartridge saves. **Built, untested.** Upstream's overlay does not fit -- see `ngpc_cart_save.sv`. Replaced by a dirty-block bitmap and a fixed-order sparse format. Not MiSTer `.sav` compatible, by decision. |
+| 4 | Savestates and sleep. **Not started.** On the Pocket these are the same feature: sleep is host commands 0x00A0/0x00A4. The engine is already in the machine, tied off with `PHASE 4` markers; what is missing is a controller that streams ~41 KB over the bridge, and a decision about how cartridge flash survives the power-down. |
 
 ## Licensing
 
