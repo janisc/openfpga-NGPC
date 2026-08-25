@@ -1,0 +1,15 @@
+# Quartus build products
+projects/db/
+projects/incremental_db/
+projects/output_files/
+projects/*.qws
+projects/build.log
+fit/
+dist/
+
+# Reference checkouts, not part of this port
+ref-nes/
+utils/
+
+# Upstream is cloned by scripts/setup.sh and patched from patches/
+upstream/

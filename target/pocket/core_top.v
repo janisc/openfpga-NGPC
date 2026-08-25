@@ -1,0 +1,778 @@
+//
+// NGPC for Analogue Pocket -- user core top level.
+//
+// Instantiated by the real top level, apf_top. The port list below is APF's
+// and is not ours to change; everything after it is this core.
+//
+// The machine itself lives in ngpc_machine.sv, which is the Pocket's answer to
+// upstream's NGPC.sv. This file is the framework face: clocks, the bridge, data
+// slots, controls, and the video/audio pads.
+//
+`default_nettype none
+
+module core_top (
+
+    //
+    // physical connections
+    //
+
+    ///////////////////////////////////////////////////
+    // clock inputs 74.25mhz. not phase aligned, so treat these domains as asynchronous
+
+    input wire clk_74a,  // mainclk1
+    input wire clk_74b,  // mainclk1
+
+    ///////////////////////////////////////////////////
+    // cartridge interface
+    // switches between 3.3v and 5v mechanically
+    // output enable for multibit translators controlled by pic32
+
+    // GBA AD[15:8]
+    inout  wire [7:0] cart_tran_bank2,
+    output wire       cart_tran_bank2_dir,
+
+    // GBA AD[7:0]
+    inout  wire [7:0] cart_tran_bank3,
+    output wire       cart_tran_bank3_dir,
+
+    // GBA A[23:16]
+    inout  wire [7:0] cart_tran_bank1,
+    output wire       cart_tran_bank1_dir,
+
+    // GBA [7] PHI#
+    // GBA [6] WR#
+    // GBA [5] RD#
+    // GBA [4] CS1#/CS#
+    //     [3:0] unwired
+    inout  wire [7:4] cart_tran_bank0,
+    output wire       cart_tran_bank0_dir,
+
+    // GBA CS2#/RES#
+    inout  wire cart_tran_pin30,
+    output wire cart_tran_pin30_dir,
+    // when GBC cart is inserted, this signal when low or weak will pull GBC /RES low with a special circuit
+    // the goal is that when unconfigured, the FPGA weak pullups won't interfere.
+    // thus, if GBC cart is inserted, FPGA must drive this high in order to let the level translators
+    // and general IO drive this pin.
+    output wire cart_pin30_pwroff_reset,
+
+    // GBA IRQ/DRQ
+    inout  wire cart_tran_pin31,
+    output wire cart_tran_pin31_dir,
+
+    // infrared
+    input  wire port_ir_rx,
+    output wire port_ir_tx,
+    output wire port_ir_rx_disable,
+
+    // GBA link port
+    inout  wire port_tran_si,
+    output wire port_tran_si_dir,
+    inout  wire port_tran_so,
+    output wire port_tran_so_dir,
+    inout  wire port_tran_sck,
+    output wire port_tran_sck_dir,
+    inout  wire port_tran_sd,
+    output wire port_tran_sd_dir,
+
+    ///////////////////////////////////////////////////
+    // cellular psram 0 and 1, two chips (64mbit x2 dual die per chip)
+
+    output wire [21:16] cram0_a,
+    inout  wire [ 15:0] cram0_dq,
+    input  wire         cram0_wait,
+    output wire         cram0_clk,
+    output wire         cram0_adv_n,
+    output wire         cram0_cre,
+    output wire         cram0_ce0_n,
+    output wire         cram0_ce1_n,
+    output wire         cram0_oe_n,
+    output wire         cram0_we_n,
+    output wire         cram0_ub_n,
+    output wire         cram0_lb_n,
+
+    output wire [21:16] cram1_a,
+    inout  wire [ 15:0] cram1_dq,
+    input  wire         cram1_wait,
+    output wire         cram1_clk,
+    output wire         cram1_adv_n,
+    output wire         cram1_cre,
+    output wire         cram1_ce0_n,
+    output wire         cram1_ce1_n,
+    output wire         cram1_oe_n,
+    output wire         cram1_we_n,
+    output wire         cram1_ub_n,
+    output wire         cram1_lb_n,
+
+    ///////////////////////////////////////////////////
+    // sdram, 512mbit 16bit
+
+    output wire [12:0] dram_a,
+    output wire [ 1:0] dram_ba,
+    inout  wire [15:0] dram_dq,
+    output wire [ 1:0] dram_dqm,
+    output wire        dram_clk,
+    output wire        dram_cke,
+    output wire        dram_ras_n,
+    output wire        dram_cas_n,
+    output wire        dram_we_n,
+
+    ///////////////////////////////////////////////////
+    // sram, 1mbit 16bit
+
+    output wire [16:0] sram_a,
+    inout  wire [15:0] sram_dq,
+    output wire        sram_oe_n,
+    output wire        sram_we_n,
+    output wire        sram_ub_n,
+    output wire        sram_lb_n,
+
+    ///////////////////////////////////////////////////
+    // vblank driven by dock for sync in a certain mode
+
+    input wire vblank,
+
+    ///////////////////////////////////////////////////
+    // i/o to 6515D breakout usb uart
+
+    output wire dbg_tx,
+    input  wire dbg_rx,
+
+    ///////////////////////////////////////////////////
+    // i/o pads near jtag connector user can solder to
+
+    output wire user1,
+    input  wire user2,
+
+    ///////////////////////////////////////////////////
+    // RFU internal i2c bus
+
+    inout  wire aux_sda,
+    output wire aux_scl,
+
+    ///////////////////////////////////////////////////
+    // RFU, do not use
+    output wire vpll_feed,
+
+
+    //
+    // logical connections
+    //
+
+    ///////////////////////////////////////////////////
+    // video, audio output to scaler
+    output wire [23:0] video_rgb,
+    output wire        video_rgb_clock,
+    output wire        video_rgb_clock_90,
+    output wire        video_de,
+    output wire        video_skip,
+    output wire        video_vs,
+    output wire        video_hs,
+
+    output wire audio_mclk,
+    input  wire audio_adc,
+    output wire audio_dac,
+    output wire audio_lrck,
+
+    ///////////////////////////////////////////////////
+    // bridge bus connection
+    // synchronous to clk_74a
+    output wire        bridge_endian_little,
+    input  wire [31:0] bridge_addr,
+    input  wire        bridge_rd,
+    output reg  [31:0] bridge_rd_data,
+    input  wire        bridge_wr,
+    input  wire [31:0] bridge_wr_data,
+
+    ///////////////////////////////////////////////////
+    // controller data
+    //
+    // key bitmap:
+    //   [0]    dpad_up
+    //   [1]    dpad_down
+    //   [2]    dpad_left
+    //   [3]    dpad_right
+    //   [4]    face_a
+    //   [5]    face_b
+    //   [6]    face_x
+    //   [7]    face_y
+    //   [8]    trig_l1
+    //   [9]    trig_r1
+    //   [10]   trig_l2
+    //   [11]   trig_r2
+    //   [12]   trig_l3
+    //   [13]   trig_r3
+    //   [14]   face_select
+    //   [15]   face_start
+    // joy values - unsigned
+    //   [ 7: 0] lstick_x
+    //   [15: 8] lstick_y
+    //   [23:16] rstick_x
+    //   [31:24] rstick_y
+    // trigger values - unsigned
+    //   [ 7: 0] ltrig
+    //   [15: 8] rtrig
+    //
+    input wire [15:0] cont1_key,
+    input wire [15:0] cont2_key,
+    input wire [15:0] cont3_key,
+    input wire [15:0] cont4_key,
+    input wire [31:0] cont1_joy,
+    input wire [31:0] cont2_joy,
+    input wire [31:0] cont3_joy,
+    input wire [31:0] cont4_joy,
+    input wire [15:0] cont1_trig,
+    input wire [15:0] cont2_trig,
+    input wire [15:0] cont3_trig,
+    input wire [15:0] cont4_trig
+
+);
+
+  // ----------------------------------------------------------------------
+  //  Unused physical connections
+  // ----------------------------------------------------------------------
+
+  // No IR: turn off the LED and disable the receive circuit to save power.
+  assign port_ir_tx              = 0;
+  assign port_ir_rx_disable      = 1;
+
+  assign bridge_endian_little    = 0;
+
+  // No cartridge adapter. Directions are 0:IN, 1:OUT.
+  assign cart_tran_bank3         = 8'hzz;
+  assign cart_tran_bank3_dir     = 1'b0;
+  assign cart_tran_bank2         = 8'hzz;
+  assign cart_tran_bank2_dir     = 1'b0;
+  assign cart_tran_bank1         = 8'hzz;
+  assign cart_tran_bank1_dir     = 1'b0;
+  assign cart_tran_bank0         = 4'hf;
+  assign cart_tran_bank0_dir     = 1'b1;
+  assign cart_tran_pin30         = 1'b0;
+  assign cart_tran_pin30_dir     = 1'bz;
+  assign cart_pin30_pwroff_reset = 1'b0;
+  assign cart_tran_pin31         = 1'bz;
+  assign cart_tran_pin31_dir     = 1'b0;
+
+  // The NGP link port is a real feature of the machine and the core models it
+  // (ngp_sio, 19200 baud). Wiring it to the Pocket's link connector is a later
+  // exercise; for now the machine sees an unplugged cable, which ngpc_machine
+  // states as the pad pull-ups rather than as a tie-off.
+  assign port_tran_so            = 1'bz;
+  assign port_tran_so_dir        = 1'b0;
+  assign port_tran_si            = 1'bz;
+  assign port_tran_si_dir        = 1'b0;
+  assign port_tran_sck           = 1'bz;
+  assign port_tran_sck_dir       = 1'b0;
+  assign port_tran_sd            = 1'bz;
+  assign port_tran_sd_dir        = 1'b0;
+
+  // PHASE 2 will claim `dram` for the cartridge backing store. The PSRAM and
+  // SRAM stay unused: the cartridge is at most 4 MB and the SDRAM is 64 MB, so
+  // the pristine shadow the MiSTer core keeps in DDR3 fits alongside the live
+  // image in the same chip.
+  assign dram_a                  = 'h0;
+  assign dram_ba                 = 'h0;
+  assign dram_dq                 = {16{1'bZ}};
+  assign dram_dqm                = 'h0;
+  assign dram_clk                = 'h0;
+  assign dram_cke                = 'h0;
+  assign dram_ras_n              = 'h1;
+  assign dram_cas_n              = 'h1;
+  assign dram_we_n               = 'h1;
+
+  assign cram0_a                 = 'h0;
+  assign cram0_dq                = {16{1'bZ}};
+  assign cram0_clk               = 0;
+  assign cram0_adv_n             = 1;
+  assign cram0_cre               = 0;
+  assign cram0_ce0_n             = 1;
+  assign cram0_ce1_n             = 1;
+  assign cram0_oe_n              = 1;
+  assign cram0_we_n              = 1;
+  assign cram0_ub_n              = 1;
+  assign cram0_lb_n              = 1;
+
+  assign cram1_a                 = 'h0;
+  assign cram1_dq                = {16{1'bZ}};
+  assign cram1_clk               = 0;
+  assign cram1_adv_n             = 1;
+  assign cram1_cre               = 0;
+  assign cram1_ce0_n             = 1;
+  assign cram1_ce1_n             = 1;
+  assign cram1_oe_n              = 1;
+  assign cram1_we_n              = 1;
+  assign cram1_ub_n              = 1;
+  assign cram1_lb_n              = 1;
+
+  assign sram_a                  = 'h0;
+  assign sram_dq                 = {16{1'bZ}};
+  assign sram_oe_n               = 1;
+  assign sram_we_n               = 1;
+  assign sram_ub_n               = 1;
+  assign sram_lb_n               = 1;
+
+  assign dbg_tx                  = 1'bZ;
+  assign user1                   = 1'bZ;
+  assign aux_scl                 = 1'bZ;
+  assign vpll_feed               = 1'bZ;
+
+  // ----------------------------------------------------------------------
+  //  Bridge read mux
+  // ----------------------------------------------------------------------
+
+  always @(*) begin
+    casex (bridge_addr)
+      default: begin
+        bridge_rd_data <= 0;
+      end
+      32'hF8xxxxxx: begin
+        bridge_rd_data <= cmd_bridge_rd_data;
+      end
+    endcase
+  end
+
+  // ----------------------------------------------------------------------
+  //  Settings
+  // ----------------------------------------------------------------------
+  //
+  // Written by APF from interact.json, in clk_74a. Each one is the Pocket's
+  // stand-in for a CONF_STR status bit; the comment gives the MiSTer bit so the
+  // two menus can be kept in step.
+
+  reg [1:0] opt_system = 2'd0;      // status[2:1]  0 NGPC, 1 Auto, 2 NGP
+  reg       opt_language_jp = 0;    // status[3]
+  reg [2:0] opt_palette = 3'd0;     // status[16:14]
+  reg       opt_skip_anim = 0;      // !status[19]
+  reg       opt_use_host_rtc = 0;   // !status[17]   PHASE 3: needs the APF RTC
+  reg       opt_auto_power = 1;     // status[18]
+  reg       opt_lcd_response = 0;   // status[20]    accepted, presenter ignores
+
+  // Which of the two legal ways to present a pixel-per-N-clocks raster to APF
+  // this build uses. Analogue documents `video_skip` as "may be optionally
+  // asserted while DE is high to prevent latching the pixel for that cycle",
+  // which says DE stays high across the window and skip does the gating (0).
+  // The community notes instead warn that DE must be high "exclusively during
+  // pixels you've specified in video.json", which reads as DE high exactly 160
+  // times per line (1). Both are one flop apart, and the hardware settles it in
+  // a second, so it is a setting rather than a guess baked into a bitstream.
+  reg       opt_de_gated = 0;
+
+  reg [31:0] reset_delay = 0;
+  wire       external_reset = reset_delay > 0;
+
+  always @(posedge clk_74a) begin
+    if (reset_delay > 0) reset_delay <= reset_delay - 1;
+
+    if (bridge_wr) begin
+      case (bridge_addr)
+        32'h050: reset_delay      <= 32'h100000;
+        32'h100: opt_system       <= bridge_wr_data[1:0];
+        32'h104: opt_language_jp  <= bridge_wr_data[0];
+        32'h108: opt_palette      <= bridge_wr_data[2:0];
+        32'h10C: opt_skip_anim    <= bridge_wr_data[0];
+        32'h110: opt_auto_power   <= bridge_wr_data[0];
+        32'h114: opt_lcd_response <= bridge_wr_data[0];
+        32'h118: opt_use_host_rtc <= bridge_wr_data[0];
+        32'h11C: opt_de_gated     <= bridge_wr_data[0];
+      endcase
+    end
+  end
+
+  // Settings change orders of magnitude more slowly than they are read and are
+  // consumed as level inputs, so two flops each is the whole crossing.
+  wire [1:0] opt_system_s;
+  wire       opt_language_jp_s;
+  wire [2:0] opt_palette_s;
+  wire       opt_skip_anim_s;
+  wire       opt_use_host_rtc_s;
+  wire       opt_auto_power_s;
+  wire       opt_lcd_response_s;
+  wire       opt_de_gated_s;
+
+  synch_3 #(
+      .WIDTH(11)
+  ) settings_sync (
+      {opt_system, opt_language_jp, opt_palette, opt_skip_anim,
+       opt_use_host_rtc, opt_auto_power, opt_lcd_response, opt_de_gated},
+      {opt_system_s, opt_language_jp_s, opt_palette_s, opt_skip_anim_s,
+       opt_use_host_rtc_s, opt_auto_power_s, opt_lcd_response_s, opt_de_gated_s},
+      clk_sys
+  );
+
+  // ----------------------------------------------------------------------
+  //  Host/target command handler
+  // ----------------------------------------------------------------------
+
+  wire        reset_n;
+  wire [31:0] cmd_bridge_rd_data;
+
+  wire status_boot_done  = pll_core_locked;
+  wire status_setup_done = pll_core_locked;
+  wire status_running    = reset_n;
+
+  wire        dataslot_requestread;
+  wire [15:0] dataslot_requestread_id;
+  wire        dataslot_requestread_ack = 1;
+  wire        dataslot_requestread_ok = 1;
+
+  wire        dataslot_requestwrite;
+  wire [15:0] dataslot_requestwrite_id;
+  wire        dataslot_requestwrite_ack = 1;
+  wire        dataslot_requestwrite_ok = 1;
+
+  wire        dataslot_allcomplete;
+
+  // PHASE 4. The machine already carries the whole savestate engine; what is
+  // missing is the controller that streams it over the bridge instead of into
+  // MiSTer's DDR3. Until that exists, tell APF the core cannot make states --
+  // and therefore cannot sleep -- rather than letting it try.
+  wire        savestate_supported = 0;
+  wire [31:0] savestate_addr = 32'h40000000;
+  wire [31:0] savestate_size = 32'd0;
+  wire [31:0] savestate_maxloadsize = savestate_size;
+
+  wire        savestate_start;
+  wire        savestate_start_ack = 0;
+  wire        savestate_start_busy = 0;
+  wire        savestate_start_ok = 0;
+  wire        savestate_start_err = 0;
+
+  wire        savestate_load;
+  wire        savestate_load_ack = 0;
+  wire        savestate_load_busy = 0;
+  wire        savestate_load_ok = 0;
+  wire        savestate_load_err = 0;
+
+  core_bridge_cmd icb (
+      .clk    (clk_74a),
+      .reset_n(reset_n),
+
+      .bridge_endian_little(bridge_endian_little),
+      .bridge_addr         (bridge_addr),
+      .bridge_rd           (bridge_rd),
+      .bridge_rd_data      (cmd_bridge_rd_data),
+      .bridge_wr           (bridge_wr),
+      .bridge_wr_data      (bridge_wr_data),
+
+      .status_boot_done (status_boot_done),
+      .status_setup_done(status_setup_done),
+      .status_running   (status_running),
+
+      .dataslot_requestread    (dataslot_requestread),
+      .dataslot_requestread_id (dataslot_requestread_id),
+      .dataslot_requestread_ack(dataslot_requestread_ack),
+      .dataslot_requestread_ok (dataslot_requestread_ok),
+
+      .dataslot_requestwrite    (dataslot_requestwrite),
+      .dataslot_requestwrite_id (dataslot_requestwrite_id),
+      .dataslot_requestwrite_ack(dataslot_requestwrite_ack),
+      .dataslot_requestwrite_ok (dataslot_requestwrite_ok),
+
+      .dataslot_allcomplete(dataslot_allcomplete),
+
+      .savestate_supported  (savestate_supported),
+      .savestate_addr       (savestate_addr),
+      .savestate_size       (savestate_size),
+      .savestate_maxloadsize(savestate_maxloadsize),
+
+      .savestate_start     (savestate_start),
+      .savestate_start_ack (savestate_start_ack),
+      .savestate_start_busy(savestate_start_busy),
+      .savestate_start_ok  (savestate_start_ok),
+      .savestate_start_err (savestate_start_err),
+
+      .savestate_load     (savestate_load),
+      .savestate_load_ack (savestate_load_ack),
+      .savestate_load_busy(savestate_load_busy),
+      .savestate_load_ok  (savestate_load_ok),
+      .savestate_load_err (savestate_load_err),
+
+      .datatable_addr(10'd0),
+      .datatable_wren(1'b0),
+      .datatable_data(32'd0),
+      .datatable_q   ()
+  );
+
+  // ----------------------------------------------------------------------
+  //  BIOS load
+  // ----------------------------------------------------------------------
+  //
+  // Slot 0 is the colour BIOS (MiSTer's boot0.rom), slot 1 the mono one
+  // (boot1.rom). MiSTer distinguishes them by ioctl_index; here they are told
+  // apart by which bridge address the words arrive on, and `bios_sel` picks the
+  // destination BRAM inside the machine.
+
+  reg is_downloading = 0;
+
+  always @(posedge clk_74a) begin
+    if (dataslot_requestwrite) is_downloading <= 1;
+    else if (dataslot_allcomplete) is_downloading <= 0;
+  end
+
+  wire bios_downloading;
+
+  synch_3 download_sync (
+      is_downloading,
+      bios_downloading,
+      clk_sys
+  );
+
+  // The two images get their own bridge addresses and their own loader rather
+  // than sharing one and switching on the slot id. Sharing would work almost
+  // always: APF finishes streaming a slot before it announces the next one. But
+  // the loader crosses into clk_sys through a FIFO, so the last words of the
+  // colour image can still be draining when the id for the mono image arrives,
+  // and those words would land in the wrong ROM. Two addresses make the
+  // destination a property of the data itself, and the race cannot exist.
+  //
+  // OUTPUT_WORD_SIZE 2 reproduces hps_io's WIDE(1) behaviour exactly: with
+  // bridge_endian_little low the loader byte-swaps, so write_data is
+  // {file_byte1, file_byte0} and write_addr counts bytes -- the same little
+  // endian 16-bit word and the same addr[15:1] the MiSTer top level feeds the
+  // BIOS BRAM.
+  wire        bios0_wr_raw, bios1_wr_raw;
+  wire [27:0] bios0_addr_raw, bios1_addr_raw;
+  wire [15:0] bios0_data_raw, bios1_data_raw;
+
+  data_loader #(
+      .ADDRESS_MASK_UPPER_4(4'h1),
+      .OUTPUT_WORD_SIZE(2)
+  ) bios0_loader (
+      .clk_74a   (clk_74a),
+      .clk_memory(clk_sys),
+
+      .bridge_wr          (bridge_wr),
+      .bridge_endian_little(bridge_endian_little),
+      .bridge_addr        (bridge_addr),
+      .bridge_wr_data     (bridge_wr_data),
+
+      .write_en  (bios0_wr_raw),
+      .write_addr(bios0_addr_raw),
+      .write_data(bios0_data_raw)
+  );
+
+  data_loader #(
+      .ADDRESS_MASK_UPPER_4(4'h2),
+      .OUTPUT_WORD_SIZE(2)
+  ) bios1_loader (
+      .clk_74a   (clk_74a),
+      .clk_memory(clk_sys),
+
+      .bridge_wr          (bridge_wr),
+      .bridge_endian_little(bridge_endian_little),
+      .bridge_addr        (bridge_addr),
+      .bridge_wr_data     (bridge_wr_data),
+
+      .write_en  (bios1_wr_raw),
+      .write_addr(bios1_addr_raw),
+      .write_data(bios1_data_raw)
+  );
+
+  // A BIOS image is 64 KiB. Guard the write so a longer file cannot wrap onto
+  // the start of the ROM, which is what the MiSTer top level's address guard
+  // does.
+  wire [27:0] bios_ld_addr = bios1_wr_raw ? bios1_addr_raw : bios0_addr_raw;
+
+  wire        bios_sel   = bios1_wr_raw;
+  wire        bios_wr    = (bios0_wr_raw || bios1_wr_raw) && (bios_ld_addr < 28'h10000);
+  wire [14:0] bios_addr  = bios_ld_addr[15:1];
+  wire [15:0] bios_ld_data = bios1_wr_raw ? bios1_data_raw : bios0_data_raw;
+
+  // ----------------------------------------------------------------------
+  //  Controls
+  // ----------------------------------------------------------------------
+  //
+  // cont1_key is the APF layout: 0 up, 1 down, 2 left, 3 right, 4 A, 5 B,
+  // 6 X, 7 Y, 8 L1, 9 R1, ... 14 select, 15 start.
+  //
+  // ngpc_machine wants the MiSTer joystick_0 order: 0 right, 1 left, 2 down,
+  // 3 up, 4 A, 5 B, 6 Option, 7 Power.
+
+  wire [15:0] cont1_key_s;
+
+  synch_3 #(
+      .WIDTH(16)
+  ) controls_sync (
+      cont1_key,
+      cont1_key_s,
+      clk_sys
+  );
+
+  wire [7:0] joystick = {
+      cont1_key_s[14],  // Power  <- Select
+      cont1_key_s[15],  // Option <- Start
+      cont1_key_s[5],   // B
+      cont1_key_s[4],   // A
+      cont1_key_s[3],   // Right
+      cont1_key_s[2],   // Left
+      cont1_key_s[1],   // Down
+      cont1_key_s[0]    // Up
+  };
+
+  // ----------------------------------------------------------------------
+  //  Reset
+  // ----------------------------------------------------------------------
+
+  wire external_reset_s;
+
+  synch_3 reset_sync (
+      external_reset,
+      external_reset_s,
+      clk_sys
+  );
+
+  wire reset_in = external_reset_s || ~pll_core_locked;
+
+  // ----------------------------------------------------------------------
+  //  The machine
+  // ----------------------------------------------------------------------
+
+  wire        ce_pix;
+  wire [7:0]  vga_r, vga_g, vga_b;
+  wire        vga_de, vga_hs, vga_vs, vga_hbl, vga_vbl;
+  wire [15:0] audio_l, audio_r;
+  wire        led_user;
+
+  ngpc_machine machine (
+      .clk_sys (clk_sys),
+      .reset_in(reset_in),
+
+      .opt_system      (opt_system_s),
+      .opt_language_jp (opt_language_jp_s),
+      .opt_palette     (opt_palette_s),
+      .opt_skip_anim   (opt_skip_anim_s),
+      .opt_use_host_rtc(opt_use_host_rtc_s),
+      .opt_auto_power  (opt_auto_power_s),
+      .opt_lcd_response(opt_lcd_response_s),
+
+      .bios_downloading(bios_downloading),
+      .bios_sel        (bios_sel),
+      .bios_wr         (bios_wr),
+      .bios_addr       (bios_addr),
+      .bios_data       (bios_ld_data),
+
+      // PHASE 3: build this from APF host command 0x0090 in the MSM6242B
+      // packet shape ngp_host_clock expects. Until then opt_use_host_rtc
+      // defaults low and the BIOS seeds its own default date.
+      .hps_rtc(65'd0),
+
+      .joystick(joystick),
+
+      .ce_pix (ce_pix),
+      .vga_r  (vga_r),
+      .vga_g  (vga_g),
+      .vga_b  (vga_b),
+      .vga_de (vga_de),
+      .vga_hs (vga_hs),
+      .vga_vs (vga_vs),
+      .vga_hbl(vga_hbl),
+      .vga_vbl(vga_vbl),
+
+      .audio_l(audio_l),
+      .audio_r(audio_r),
+
+      .led_user(led_user)
+  );
+
+  // ----------------------------------------------------------------------
+  //  Video
+  // ----------------------------------------------------------------------
+  //
+  // The core's raster goes out as-is: 515 dots x 199 lines at clk_sys/8, with
+  // 160 x 152 active. video_rgb_clock is clk_sys itself, so nothing crosses a
+  // clock domain here; `video_skip` suppresses the latch on the seven of every
+  // eight cycles that do not carry a pixel, and on the dots inside the active
+  // window that the panel spends on its /3 cadence. The Pocket therefore sees
+  // exactly 160 pixels per line.
+
+  assign video_rgb_clock    = clk_sys;
+  assign video_rgb_clock_90 = clk_sys_90;
+
+  reg        video_de_reg;
+  reg        video_skip_reg;
+  reg        video_hs_reg;
+  reg        video_vs_reg;
+  reg [23:0] video_rgb_reg;
+
+  assign video_de   = video_de_reg;
+  assign video_skip = video_skip_reg;
+  assign video_hs   = video_hs_reg;
+  assign video_vs   = video_vs_reg;
+  assign video_rgb  = video_rgb_reg;
+
+  reg hs_prev;
+  reg vs_prev;
+  reg [2:0] hs_delay;
+
+  always @(posedge clk_sys) begin
+    video_hs_reg   <= 0;
+    video_de_reg   <= 0;
+    video_skip_reg <= 0;
+    video_rgb_reg  <= 24'h0;
+
+    if (vga_de && (ce_pix || ~opt_de_gated_s)) begin
+      video_de_reg   <= 1;
+      video_skip_reg <= ~ce_pix && ~opt_de_gated_s;
+      video_rgb_reg  <= {vga_r, vga_g, vga_b};
+    end
+
+    // Hold HSync off for a few cycles after the core raises it so it cannot
+    // land on the same cycle as VSync.
+    if (hs_delay > 0)  hs_delay     <= hs_delay - 1;
+    if (hs_delay == 1) video_hs_reg <= 1;
+    if (~hs_prev && vga_hs) hs_delay <= 7;
+
+    video_vs_reg <= ~vs_prev && vga_vs;
+
+    hs_prev <= vga_hs;
+    vs_prev <= vga_vs;
+  end
+
+  // ----------------------------------------------------------------------
+  //  Audio
+  // ----------------------------------------------------------------------
+
+  sound_i2s #(
+      .CHANNEL_WIDTH(16),
+      .SIGNED_INPUT (1)
+  ) sound (
+      .clk_74a  (clk_74a),
+      .clk_audio(clk_sys),
+
+      .audio_l(audio_l),
+      .audio_r(audio_r),
+
+      .audio_mclk(audio_mclk),
+      .audio_lrck(audio_lrck),
+      .audio_dac (audio_dac)
+  );
+
+  // ----------------------------------------------------------------------
+  //  Clocks
+  // ----------------------------------------------------------------------
+
+  wire clk_sys;      // 49.152 MHz -- the machine, and the APF video clock
+  wire clk_sys_90;   // 49.152 MHz, +90 deg
+  wire clk_ram;      // 98.304 MHz -- PHASE 2, the SDRAM command clock
+  wire clk_dot;      //  6.144 MHz -- spare
+  wire pll_core_locked;
+
+  ngpc_pll mp1 (
+      .refclk  (clk_74a),
+      .rst     (0),
+      .outclk_0(clk_sys),
+      .outclk_1(clk_ram),
+      .outclk_2(clk_sys_90),
+      .outclk_3(clk_dot),
+      .locked  (pll_core_locked)
+  );
+
+  wire unused_ok = &{1'b0, dataslot_requestread, dataslot_requestread_id,
+                     savestate_start, savestate_load, clk_ram, clk_dot,
+                     led_user, vga_hbl, vga_vbl, audio_adc, dbg_rx, user2,
+                     cont1_joy, cont2_joy, cont3_joy, cont4_joy,
+                     cont1_trig, cont2_trig, cont3_trig, cont4_trig,
+                     cont2_key, cont3_key, cont4_key, vblank, cram0_wait,
+                     cram1_wait, port_ir_rx, 1'b0};
+
+endmodule

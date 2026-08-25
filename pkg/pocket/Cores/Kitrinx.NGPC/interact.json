@@ -1,0 +1,133 @@
+{
+  "interact": {
+    "magic": "APF_VER_1",
+    "variables": [
+      {
+        "name": "Reset",
+        "id": 10,
+        "type": "action",
+        "enabled": true,
+        "address": "0x50",
+        "value": 1
+      },
+      {
+        "name": "System",
+        "id": 20,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "address": "0x100",
+        "defaultval": 0,
+        "options": [
+          {
+            "value": 0,
+            "name": "Color"
+          },
+          {
+            "value": 1,
+            "name": "Auto"
+          },
+          {
+            "value": 2,
+            "name": "Mono"
+          }
+        ]
+      },
+      {
+        "name": "Language",
+        "id": 21,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "address": "0x104",
+        "defaultval": 0,
+        "options": [
+          {
+            "value": 0,
+            "name": "English"
+          },
+          {
+            "value": 1,
+            "name": "Japanese"
+          }
+        ]
+      },
+      {
+        "name": "Mono Palette",
+        "id": 22,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "address": "0x108",
+        "defaultval": 0,
+        "options": [
+          {
+            "value": 0,
+            "name": "B&W"
+          },
+          {
+            "value": 1,
+            "name": "Red"
+          },
+          {
+            "value": 2,
+            "name": "Green"
+          },
+          {
+            "value": 3,
+            "name": "Blue"
+          },
+          {
+            "value": 4,
+            "name": "Classic"
+          }
+        ]
+      },
+      {
+        "name": "Skip BIOS Animation",
+        "id": 23,
+        "type": "check",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "address": "0x10C",
+        "defaultval": 0,
+        "value": 1
+      },
+      {
+        "name": "Automatic Power On",
+        "id": 24,
+        "type": "check",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "address": "0x110",
+        "defaultval": 1,
+        "value": 1
+      },
+      {
+        "name": "Video Mode (test)",
+        "id": 30,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "address": "0x11C",
+        "defaultval": 0,
+        "options": [
+          {
+            "value": 0,
+            "name": "DE + skip"
+          },
+          {
+            "value": 1,
+            "name": "DE gated"
+          }
+        ]
+      }
+    ]
+  }
+}
