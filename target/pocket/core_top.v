@@ -348,8 +348,14 @@ module core_top (
   // which says DE stays high across the window and skip does the gating (0).
   // The community notes instead warn that DE must be high "exclusively during
   // pixels you've specified in video.json", which reads as DE high exactly 160
-  // times per line (1). Both are one flop apart, and the hardware settles it in
-  // a second, so it is a setting rather than a guess baked into a bitstream.
+  // times per line (1).
+  //
+  // ANSWERED on hardware, 2026-08-25: mode 0 is correct. A Pocket running
+  // firmware 2.6 displays the native 515 x 199 raster correctly with DE held
+  // across the whole active window and `video_skip` suppressing the seven
+  // cycles in eight that carry no new pixel -- picture, geometry and frame rate
+  // all right. Analogue's reading is the operative one. The setting stays
+  // because it costs one flop and it is the only evidence either way.
   reg       opt_de_gated = 0;
 
   reg [31:0] reset_delay = 0;
@@ -628,16 +634,23 @@ module core_top (
       clk_sys
   );
 
-  wire [7:0] joystick = {
-      cont1_key_s[14],  // Power  <- Select
-      cont1_key_s[15],  // Option <- Start
-      cont1_key_s[5],   // B
-      cont1_key_s[4],   // A
-      cont1_key_s[3],   // Right
-      cont1_key_s[2],   // Left
-      cont1_key_s[1],   // Down
-      cont1_key_s[0]    // Up
-  };
+  // Assigned a bit at a time rather than by concatenation, on purpose. The
+  // first version of this was a concatenation whose entries were commented
+  // Right/Left/Down/Up reading downward -- but a concatenation's LAST entry is
+  // bit 0, so the APF indices went in in APF order while carrying MiSTer
+  // labels. The two orders differ by a transpose, and the machine came up
+  // playing Up as Right and Down as Left. Indexed assignment makes the
+  // destination bit explicit and the mistake unrepresentable.
+  wire [7:0] joystick;
+
+  assign joystick[0] = cont1_key_s[3];   // Right
+  assign joystick[1] = cont1_key_s[2];   // Left
+  assign joystick[2] = cont1_key_s[1];   // Down
+  assign joystick[3] = cont1_key_s[0];   // Up
+  assign joystick[4] = cont1_key_s[4];   // A
+  assign joystick[5] = cont1_key_s[5];   // B
+  assign joystick[6] = cont1_key_s[15];  // Option <- Start
+  assign joystick[7] = cont1_key_s[14];  // Power  <- Select
 
   // ----------------------------------------------------------------------
   //  Reset
