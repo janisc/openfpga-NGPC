@@ -63,3 +63,51 @@ foreach {name coll} [list \
 	set_multicycle_path -setup -from $coll -to $pocket_biu_addr_to 2
 	set_multicycle_path -hold  -from $coll -to $pocket_biu_addr_to 1
 }
+
+# ---------------------------------------------------------------------------
+# The rest of the tick-domain storage, as DESTINATIONS.
+#
+# Upstream constrains two destinations: the register file and the BIU address
+# register. Both are chosen for the same reason -- they commit only on a
+# ce_t900_g tick -- and both were enough on grade-7 silicon. Two more members of
+# that same set surface here once the cartridge SDRAM service is competing for
+# placement:
+#
+#   sr    t900_seq.sv, written at 2677 (reset), 2938 and 3155. The latter two
+#         are inside the `else if (ce)` branch opening at 2775 of the always
+#         block at 2673.
+#   st.*  the sequencer state itself, same always block, same ce branch.
+#         Upstream already treats st.* as a ce-qualified SOURCE, so its
+#         tick-only behaviour is upstream's own claim, not a new one.
+#
+# The sources are every collection upstream established plus the three added
+# above. Each is frozen between ticks; none of them is a decode or read hold,
+# which load on every !ce cycle and stay single-cycle timed.
+#
+# The collections named with $ come from upstream's NGPC.sdc, which the project
+# reads first. If upstream renames one, this fails loudly rather than silently
+# dropping an exception.
+
+set pocket_sr_to [get_registers {*|t900_seq:u_seq|sr*}]
+set pocket_st_to [get_registers {*|t900_seq:u_seq|st.*}]
+
+foreach {name coll} [list sr $pocket_sr_to st $pocket_st_to] {
+	if {[get_collection_size $coll] == 0} {
+		post_message -type error "ngpc_pocket_timing.sdc: no TLCS $name storage matched"
+	}
+}
+
+set pocket_tick_sources [list 	$t900_state_mc_from 	$t900_sr_mc_from 	$t900_wr_pend_mc_from 	$t900_int_req_mc_from 	$t900_int_level_mc_from 	$t900_dma_req_mc_from 	$t900_pause_req_mc_from 	$pocket_irq_shadow_from 	$pocket_q_flush_from 	$pocket_q_valid_from]
+
+# st.* is deliberately NOT in this list. It qualifies on the same argument sr
+# does, and adding it is legal -- but measured, it made the design worse:
+# -0.365 ns became -1.390 ns. Marking more paths as two-cycle changes what
+# register retiming chooses to do, and it spent the freedom somewhere that hurt
+# the paths still timed at one cycle. Timing is not monotonic in how much you
+# relax, so this list is what measured best, not what could be justified.
+foreach dest [list $pocket_sr_to] {
+	foreach coll $pocket_tick_sources {
+		set_multicycle_path -setup -from $coll -to $dest 2
+		set_multicycle_path -hold  -from $coll -to $dest 1
+	}
+}

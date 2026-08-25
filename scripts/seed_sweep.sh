@@ -1,26 +1,62 @@
 #!/bin/sh
 # Build with several fitter seeds and record the worst setup slack of each.
 #
-# The design closes at the 85C corner but misses the Slow 0C corner by a
-# fraction of a nanosecond on seed 1. That is placement luck, not a structural
-# problem, so try a few and keep one that passes every corner.
+# Placement is luck at the margins, and this design sits near one. A seed sweep
+# is the cheapest way to buy back a few hundred picoseconds.
+#
+# Two rules this script learned the hard way:
+#
+#   1. It does NOT edit the .qsf. An earlier version rewrote the SEED line
+#      between runs; Quartus noticed the file changing under a live compile,
+#      declared it corrupt, and "helpfully" rewrote it -- inlining every pin
+#      assignment from Analogue's pocket.tcl and dropping a constraint line.
+#      quartus_fit takes --seed on the command line, so nothing on disk moves.
+#
+#   2. It refuses to start on a dirty tree, and it checks each build actually
+#      succeeded before reading a slack number. The first version did neither,
+#      so when a build failed it silently read the previous run's summary and
+#      reported four different seeds with identical slack.
 set -e
-cd "$(dirname "$0")/../projects"
+cd "$(dirname "$0")/.."
 QUARTUS=${QUARTUS:-/f/quartus/quartus/bin64}
-mkdir -p ../dist/seeds
+SEEDS=${SEEDS:-"1 2 3 4 5 6"}
+OUT=builds/seeds
 
-for seed in 2 3 4 5; do
-	sed -i "s/^set_global_assignment -name SEED .*/set_global_assignment -name SEED $seed/" ngpc_pocket.qsf
+if [ -n "$(git status --porcelain -- projects target upstream platform)" ]; then
+	echo "error: uncommitted changes in the build inputs." >&2
+	echo "A sweep takes an hour; make sure it measures something you can reproduce." >&2
+	exit 1
+fi
+
+mkdir -p "$OUT"
+: > "$OUT/results.txt"
+
+cd projects
+"$QUARTUS/quartus_map.exe" ngpc_pocket > "../$OUT/map.log" 2>&1
+
+for seed in $SEEDS; do
 	echo "=== seed $seed ==="
-	"$QUARTUS/quartus_sh.exe" --flow compile ngpc_pocket > "build_seed$seed.log" 2>&1 || true
-	worst=$(grep -A1 "^Type  : Slow.*Setup 'ic|mp1" output_files/ngpc_pocket.sta.summary \
-		| grep "^Slack" | awk '{print $3}' | sort -g | head -1)
-	echo "seed $seed worst clk_sys setup slack: $worst"
-	echo "$seed $worst" >> ../dist/seeds/results.txt
-	if [ -f output_files/ngpc_pocket.rbf ]; then
-		cp output_files/ngpc_pocket.rbf "../dist/seeds/ngpc_pocket_seed$seed.rbf"
+	if ! "$QUARTUS/quartus_fit.exe" --seed="$seed" ngpc_pocket > "../$OUT/fit_$seed.log" 2>&1; then
+		echo "seed $seed: FIT FAILED"
+		echo "$seed FIT_FAILED" >> "../$OUT/results.txt"
+		continue
 	fi
+	if ! "$QUARTUS/quartus_sta.exe" ngpc_pocket > "../$OUT/sta_$seed.log" 2>&1; then
+		echo "seed $seed: STA FAILED"
+		echo "$seed STA_FAILED" >> "../$OUT/results.txt"
+		continue
+	fi
+
+	# Worst setup slack across every corner, not just the hot one: this design
+	# has missed at Slow 0C while passing Slow 85C.
+	worst=$(awk '/^Type .*Setup/ {getline; if ($0 ~ /^Slack/) print $3}' \
+		output_files/ngpc_pocket.sta.summary | sort -g | head -1)
+	echo "seed $seed worst setup slack (all corners): $worst"
+	echo "$seed $worst" >> "../$OUT/results.txt"
+
+	"$QUARTUS/quartus_asm.exe" ngpc_pocket > "../$OUT/asm_$seed.log" 2>&1 || true
+	[ -f output_files/ngpc_pocket.rbf ] && cp output_files/ngpc_pocket.rbf "../$OUT/seed$seed.rbf"
 done
 
-echo "--- results ---"
-cat ../dist/seeds/results.txt
+echo "--- results (worst corner, higher is better) ---"
+sort -k2 -g -r "../$OUT/results.txt"
