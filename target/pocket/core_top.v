@@ -275,8 +275,20 @@ module core_top (
   // there is no pin for it. ngpc_machine's header explains why that is safe
   // with this controller.
 
-  // cram0 is the pristine cartridge shadow -- see ngpc_ddr_psram. cram1 stays
-  // unused and is available for phase 4 if the savestate path ever needs it.
+  // Both PSRAMs are unused. ngpc_ddr_psram exists in the tree and presents
+  // ddram.v's channel interface over cram0, for whenever the savestate path
+  // needs a DDR-shaped memory; the save path here does not.
+  assign cram0_a                 = 'h0;
+  assign cram0_dq                = {16{1'bZ}};
+  assign cram0_clk               = 0;
+  assign cram0_adv_n             = 1;
+  assign cram0_cre               = 0;
+  assign cram0_ce0_n             = 1;
+  assign cram0_ce1_n             = 1;
+  assign cram0_oe_n              = 1;
+  assign cram0_we_n              = 1;
+  assign cram0_ub_n              = 1;
+  assign cram0_lb_n              = 1;
 
   assign cram1_a                 = 'h0;
   assign cram1_dq                = {16{1'bZ}};
@@ -432,7 +444,7 @@ module core_top (
   wire status_running    = reset_n;
 
   wire        dataslot_requestread;
-  wire [15:0] dataslot_requestread_id;  // declared here, driven by the cmd block
+  wire [15:0] dataslot_requestread_id;
   wire        dataslot_requestread_ack = 1;
   wire        dataslot_requestread_ok = 1;
 
@@ -513,7 +525,6 @@ module core_top (
       .datatable_data(32'd0),
       .datatable_q   (),
 
-      .dataslot_requestread_id  (dataslot_requestread_id),
       .dataslot_update          (dataslot_update),
       .dataslot_update_id       (dataslot_update_id),
       .dataslot_update_size     (dataslot_update_size),
@@ -556,26 +567,21 @@ module core_top (
 
   // The overlay needs to know a save file exists and how big it is before it
   // will consider applying one. APF announces that with a data slot update.
-  reg        save_mount_74 = 0;
-  reg [31:0] save_size_74 = 0;
+  reg save_present_74 = 0;
 
   always @(posedge clk_74a) begin
-    save_mount_74 <= 0;
-
     if (dataslot_update && dataslot_update_id == SAVE_SLOT_ID) begin
-      save_size_74  <= dataslot_update_size;
-      save_mount_74 <= 1;
+      save_present_74 <= dataslot_update_size != 0;
     end
   end
 
-  wire        save_mount_s;
-  wire [31:0] save_size_s;
+  // The overlay only needs to know whether a file exists; its size comes from
+  // the header inside it.
+  wire save_present_s;
 
-  synch_3 #(
-      .WIDTH(33)
-  ) save_mount_sync (
-      {save_mount_74, save_size_74},
-      {save_mount_s, save_size_s},
+  synch_3 save_present_sync (
+      save_present_74,
+      save_present_s,
       clk_sys
   );
 
@@ -587,16 +593,16 @@ module core_top (
       clk_sys
   );
 
-  wire [31:0] sd_lba;
+  wire [22:0] sd_lba;
   wire        sd_rd;
   wire        sd_wr;
-  wire        sd_ack;
-  wire [12:0] sd_buff_addr;
-  wire [15:0] sd_buff_dout;
-  wire        sd_buff_wr;
-  wire [15:0] sd_buff_din;
+  wire        sd_busy;
+  wire        sd_err;
+  wire  [7:0] sd_buf_addr;
+  wire [15:0] sd_buf_wdata;
+  wire        sd_buf_we;
+  wire [15:0] sd_buf_rdata;
   wire [31:0] sd_bridge_rd_data;
-  wire        sd_bridge_err;
 
   ngpc_sd_bridge #(
       .SAVE_SLOT_ID(SAVE_SLOT_ID),
@@ -623,16 +629,15 @@ module core_top (
       .target_dataslot_bridgeaddr(target_dataslot_bridgeaddr),
       .target_dataslot_length    (target_dataslot_length),
 
-      .sd_lba_i      (sd_lba),
-      .sd_rd_i       (sd_rd),
-      .sd_wr_i       (sd_wr),
-      .sd_ack_o      (sd_ack),
-      .sd_buff_addr_o(sd_buff_addr),
-      .sd_buff_dout_o(sd_buff_dout),
-      .sd_buff_wr_o  (sd_buff_wr),
-      .sd_buff_din_i (sd_buff_din),
-
-      .err_o(sd_bridge_err)
+      .lba_i      (sd_lba),
+      .rd_i       (sd_rd),
+      .wr_i       (sd_wr),
+      .busy_o     (sd_busy),
+      .err_o      (sd_err),
+      .buf_addr_i (sd_buf_addr),
+      .buf_wdata_i(sd_buf_wdata),
+      .buf_we_i   (sd_buf_we),
+      .buf_rdata_o(sd_buf_rdata)
   );
 
   // ----------------------------------------------------------------------
@@ -867,32 +872,18 @@ module core_top (
       .sd_lba      (sd_lba),
       .sd_rd       (sd_rd),
       .sd_wr       (sd_wr),
-      .sd_ack      (sd_ack),
-      .sd_buff_addr(sd_buff_addr),
-      .sd_buff_dout(sd_buff_dout),
-      .sd_buff_wr  (sd_buff_wr),
-      .sd_buff_din (sd_buff_din),
+      .sd_busy     (sd_busy),
+      .sd_err      (sd_err),
+      .sd_buf_addr (sd_buf_addr),
+      .sd_buf_wdata(sd_buf_wdata),
+      .sd_buf_we   (sd_buf_we),
+      .sd_buf_rdata(sd_buf_rdata),
 
-      .save_mount      (save_mount_s),
-      .save_readonly   (1'b0),
-      .save_size       ({32'd0, save_size_s}),
+      .save_present    (save_present_s),
       .save_request    (save_request),
       .load_request    (load_request),
       .opt_autosave_off(opt_autosave_off_s),
       .host_in_menu    (host_in_menu_s),
-
-      .cram_a    (cram0_a),
-      .cram_dq   (cram0_dq),
-      .cram_wait (cram0_wait),
-      .cram_clk  (cram0_clk),
-      .cram_adv_n(cram0_adv_n),
-      .cram_cre  (cram0_cre),
-      .cram_ce0_n(cram0_ce0_n),
-      .cram_ce1_n(cram0_ce1_n),
-      .cram_oe_n (cram0_oe_n),
-      .cram_we_n (cram0_we_n),
-      .cram_ub_n (cram0_ub_n),
-      .cram_lb_n (cram0_lb_n),
 
       .SDRAM_A   (dram_a),
       .SDRAM_BA  (dram_ba),
@@ -1012,6 +1003,7 @@ module core_top (
                      cont1_joy, cont2_joy, cont3_joy, cont4_joy,
                      cont1_trig, cont2_trig, cont3_trig, cont4_trig,
                      cont2_key, cont3_key, cont4_key, vblank,
-                     cram1_wait, port_ir_rx, sd_bridge_err, 1'b0};
+                     cram0_wait, cram1_wait, port_ir_rx,
+                     dataslot_update_size, 1'b0};
 
 endmodule
