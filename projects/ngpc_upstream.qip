@@ -1,7 +1,7 @@
 # Upstream NGPC RTL, referenced in place from upstream/ so the checkout stays
 # pristine and can be re-pulled. Phase 1 omits the memory and savestate
 # files: rtl/mem/sdram.sv, rtl/mem/ddram.v, rtl/mem/cart_sdram.sv,
-# rtl/cart/ngp_cart_sdram.sv, rtl/cart/ngp_cart_rom.sv and rtl/Savestates/.
+# rtl/Savestates/ files; the memory and cartridge loader are now in.
 
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/cart/flash_die.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/cart/ngp_cart.sv
@@ -70,3 +70,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/video/k2ge_vram.s
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/video/k2ge_vtimer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/video/ngpc_color_profile.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/video/ngpc_crt_framebuffer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/mem/sdram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/mem/cart_sdram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/cart/ngp_cart_sdram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/cart/ngp_cart_rom.sv

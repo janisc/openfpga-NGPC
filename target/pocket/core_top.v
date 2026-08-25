@@ -266,19 +266,14 @@ module core_top (
   assign port_tran_sd            = 1'bz;
   assign port_tran_sd_dir        = 1'b0;
 
-  // PHASE 2 will claim `dram` for the cartridge backing store. The PSRAM and
+  // `dram` is the cartridge backing store, driven by the machine. The PSRAM and
   // SRAM stay unused: the cartridge is at most 4 MB and the SDRAM is 64 MB, so
-  // the pristine shadow the MiSTer core keeps in DDR3 fits alongside the live
-  // image in the same chip.
-  assign dram_a                  = 'h0;
-  assign dram_ba                 = 'h0;
-  assign dram_dq                 = {16{1'bZ}};
-  assign dram_dqm                = 'h0;
-  assign dram_clk                = 'h0;
-  assign dram_cke                = 'h0;
-  assign dram_ras_n              = 'h1;
-  assign dram_cas_n              = 'h1;
-  assign dram_we_n               = 'h1;
+  // the pristine shadow the MiSTer core keeps in DDR3 will fit alongside the
+  // live image in this same chip when phase 3 needs it.
+  //
+  // Note the missing chip select: the Pocket ties SDRAM CS low on the board, so
+  // there is no pin for it. ngpc_machine's header explains why that is safe
+  // with this controller.
 
   assign cram0_a                 = 'h0;
   assign cram0_dq                = {16{1'bZ}};
@@ -502,18 +497,30 @@ module core_top (
   // apart by which bridge address the words arrive on, and `bios_sel` picks the
   // destination BRAM inside the machine.
 
-  reg is_downloading = 0;
+  // Slot 2 is the cartridge. Track it separately from the BIOS slots: the two
+  // hold the machine in reset for different reasons, and a cartridge load is
+  // additionally a cold session that clears work RAM.
+  reg is_downloading_bios = 0;
+  reg is_downloading_cart = 0;
 
   always @(posedge clk_74a) begin
-    if (dataslot_requestwrite) is_downloading <= 1;
-    else if (dataslot_allcomplete) is_downloading <= 0;
+    if (dataslot_requestwrite) begin
+      if (dataslot_requestwrite_id == 16'd2) is_downloading_cart <= 1;
+      else                                   is_downloading_bios <= 1;
+    end else if (dataslot_allcomplete) begin
+      is_downloading_bios <= 0;
+      is_downloading_cart <= 0;
+    end
   end
 
   wire bios_downloading;
+  wire cart_downloading;
 
-  synch_3 download_sync (
-      is_downloading,
-      bios_downloading,
+  synch_3 #(
+      .WIDTH(2)
+  ) download_sync (
+      {is_downloading_bios, is_downloading_cart},
+      {bios_downloading, cart_downloading},
       clk_sys
   );
 
@@ -578,6 +585,29 @@ module core_top (
   wire [14:0] bios_addr  = bios_ld_addr[15:1];
   wire [15:0] bios_ld_data = bios1_wr_raw ? bios1_data_raw : bios0_data_raw;
 
+  // The cartridge stream. Same 16-bit word shape as the BIOS loaders; the
+  // machine buffers it before ngp_cart_rom, which back-pressures.
+  wire        cart_wr;
+  wire [27:0] cart_wr_addr;
+  wire [15:0] cart_wr_data;
+
+  data_loader #(
+      .ADDRESS_MASK_UPPER_4(4'h3),
+      .OUTPUT_WORD_SIZE(2)
+  ) cart_loader (
+      .clk_74a   (clk_74a),
+      .clk_memory(clk_sys),
+
+      .bridge_wr          (bridge_wr),
+      .bridge_endian_little(bridge_endian_little),
+      .bridge_addr        (bridge_addr),
+      .bridge_wr_data     (bridge_wr_data),
+
+      .write_en  (cart_wr),
+      .write_addr(cart_wr_addr),
+      .write_data(cart_wr_data)
+  );
+
   // ----------------------------------------------------------------------
   //  Controls
   // ----------------------------------------------------------------------
@@ -633,8 +663,11 @@ module core_top (
   wire [15:0] audio_l, audio_r;
   wire        led_user;
 
+  wire cart_fifo_overflow;
+
   ngpc_machine machine (
       .clk_sys (clk_sys),
+      .clk_ram (clk_ram),
       .reset_in(reset_in),
 
       .opt_system      (opt_system_s),
@@ -650,6 +683,12 @@ module core_top (
       .bios_wr         (bios_wr),
       .bios_addr       (bios_addr),
       .bios_data       (bios_ld_data),
+
+      .cart_downloading  (cart_downloading),
+      .cart_wr           (cart_wr),
+      .cart_wr_addr      (cart_wr_addr[26:0]),
+      .cart_wr_data      (cart_wr_data),
+      .cart_fifo_overflow(cart_fifo_overflow),
 
       // PHASE 3: build this from APF host command 0x0090 in the MSM6242B
       // packet shape ngp_host_clock expects. Until then opt_use_host_rtc
@@ -670,6 +709,17 @@ module core_top (
 
       .audio_l(audio_l),
       .audio_r(audio_r),
+
+      .SDRAM_A   (dram_a),
+      .SDRAM_BA  (dram_ba),
+      .SDRAM_DQ  (dram_dq),
+      .SDRAM_DQML(dram_dqm[0]),
+      .SDRAM_DQMH(dram_dqm[1]),
+      .SDRAM_CKE (dram_cke),
+      .SDRAM_CLK (dram_clk),
+      .SDRAM_nCAS(dram_cas_n),
+      .SDRAM_nRAS(dram_ras_n),
+      .SDRAM_nWE (dram_we_n),
 
       .led_user(led_user)
   );
@@ -753,7 +803,7 @@ module core_top (
 
   wire clk_sys;      // 49.152 MHz -- the machine, and the APF video clock
   wire clk_sys_90;   // 49.152 MHz, +90 deg
-  wire clk_ram;      // 98.304 MHz -- PHASE 2, the SDRAM command clock
+  wire clk_ram;      // 98.304 MHz -- the SDRAM command clock
   wire clk_dot;      //  6.144 MHz -- spare
   wire pll_core_locked;
 
@@ -767,8 +817,13 @@ module core_top (
       .locked  (pll_core_locked)
   );
 
-  wire unused_ok = &{1'b0, dataslot_requestread, dataslot_requestread_id,
-                     savestate_start, savestate_load, clk_ram, clk_dot,
+  // cart_fifo_overflow is latched but has no reader yet: APF gives a core no
+  // way to raise a diagnostic the user can see, short of putting it in the
+  // picture. It stays wired so the analysis in ngpc_cart_fifo is falsifiable
+  // the moment there is somewhere to report it.
+  wire unused_ok = &{1'b0, cart_fifo_overflow,
+                     dataslot_requestread, dataslot_requestread_id,
+                     savestate_start, savestate_load, clk_dot,
                      led_user, vga_hbl, vga_vbl, audio_adc, dbg_rx, user2,
                      cont1_joy, cont2_joy, cont3_joy, cont4_joy,
                      cont1_trig, cont2_trig, cont3_trig, cont4_trig,
