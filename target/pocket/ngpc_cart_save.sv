@@ -182,6 +182,22 @@ module ngpc_cart_save
 	reg        prev_menu;
 	reg        load_pending;    // apply a save once the cartridge is ready
 
+	// A transfer that stalls used to hold pause_req_o forever, which stops the
+	// machine dead -- the console freezes with no indication why. That is the
+	// worst failure this module can have, because it looks like the emulation
+	// broke rather than the save did.
+	//
+	// Every state here either completes a handshake or advances within a
+	// bounded time; the longest legitimate wait is one APF target command, a
+	// few milliseconds. If any state sits still for ~340 ms, abandon the
+	// transfer and release the machine. A lost save is recoverable. A frozen
+	// console is not.
+	localparam [23:0] WATCHDOG_LIMIT = 24'hFFFFFF;
+
+	reg [23:0] watchdog;
+	reg  [4:0] prev_state;
+	reg        aborted;
+
 	wire [15:0] block_words_left = geo_words - block_word;
 	wire        sector_is_last   = block_words_left <= 16'd256;
 
@@ -200,7 +216,18 @@ module ngpc_cart_save
 		if (event0_i) dirty0[block0_i] <= 1'b1;
 		if (event1_i) dirty1[block1_i] <= 1'b1;
 
+		// Reset the watchdog on any progress; expire it otherwise.
+		prev_state <= state;
+
+		if (state == S_IDLE || state != prev_state) begin
+			watchdog <= 24'd0;
+		end else if (watchdog != WATCHDOG_LIMIT) begin
+			watchdog <= watchdog + 24'd1;
+		end
+
 		if (reset || cart_replace_i) begin
+			watchdog     <= 24'd0;
+			aborted      <= 1'b0;
 			state        <= S_IDLE;
 			pause_req_o  <= 1'b0;
 			boot_hold_o  <= 1'b0;
@@ -313,10 +340,16 @@ module ngpc_cart_save
 				end
 
 				S_SAVE_FILL: begin
-					p2_req_o   <= 1'b1;
-					p2_we_o    <= 1'b0;
-					p2_addr_o  <= block_base_addr + {8'd0, block_word, 1'b0};
-					state      <= S_SAVE_FILL_W;
+					// The port accepts a request only while it says it is
+					// ready; one issued otherwise is dropped, and the wait for
+					// done below would never end. Stay here until it will take
+					// it.
+					if (p2_ready_i) begin
+						p2_req_o  <= 1'b1;
+						p2_we_o   <= 1'b0;
+						p2_addr_o <= block_base_addr + {8'd0, block_word, 1'b0};
+						state     <= S_SAVE_FILL_W;
+					end
 				end
 
 				S_SAVE_FILL_W: begin
@@ -444,7 +477,7 @@ module ngpc_cart_save
 				end
 
 				S_LOAD_DRAIN: begin
-					if (!sd_busy_i && !rd_o) begin
+					if (!sd_busy_i && !rd_o && p2_ready_i) begin
 						buf_addr_o <= word_idx;
 						p2_req_o   <= 1'b1;
 						p2_we_o    <= 1'b1;
@@ -498,10 +531,15 @@ module ngpc_cart_save
 
 				default: state <= S_IDLE;
 			endcase
+
+			if (watchdog == WATCHDOG_LIMIT && state != S_IDLE) begin
+				aborted <= 1'b1;
+				state   <= S_FINISH;
+			end
 		end
 	end
 
-	wire unused_ok = &{1'b0, sd_err_i, cart_bytes_i, 1'b0};
+	wire unused_ok = &{1'b0, sd_err_i, aborted, 1'b0};
 
 endmodule
 
