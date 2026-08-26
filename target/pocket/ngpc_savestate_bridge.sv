@@ -159,6 +159,25 @@ module ngpc_savestate_bridge #(
 	reg [1:0]  e_state;
 	reg [31:0] e_lo_captured;
 
+	// ---- PROBE ---------------------------------------------------------
+	//
+	// TEMPORARY. The save side is proven correct -- the state files on the
+	// device carry bswap32(8416) at payload word 1, exactly where
+	// ST_LOAD_HEADER looks. The load side rejects that same blob, and every
+	// explanation left needs to know what the store actually CONTAINED when
+	// the engine read it. Reasoning has been wrong about this path three
+	// times; this reads it out instead.
+	//
+	// savestate_size is extended by 16 bytes and the four words past the end
+	// of the real state are served from these registers rather than from RAM.
+	// A state saved after a failed load therefore carries, in its last 16
+	// bytes: what word 0 and word 1 held when the header was read, how many
+	// blob writes APF has made, and the last address it wrote.
+	//
+	// Remove this once the load path works.
+	reg [31:0] dbg_w0;
+	reg [31:0] dbg_w1;
+
 	// The port itself. ONE address, ONE access per cycle -- both ports have to
 	// look like this or Quartus will not infer block RAM, and 16384 words of
 	// registers does not fit in anything.
@@ -215,6 +234,14 @@ module ngpc_savestate_bridge #(
 			E_DONE: begin
 				bus_out_done <= 1'b1;
 				e_state      <= E_IDLE;
+
+				// PROBE: the header read is the first access of a load and the
+				// only one at address 0. Keep what the store actually held, so
+				// a later save can carry it out to where it can be read.
+				if (bus_out_rnw && bus_out_Adr[14:1] == 14'd0) begin
+					dbg_w0 <= e_lo_captured;
+					dbg_w1 <= a_q;
+				end
 			end
 
 			default: e_state <= E_IDLE;
@@ -235,16 +262,46 @@ module ngpc_savestate_bridge #(
 	wire        blob_sel  = bridge_addr[31:28] == BLOB_ADDR_NIBBLE;
 	wire [13:0] blob_word = bridge_addr[15:2];
 
+	// PROBE: how much APF has written, and where it last wrote. If the count is
+	// zero when a load fails, the blob never reached this core and the fault is
+	// in the transfer rather than anywhere in this module.
+	reg [31:0] dbg_wr_count;
+	reg [13:0] dbg_last_addr;
+
+	localparam [13:0] DBG_BASE = 14'd8420;   // past the state, 4-aligned for the decode
+
 	reg [31:0] blob_q;
+	reg [31:0] dbg_q;
+	reg        dbg_hit;
 
 	always @(posedge clk_74a) begin
 		if (blob_sel && bridge_wr) begin
 			blob[blob_word] <= bridge_wr_data;
+			dbg_wr_count    <= dbg_wr_count + 32'd1;
+			dbg_last_addr   <= blob_word;
 		end
+
 		blob_q <= blob[blob_word];
+
+		// Exact compares rather than a range plus a subtract: four equalities
+		// against a constant are a handful of LUTs, and this is temporary.
+		dbg_hit <= blob_sel && (blob_word[13:2] == DBG_BASE[13:2])
+		                    && (blob_word[13:2] != 12'd0);
+		case (blob_word[1:0])
+			2'd0:    dbg_q <= dbg_w0;
+			2'd1:    dbg_q <= dbg_w1;
+			2'd2:    dbg_q <= dbg_wr_count;
+			default: dbg_q <= {18'd0, dbg_last_addr};
+		endcase
 	end
 
-	assign bridge_rd_data = blob_q;
+	// dbg_w0/w1 cross from clk_sys with no synchroniser, deliberately. They are
+	// written once when a load reads the header and read many milliseconds
+	// later when a state is saved; there is no window in which the two coincide.
+	// A synchroniser here cost 192 flops and, at 99% occupancy, about 1.6 ns of
+	// timing across the whole design. This is a temporary probe, not a feature.
+
+	assign bridge_rd_data = dbg_hit ? dbg_q : blob_q;
 
 	// Has APF finished writing the blob?
 	//

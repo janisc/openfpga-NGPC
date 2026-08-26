@@ -447,7 +447,10 @@ module core_top (
   // internal register count that actually governs the transfer. It declared
   // 100,096 bytes for a 33,672 byte state, so APF read three times the blob and
   // the tail was whatever the store happened to hold.
-  wire [31:0] savestate_size = 32'd33672;
+  // 33,672 is the real state. The extra 16 bytes are the temporary probe in
+  // ngpc_savestate_bridge -- four words served from registers instead of RAM,
+  // so a saved state carries out what the store held when a load last read it.
+  wire [31:0] savestate_size = 32'd33696;   // 8424 words: 8418 state + probe at 8420..8423
   wire [31:0] savestate_maxloadsize = savestate_size + 32'h1000;
 
   wire        savestate_start;
@@ -753,37 +756,34 @@ module core_top (
       .write_data(bios_data_raw)
   );
 
+  // The cartridge shares this loader too, at a 16 MB offset inside the same
+  // nibble (0x11000000). Three slots, one FIFO: they are loaded one at a time
+  // and each was costing about 170 ALMs, most of it dcfifo. The destination is
+  // still carried by the address rather than by a slot id, which is the
+  // property that makes one loader safe -- see the note above.
+  //
+  //   0x0000000 - 0x000FFFF   colour BIOS
+  //   0x0010000 - 0x001FFFF   mono BIOS
+  //   0x1000000 - 0x13FFFFF   cartridge (4 MB maximum)
+  //
+  // So bit 24 says cartridge, and below it bit 16 says which BIOS image.
+  wire        ld_is_cart = bios_addr_raw[24];
+
   // A BIOS image is 64 KiB, so bit 16 selects the image and bits 15:1 address
   // within it. The guard rejects anything past the mono image's end, which is
   // what the MiSTer top level's address guard does for a single image: a file
   // longer than its slot cannot wrap onto the start of either ROM.
   wire        bios_sel     = bios_addr_raw[16];
-  wire        bios_wr      = bios_wr_raw && (bios_addr_raw < 28'h20000);
+  wire        bios_wr      = bios_wr_raw && !ld_is_cart && (bios_addr_raw < 28'h20000);
   wire [14:0] bios_addr    = bios_addr_raw[15:1];
   wire [15:0] bios_ld_data = bios_data_raw;
 
-  // The cartridge stream. Same 16-bit word shape as the BIOS loaders; the
-  // machine buffers it before ngp_cart_rom, which back-pressures.
-  wire        cart_wr;
-  wire [27:0] cart_wr_addr;
-  wire [15:0] cart_wr_data;
-
-  data_loader #(
-      .ADDRESS_MASK_UPPER_4(4'h3),
-      .OUTPUT_WORD_SIZE(2)
-  ) cart_loader (
-      .clk_74a   (clk_74a),
-      .clk_memory(clk_sys),
-
-      .bridge_wr          (bridge_wr),
-      .bridge_endian_little(bridge_endian_little),
-      .bridge_addr        (bridge_addr),
-      .bridge_wr_data     (bridge_wr_data),
-
-      .write_en  (cart_wr),
-      .write_addr(cart_wr_addr),
-      .write_data(cart_wr_data)
-  );
+  // The cartridge stream. Same 16-bit word shape; the machine buffers it before
+  // ngp_cart_rom, which back-pressures. Bit 24 comes off to give the loader's
+  // byte address within the image.
+  wire        cart_wr      = bios_wr_raw && ld_is_cart;
+  wire [27:0] cart_wr_addr = {4'd0, bios_addr_raw[23:0]};
+  wire [15:0] cart_wr_data = bios_data_raw;
 
   // ----------------------------------------------------------------------
   //  Controls
