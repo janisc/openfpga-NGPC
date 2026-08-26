@@ -314,7 +314,27 @@ module ngpc_savestate_bridge #(
 	// what separates one transfer from the next.
 	reg prev_bridge_wr;
 	reg [13:0] wr_ptr;
-	wire blob_wr_stb = blob_sel && bridge_wr && !prev_bridge_wr;
+	// LEVEL, NOT EDGE -- and this cost a whole round to learn.
+	//
+	// Edge detection here dropped the FIRST word of every transfer. bridge_wr is
+	// already high from preceding bridge traffic when the blob starts, so no
+	// rising edge occurs on that word; meanwhile the quiet counter below resets
+	// on the level, so wr_first was already false by the second word and it
+	// landed at pointer 0. The whole blob shifted down one and the header check
+	// read the wrong word -- which is every symptom seen since.
+	//
+	// Both working cores gate on the level and nothing else:
+	//
+	//     .wrreq (bridge_wr && bridge_addr[31:28] == 4'h4)
+	//
+	// and they are right to. bridge_wr is one cycle per word -- their FIFOs
+	// would take duplicates otherwise, and the probe counted exactly 8424 words
+	// for an 8424-word payload -- so an edge buys nothing and costs the first
+	// word whenever the strobe happens to be contiguous with what came before.
+	//
+	// data_loader edge-detects because it re-latches bridge_addr each word. This
+	// does not use the address at all, so it does not need the edge.
+	wire blob_wr_stb = blob_sel && bridge_wr;
 
 	// True on the first write of a burst: the quiet counter has not been reset
 	// by this write yet, so it still reads saturated.
