@@ -175,8 +175,8 @@ module ngpc_savestate_bridge #(
 	// blob writes APF has made, and the last address it wrote.
 	//
 	// Remove this once the load path works.
-	reg [31:0] dbg_w0;
-	reg [31:0] dbg_w1;
+	reg [31:0] dbg_a0;   // bus data seen at blob word 0
+	reg [31:0] dbg_a1;   // bus data seen at blob word 1
 
 	// The port itself. ONE address, ONE access per cycle -- both ports have to
 	// look like this or Quartus will not infer block RAM, and 16384 words of
@@ -234,14 +234,6 @@ module ngpc_savestate_bridge #(
 			E_DONE: begin
 				bus_out_done <= 1'b1;
 				e_state      <= E_IDLE;
-
-				// PROBE: the header read is the first access of a load and the
-				// only one at address 0. Keep what the store actually held, so
-				// a later save can carry it out to where it can be read.
-				if (bus_out_rnw && bus_out_Adr[14:1] == 14'd0) begin
-					dbg_w0 <= e_lo_captured;
-					dbg_w1 <= a_q;
-				end
 			end
 
 			default: e_state <= E_IDLE;
@@ -294,6 +286,15 @@ module ngpc_savestate_bridge #(
 			blob[blob_word] <= bridge_wr_data;
 			dbg_wr_count    <= dbg_wr_count + 32'd1;
 			dbg_last_addr   <= blob_word;
+
+			// PROBE, second round. The first round proved the blob arrives
+			// complete (8424 words, last address 8423) but lands one word out.
+			// Rising-edge capture did not change that, so the strobe width is
+			// not the cause and the question is now what the BUS carries: this
+			// keeps the data seen at address 0 and at address 1, to be compared
+			// against the loaded file's payload words 0 and 1.
+			if (blob_word == 14'd0) dbg_a0 <= bridge_wr_data;
+			if (blob_word == 14'd1) dbg_a1 <= bridge_wr_data;
 		end
 
 		blob_q <= blob[blob_word];
@@ -303,8 +304,8 @@ module ngpc_savestate_bridge #(
 		dbg_hit <= blob_sel && (blob_word[13:2] == DBG_BASE[13:2])
 		                    && (blob_word[13:2] != 12'd0);
 		case (blob_word[1:0])
-			2'd0:    dbg_q <= dbg_w0;
-			2'd1:    dbg_q <= dbg_w1;
+			2'd0:    dbg_q <= dbg_a0;
+			2'd1:    dbg_q <= dbg_a1;
 			2'd2:    dbg_q <= dbg_wr_count;
 			default: dbg_q <= {18'd0, dbg_last_addr};
 		endcase
