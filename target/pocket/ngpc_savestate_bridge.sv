@@ -274,8 +274,23 @@ module ngpc_savestate_bridge #(
 	reg [31:0] dbg_q;
 	reg        dbg_hit;
 
+	// Take only the FIRST cycle of each write strobe.
+	//
+	// bridge_wr can stay high across a word boundary, and the data advances a
+	// cycle before the address does. Writing on every cycle the strobe is high
+	// therefore leaves each address holding the NEXT word's data -- the whole
+	// blob shifted down by one, which is what the probe caught: the engine read
+	// bswap32(8416) at word 0 where the file has it at word 1.
+	//
+	// data_loader has always done it this way (`~prev_bridge_wr && bridge_wr`),
+	// which is why BIOS and cartridge images load correctly and this did not.
+	reg prev_bridge_wr;
+	wire blob_wr_stb = blob_sel && bridge_wr && !prev_bridge_wr;
+
 	always @(posedge clk_74a) begin
-		if (blob_sel && bridge_wr) begin
+		prev_bridge_wr <= bridge_wr;
+
+		if (blob_wr_stb) begin
 			blob[blob_word] <= bridge_wr_data;
 			dbg_wr_count    <= dbg_wr_count + 32'd1;
 			dbg_last_addr   <= blob_word;
