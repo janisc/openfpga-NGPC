@@ -1,39 +1,44 @@
 // NGPC for Analogue Pocket -- savestates, and therefore sleep.
 //
 // On the Pocket these are one feature. Closing the lid makes APF issue host
-// command 0x00A0: the core must serialise its entire state and report an
-// address and a length, and on wake 0x00A4 hands it back. There is no separate
-// "sleep" to implement -- a core that can produce and consume a state blob can
-// sleep, and one that cannot, cannot.
+// command 0x00A0: the core must serialise its entire state, and on wake 0x00A4
+// hands it back. There is no separate "sleep" to implement -- a core that can
+// produce and consume a state blob can sleep, and one that cannot, cannot.
 //
-// Upstream's engine (savestates.sv) already does the hard part: it walks the
-// machine's internals bus and its memories and turns them into a stream of
-// 64-bit words. On MiSTer that stream goes into DDR3 and Main writes the file.
-// Here it goes into a FIFO that APF drains through the bridge, and on restore
-// APF fills a FIFO that the engine reads back. The engine cannot tell the
-// difference: its bus_out_* port is a request/done mailbox and never learns
-// what is on the other side.
+// WHY THIS IS A MEMORY AND NOT A FIFO.
 //
-// CARTRIDGE FLASH, and why it is not in here.
+// The obvious reading of savestates.sv is that it emits a stream: it hands over
+// 64-bit words one at a time through a request/done mailbox and never learns
+// what is on the other side. Two things make that reading wrong, and both were
+// found on hardware rather than in the RTL.
 //
-// The engine is configured with savetype3_size = 0, so the state does NOT
-// contain cartridge flash. Upstream carries flash separately in a sparse Type3
-// tail -- 1,752 lines of manifest and store that this device has no room for.
+// The blob is not written in the order it is read. Saving starts at
+// savestate_address + HEADERCOUNT and writes the header LAST, back at offset 0
+// (ST_SAVE_WAIT_SETTLE, ST_SAVE_HEADER). Loading reads that header FIRST
+// (ST_LOAD_HEADER) and validates it before touching anything. Production order
+// is internals, memories, header; consumption order is header, internals,
+// memories. No queue can serve both -- the header is produced last and needed
+// first. A FIFO-backed save produces a file with its header at the end, which
+// then fails its own header check on restore, which is a cold boot on wake.
 //
-// That matters because sleep powers the FPGA down and SDRAM loses the
-// cartridge. On wake APF reloads it from its file, which is the PRISTINE image:
-// every block the game wrote during the session would be gone, and the restored
-// machine state would describe flash that no longer exists.
+// And the two sides run at their own speeds. APF reads the region over the
+// bridge at 74 MHz once it sees an ok; the engine produces slowly, waiting on
+// Save_RAMReady and a settle count for every byte. The host finishes reading
+// long before the engine finishes writing, stops, and the engine then stalls
+// forever on a full queue -- with sleep_savestate still asserted, which holds
+// the machine paused. That is a frozen game after a successful-looking save.
 //
-// ngpc_cart_save handles that independently and continuously -- it stages dirty
-// blocks into the nonvolatile slot whenever the flash goes quiet, so by the time
-// APF asks for a state the cartridge side is already saved. This module used to
-// trigger a save and wait for it; with staging always current there is nothing
-// to trigger.
+// So the blob lives in block RAM, which is what the engine has always assumed:
+// on MiSTer its bus_out port talks to DDR3. bus_out_Adr is honoured, the header
+// lands at offset 0 where the loader expects it, and neither side has to wait
+// for the other. The device has the memory to spare -- 33,672 bytes of state
+// against 136 unused M10K blocks.
 //
-// On wake the order still matters and still holds: the cartridge is reloaded,
-// the staged blocks are applied while the machine is held in reset, and only
-// then is the state restored.
+// CARTRIDGE FLASH is not in here. savetype3_size is 0, so the state does not
+// contain it; ngpc_cart_save stages dirty blocks to the nonvolatile slot
+// independently. On wake the cartridge is reloaded from its own file, the
+// staged blocks are applied while the machine is held in reset, and only then
+// is the state restored.
 //
 // A state blob is only coherent with the save staged at the same moment.
 // Nothing here detects a mismatched pair, which is worth fixing before this is
@@ -108,232 +113,193 @@ module ngpc_savestate_bridge #(
 		clk_sys
 	);
 
-	// ---- Save path: engine -> FIFO -> APF reads ---------------------------
+	// ---- The blob store ----------------------------------------------------
 	//
-	// APF reads the blob sequentially, so a FIFO is the whole mechanism: every
-	// bridge read at the blob address pops the next 32-bit half. The engine
-	// produces 64-bit words, so the FIFO is width-converting and the halves
-	// come out in the order APF asked for them.
-
-	wire        save_fifo_full;
-	wire        save_fifo_rdempty;
-	reg         save_fifo_wr;
-	reg         save_fifo_rd;
-	wire [31:0] save_fifo_q;
-
-	// bridge_endian_little is low, so APF's 32-bit words arrive and leave
-	// big-endian. The swizzle here and its inverse on the load path are each
-	// other's mirror; nothing outside this module sees the byte order, so the
-	// only requirement is that the two agree.
-	wire [63:0] save_fifo_data = {
-		bus_out_Din[39:32], bus_out_Din[47:40], bus_out_Din[55:48], bus_out_Din[63:56],
-		bus_out_Din[ 7: 0], bus_out_Din[15: 8], bus_out_Din[23:16], bus_out_Din[31:24]
-	};
-
-	dcfifo_mixed_widths save_fifo (
-		.data   (save_fifo_data),
-		.wrclk  (clk_sys),
-		.wrreq  (save_fifo_wr),
-		.rdclk  (clk_74a),
-		.rdreq  (save_fifo_rd),
-		.q      (save_fifo_q),
-		.wrfull (save_fifo_full),
-		.rdempty(save_fifo_rdempty)
-	);
-	defparam save_fifo.intended_device_family = "Cyclone V",
-	         save_fifo.lpm_numwords = 256, save_fifo.lpm_showahead = "ON",
-	         save_fifo.lpm_type = "dcfifo_mixed_widths",
-	         save_fifo.lpm_width = 64, save_fifo.lpm_widthu = 8,
-	         save_fifo.lpm_width_r = 32, save_fifo.lpm_widthu_r = 9,
-	         save_fifo.overflow_checking = "ON", save_fifo.underflow_checking = "ON",
-	         save_fifo.rdsync_delaypipe = 5, save_fifo.wrsync_delaypipe = 5,
-	         save_fifo.use_eab = "ON";
-
-	// ---- Load path: APF writes -> FIFO -> engine --------------------------
-
-	wire        load_fifo_wrfull;
-	wire        load_fifo_empty;
-	reg         load_fifo_rd;
-	wire [63:0] load_fifo_q;
-	reg         load_fifo_clr;
-
-	dcfifo_mixed_widths load_fifo (
-		.data   (bridge_wr_data),
-		.wrclk  (clk_74a),
-		.wrreq  (bridge_wr && bridge_addr[31:28] == BLOB_ADDR_NIBBLE),
-		.rdclk  (clk_sys),
-		.rdreq  (load_fifo_rd),
-		.q      (load_fifo_q),
-		.rdempty(load_fifo_empty),
-		.wrfull (load_fifo_wrfull),
-		.aclr   (load_fifo_clr)
-	);
-	defparam load_fifo.intended_device_family = "Cyclone V",
-	         load_fifo.lpm_numwords = 512, load_fifo.lpm_showahead = "ON",
-	         load_fifo.lpm_type = "dcfifo_mixed_widths",
-	         load_fifo.lpm_width = 32, load_fifo.lpm_widthu = 9,
-	         load_fifo.lpm_width_r = 64, load_fifo.lpm_widthu_r = 8,
-	         load_fifo.overflow_checking = "ON", load_fifo.underflow_checking = "ON",
-	         load_fifo.rdsync_delaypipe = 5, load_fifo.wrsync_delaypipe = 5,
-	         load_fifo.write_aclr_synch = "ON", load_fifo.use_eab = "ON";
-
-	assign bus_out_Dout = {
-		load_fifo_q[39:32], load_fifo_q[47:40], load_fifo_q[55:48], load_fifo_q[63:56],
-		load_fifo_q[ 7: 0], load_fifo_q[15: 8], load_fifo_q[23:16], load_fifo_q[31:24]
-	};
-
-	// A bridge read at the blob address pops the save FIFO. showahead means the
-	// head is already on q, so the value returned belongs to this read and the
-	// pop advances for the next one.
+	// 16384 x 32 bits = 64 KB, against a state of 33,672 bytes. Sized to a power
+	// of two so the address decode is a slice rather than a comparison; the
+	// spare space costs M10K blocks the design is not using.
 	//
-	// The pop is gated on the address having MOVED, not just on a new read
-	// strobe. APF re-reads a word it has already taken -- the reference core
-	// guards the same way -- and popping on every strobe would drop a word off
-	// the front of the blob each time it did.
-	reg prev_bridge_rd;
-	reg [25:0] last_rd_word = 26'h3FFFFFF;
-	wire blob_rd = bridge_rd && bridge_addr[31:28] == BLOB_ADDR_NIBBLE;
-	wire [25:0] blob_rd_word = bridge_addr[27:2];
+	// True dual port with two clocks: the engine on clk_sys, APF on clk_74a.
+	// The two never touch the same word at the same time -- APF reads only after
+	// it has been told the save is complete, and writes only before it asks for
+	// a load -- so no arbitration is needed between them.
 
-	// savestate_start is already in this domain, so the rearm lives here too --
-	// the guard register and the thing that invalidates it stay on one clock.
-	// NO_RD_WORD cannot collide with a real word address: APF reads the blob
-	// from offset 0 upward and the region is nothing like 2^26 words long.
-	localparam [25:0] NO_RD_WORD = 26'h3FFFFFF;
+	localparam integer BLOB_WORDS = 16384;   // 32-bit words
 
-	reg prev_start_74;
+	// no_rw_check: the two ports never touch the same word at the same time, so
+	// what a read returns during a simultaneous write to that word is not a
+	// question this design asks. Without it Quartus declines to infer block RAM
+	// at all -- it cannot guarantee read-during-write semantics across two
+	// clocks -- and tries to build 16384 words out of registers instead.
+	(* ramstyle = "no_rw_check, M10K" *)
+	reg [31:0] blob [0:BLOB_WORDS-1];
 
-	always @(posedge clk_74a) begin
-		prev_bridge_rd <= blob_rd;
-		save_fifo_rd   <= 1'b0;
-		prev_start_74  <= savestate_start;
+	// ---- Engine side (clk_sys) ---------------------------------------------
+	//
+	// bus_out_Adr counts 32-bit words, and a 64-bit access spans Adr and Adr+1:
+	// Din[31:0] at Adr, Din[63:32] at Adr+1. Each access is therefore two RAM
+	// cycles, which costs nothing -- the engine spends far longer than that per
+	// word waiting on Save_RAMReady.
+	//
+	// bus_out_be is honoured by simply not writing the half whose enables are
+	// clear. The engine only ever uses 8'hff or 8'hf0 (the header write, which
+	// preserves the header count in the low half), so per-byte masking inside a
+	// half is never asked for.
 
-		if (savestate_start && !prev_start_74) begin
-			last_rd_word <= NO_RD_WORD;
-		end else if (blob_rd && !prev_bridge_rd && !save_fifo_rdempty
-		             && blob_rd_word != last_rd_word) begin
-			save_fifo_rd <= 1'b1;
-			last_rd_word <= blob_rd_word;
+	function automatic [31:0] bswap32(input [31:0] w);
+		bswap32 = {w[7:0], w[15:8], w[23:16], w[31:24]};
+	endfunction
+
+	localparam [1:0] E_IDLE = 2'd0;
+	localparam [1:0] E_LO   = 2'd1;
+	localparam [1:0] E_HI   = 2'd2;
+	localparam [1:0] E_DONE = 2'd3;
+
+	reg [1:0]  e_state;
+	reg [31:0] e_lo_captured;
+
+	// The port itself. ONE address, ONE access per cycle -- both ports have to
+	// look like this or Quartus will not infer block RAM, and 16384 words of
+	// registers does not fit in anything.
+	reg [13:0] a_addr;
+	reg        a_we;
+	reg [31:0] a_din;
+	reg [31:0] a_q;
+
+	always @(posedge clk_sys) begin
+		if (a_we) begin
+			blob[a_addr] <= a_din;
+		end
+		a_q <= blob[a_addr];
+	end
+
+	wire [13:0] e_word0 = bus_out_Adr[14:1];
+	wire [13:0] e_word1 = bus_out_Adr[14:1] + 14'd1;
+
+	// The 64-bit view the engine sees on a restore, reassembled from the two
+	// halves and unswizzled. The swizzle is its own inverse, so the save and
+	// load paths use the same function.
+	assign bus_out_Dout = {bswap32(a_q), bswap32(e_lo_captured)};
+
+	always @(posedge clk_sys) begin
+		bus_out_done <= 1'b0;
+		a_we         <= 1'b0;
+
+		case (e_state)
+			E_IDLE: begin
+				if (bus_out_ena) begin
+					a_addr  <= e_word0;
+					a_we    <= !bus_out_rnw && (bus_out_be[3:0] != 4'd0);
+					a_din   <= bswap32(bus_out_Din[31:0]);
+					e_state <= E_LO;
+				end
+			end
+
+			// The low half is being accessed this cycle; queue the high half.
+			E_LO: begin
+				a_addr  <= e_word1;
+				a_we    <= !bus_out_rnw && (bus_out_be[7:4] != 4'd0);
+				a_din   <= bswap32(bus_out_Din[63:32]);
+				e_state <= E_HI;
+			end
+
+			// a_q now holds the low half; the high half is being accessed.
+			E_HI: begin
+				e_lo_captured <= a_q;
+				e_state       <= E_DONE;
+			end
+
+			// a_q now holds the high half, and a_addr is not disturbed again, so
+			// both halves stay valid through the cycle the engine sees done in.
+			E_DONE: begin
+				bus_out_done <= 1'b1;
+				e_state      <= E_IDLE;
+			end
+
+			default: e_state <= E_IDLE;
+		endcase
+
+		if (reset) begin
+			e_state <= E_IDLE;
+			a_we    <= 1'b0;
 		end
 	end
 
-	assign bridge_rd_data = save_fifo_q;
+	// ---- APF side (clk_74a) -------------------------------------------------
+	//
+	// A plain window into the store. APF reads it after a save and writes it
+	// before a load; there is no handshake here because the sequencing below
+	// guarantees it never overlaps the engine.
+
+	wire        blob_sel  = bridge_addr[31:28] == BLOB_ADDR_NIBBLE;
+	wire [13:0] blob_word = bridge_addr[15:2];
+
+	reg [31:0] blob_q;
+
+	always @(posedge clk_74a) begin
+		if (blob_sel && bridge_wr) begin
+			blob[blob_word] <= bridge_wr_data;
+		end
+		blob_q <= blob[blob_word];
+	end
+
+	assign bridge_rd_data = blob_q;
 
 	// ---- Sequencing --------------------------------------------------------
+	//
+	// With a memory behind it this is the straightforward reading of the
+	// protocol, and the straightforward reading is now the correct one: APF
+	// polls 0x00A0 for a result code and reads the region once it sees ok, so
+	// ok means the blob is complete and sitting at savestate_addr. On a load
+	// APF has already written the whole region before it issues the command.
 
-	// HOW APF ACTUALLY MOVES A BLOB, which is not what this module first assumed.
-	//
-	// The state here is about 100 KB and the FIFOs either side are a couple of
-	// KB. Neither direction can be "produce it all, then hand it over" -- the
-	// host and the engine have to be running at the same time. Both halves of
-	// the protocol are built around that, and both were wrong here before.
-	//
-	// SAVE. APF issues host command 0x00A0, then POLLS the same command for a
-	// result code: 1 busy, 2 ok, 3 error. It starts reading the blob out of the
-	// bridge as soon as it sees ok. So ok does not mean "the state is complete",
-	// it means "the state is coming" -- the reference core raises it on the
-	// FIRST word the engine produces. Waiting for the engine to finish, as this
-	// module did, deadlocks: the engine stalls on a full FIFO waiting for a
-	// drain that APF will not start until it sees an ok that cannot arrive.
-	// That deadlock is what "State saved" then "Save failed" looks like.
-	//
-	// LOAD. The mirror. APF writes the whole blob into the bridge FIFO and only
-	// then issues the load command, so an engine that waits for the command has
-	// already lost everything past the first couple of KB. The engine has to
-	// start consuming when data STARTS ARRIVING; the command that follows is
-	// just the acknowledgement that the transfer is over.
-
-	localparam S_IDLE       = 3'd0;
-	localparam S_SAVE_RUN   = 3'd2;
-	localparam S_LOAD_RUN   = 3'd3;
-	localparam S_LOAD_WAIT  = 3'd4;
-	localparam S_DONE       = 3'd5;
+	localparam S_IDLE     = 3'd0;
+	localparam S_SAVE_RUN = 3'd1;
+	localparam S_LOAD_RUN = 3'd2;
+	localparam S_DONE     = 3'd3;
 
 	reg [2:0] state;
 	reg       prev_start, prev_load, prev_ss_busy;
-	reg       loading;        // the engine is consuming an arriving blob
-	reg       load_cmd_seen;  // APF's load command has been received
 
 	always @(posedge clk_sys) begin
-		ss_save       <= 1'b0;
-		ss_load       <= 1'b0;
-		save_fifo_wr  <= 1'b0;
-		load_fifo_rd  <= 1'b0;
-		bus_out_done  <= 1'b0;
-		load_fifo_clr <= 1'b0;
+		ss_save <= 1'b0;
+		ss_load <= 1'b0;
 
 		prev_start   <= start_s;
 		prev_load    <= load_s;
 		prev_ss_busy <= ss_busy;
 
-		// The engine's mailbox. A write hands us a word; a read wants one. On a
-		// read with nothing to give, no done is returned and the engine simply
-		// waits -- which is how the load path throttles itself to APF's writes.
-		if (bus_out_ena) begin
-			if (!bus_out_rnw) begin
-				if (!save_fifo_full) begin
-					save_fifo_wr <= 1'b1;
-					bus_out_done <= 1'b1;
-				end
-			end else begin
-				if (!load_fifo_empty) begin
-					load_fifo_rd <= 1'b1;
-					bus_out_done <= 1'b1;
-				end
-			end
-		end
-
 		if (reset) begin
-			state         <= S_IDLE;
-			loading       <= 1'b0;
-			load_cmd_seen <= 1'b0;
+			state        <= S_IDLE;
 			start_ack_q  <= 1'b0; start_busy_q <= 1'b0;
 			start_ok_q   <= 1'b0; start_err_q  <= 1'b0;
 			load_ack_q   <= 1'b0; load_busy_q  <= 1'b0;
 			load_ok_q    <= 1'b0; load_err_q   <= 1'b0;
 		end else begin
-			// A blob arriving in the load FIFO starts the engine, whatever state
-			// this machine is in. APF fills the FIFO before it says a word about
-			// loading.
-			if (!load_fifo_empty && !loading) begin
-				loading <= 1'b1;
-				ss_load <= 1'b1;
-				state   <= S_LOAD_RUN;
-			end
-
-			// The load command itself only has to be remembered; it is answered
-			// once the engine has drained what arrived.
-			if (load_s && !prev_load) begin
-				load_ack_q    <= 1'b1;
-				load_ok_q     <= 1'b0;
-				load_err_q    <= 1'b0;
-				load_cmd_seen <= 1'b1;
-			end
-
 			case (state)
 				S_IDLE: begin
 					start_ack_q <= 1'b0;
+					load_ack_q  <= 1'b0;
 
 					if (start_s && !prev_start) begin
-						start_ack_q      <= 1'b1;
-						start_busy_q     <= 1'b1;
-						start_ok_q       <= 1'b0;
-						start_err_q      <= 1'b0;
-						ss_save          <= 1'b1;
-						state            <= S_SAVE_RUN;
+						start_ack_q  <= 1'b1;
+						start_busy_q <= 1'b1;
+						start_ok_q   <= 1'b0;
+						start_err_q  <= 1'b0;
+						ss_save      <= 1'b1;
+						state        <= S_SAVE_RUN;
+					end else if (load_s && !prev_load) begin
+						load_ack_q  <= 1'b1;
+						load_busy_q <= 1'b1;
+						load_ok_q   <= 1'b0;
+						load_err_q  <= 1'b0;
+						ss_load     <= 1'b1;
+						state       <= S_LOAD_RUN;
 					end
 				end
 
 				S_SAVE_RUN: begin
 					start_ack_q <= 1'b0;
-
-					// The first word the engine hands over is the signal to let
-					// APF start reading. Everything after it streams.
-					if (save_fifo_wr) begin
-						start_busy_q <= 1'b0;
-						start_ok_q   <= 1'b1;
-					end
-
 					if (prev_ss_busy && !ss_busy) begin
 						start_busy_q <= 1'b0;
 						start_ok_q   <= 1'b1;
@@ -344,21 +310,9 @@ module ngpc_savestate_bridge #(
 				S_LOAD_RUN: begin
 					load_ack_q <= 1'b0;
 					if (prev_ss_busy && !ss_busy) begin
-						state <= S_LOAD_WAIT;
-					end
-				end
-
-				// The engine has consumed the blob. If APF has already said the
-				// transfer is done, answer it; otherwise wait for it to say so.
-				S_LOAD_WAIT: begin
-					load_ack_q <= 1'b0;
-					if (load_cmd_seen) begin
-						load_busy_q   <= 1'b0;
-						load_ok_q     <= 1'b1;
-						load_fifo_clr <= 1'b1;
-						loading       <= 1'b0;
-						load_cmd_seen <= 1'b0;
-						state         <= S_DONE;
+						load_busy_q <= 1'b0;
+						load_ok_q   <= 1'b1;
+						state       <= S_DONE;
 					end
 				end
 
@@ -373,8 +327,7 @@ module ngpc_savestate_bridge #(
 		end
 	end
 
-	wire unused_ok = &{1'b0, bus_out_Adr, bus_out_be, save_fifo_full,
-	                   load_fifo_wrfull, 1'b0};
+	wire unused_ok = &{1'b0, bus_out_Adr[25:15], bridge_rd, 1'b0};
 
 endmodule
 

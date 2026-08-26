@@ -433,7 +433,21 @@ module core_top (
   // explains where it goes instead and why the ordering works.
   wire        savestate_supported = 1;
   wire [31:0] savestate_addr = 32'h40000000;
-  wire [31:0] savestate_size = (32'd8416 * 32'd8) + 32'd12288 + 32'd4096 + 32'd16384;
+  // What the engine actually emits, counted the way savestates.sv counts it.
+  // bus_out_Adr is in 32-bit words:
+  //
+  //   header      HEADERCOUNT             = 2 words
+  //   internals   INTERNALSCOUNT * 2      = 224 words   (112 64-bit words)
+  //   memories    (12288+4096+16384) / 4  = 8192 words  (savetype 0,1,2)
+  //                                       ---------
+  //                                         8418 words = 33,672 bytes
+  //
+  // This was previously state_size_i * 8 plus the memory sizes, which confused
+  // state_size_i -- a validation field stamped into the header -- with the
+  // internal register count that actually governs the transfer. It declared
+  // 100,096 bytes for a 33,672 byte state, so APF read three times the blob and
+  // the tail was whatever the store happened to hold.
+  wire [31:0] savestate_size = 32'd33672;
   wire [31:0] savestate_maxloadsize = savestate_size + 32'h1000;
 
   wire        savestate_start;
