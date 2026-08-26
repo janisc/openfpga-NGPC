@@ -185,25 +185,74 @@ module ngpc_savestate_bridge #(
 	// A bridge read at the blob address pops the save FIFO. showahead means the
 	// head is already on q, so the value returned belongs to this read and the
 	// pop advances for the next one.
+	//
+	// The pop is gated on the address having MOVED, not just on a new read
+	// strobe. APF re-reads a word it has already taken -- the reference core
+	// guards the same way -- and popping on every strobe would drop a word off
+	// the front of the blob each time it did.
 	reg prev_bridge_rd;
+	reg [25:0] last_rd_word = 26'h3FFFFFF;
 	wire blob_rd = bridge_rd && bridge_addr[31:28] == BLOB_ADDR_NIBBLE;
+	wire [25:0] blob_rd_word = bridge_addr[27:2];
+
+	// savestate_start is already in this domain, so the rearm lives here too --
+	// the guard register and the thing that invalidates it stay on one clock.
+	// NO_RD_WORD cannot collide with a real word address: APF reads the blob
+	// from offset 0 upward and the region is nothing like 2^26 words long.
+	localparam [25:0] NO_RD_WORD = 26'h3FFFFFF;
+
+	reg prev_start_74;
 
 	always @(posedge clk_74a) begin
 		prev_bridge_rd <= blob_rd;
-		save_fifo_rd   <= blob_rd && !prev_bridge_rd && !save_fifo_rdempty;
+		save_fifo_rd   <= 1'b0;
+		prev_start_74  <= savestate_start;
+
+		if (savestate_start && !prev_start_74) begin
+			last_rd_word <= NO_RD_WORD;
+		end else if (blob_rd && !prev_bridge_rd && !save_fifo_rdempty
+		             && blob_rd_word != last_rd_word) begin
+			save_fifo_rd <= 1'b1;
+			last_rd_word <= blob_rd_word;
+		end
 	end
 
 	assign bridge_rd_data = save_fifo_q;
 
 	// ---- Sequencing --------------------------------------------------------
 
+	// HOW APF ACTUALLY MOVES A BLOB, which is not what this module first assumed.
+	//
+	// The state here is about 100 KB and the FIFOs either side are a couple of
+	// KB. Neither direction can be "produce it all, then hand it over" -- the
+	// host and the engine have to be running at the same time. Both halves of
+	// the protocol are built around that, and both were wrong here before.
+	//
+	// SAVE. APF issues host command 0x00A0, then POLLS the same command for a
+	// result code: 1 busy, 2 ok, 3 error. It starts reading the blob out of the
+	// bridge as soon as it sees ok. So ok does not mean "the state is complete",
+	// it means "the state is coming" -- the reference core raises it on the
+	// FIRST word the engine produces. Waiting for the engine to finish, as this
+	// module did, deadlocks: the engine stalls on a full FIFO waiting for a
+	// drain that APF will not start until it sees an ok that cannot arrive.
+	// That deadlock is what "State saved" then "Save failed" looks like.
+	//
+	// LOAD. The mirror. APF writes the whole blob into the bridge FIFO and only
+	// then issues the load command, so an engine that waits for the command has
+	// already lost everything past the first couple of KB. The engine has to
+	// start consuming when data STARTS ARRIVING; the command that follows is
+	// just the acknowledgement that the transfer is over.
+
 	localparam S_IDLE       = 3'd0;
 	localparam S_SAVE_RUN   = 3'd2;
 	localparam S_LOAD_RUN   = 3'd3;
-	localparam S_DONE       = 3'd4;
+	localparam S_LOAD_WAIT  = 3'd4;
+	localparam S_DONE       = 3'd5;
 
 	reg [2:0] state;
 	reg       prev_start, prev_load, prev_ss_busy;
+	reg       loading;        // the engine is consuming an arriving blob
+	reg       load_cmd_seen;  // APF's load command has been received
 
 	always @(posedge clk_sys) begin
 		ss_save       <= 1'b0;
@@ -217,7 +266,9 @@ module ngpc_savestate_bridge #(
 		prev_load    <= load_s;
 		prev_ss_busy <= ss_busy;
 
-		// The engine's mailbox. A write hands us a word; a read wants one.
+		// The engine's mailbox. A write hands us a word; a read wants one. On a
+		// read with nothing to give, no done is returned and the engine simply
+		// waits -- which is how the load path throttles itself to APF's writes.
 		if (bus_out_ena) begin
 			if (!bus_out_rnw) begin
 				if (!save_fifo_full) begin
@@ -233,36 +284,56 @@ module ngpc_savestate_bridge #(
 		end
 
 		if (reset) begin
-			state        <= S_IDLE;
+			state         <= S_IDLE;
+			loading       <= 1'b0;
+			load_cmd_seen <= 1'b0;
 			start_ack_q  <= 1'b0; start_busy_q <= 1'b0;
 			start_ok_q   <= 1'b0; start_err_q  <= 1'b0;
 			load_ack_q   <= 1'b0; load_busy_q  <= 1'b0;
 			load_ok_q    <= 1'b0; load_err_q   <= 1'b0;
 		end else begin
+			// A blob arriving in the load FIFO starts the engine, whatever state
+			// this machine is in. APF fills the FIFO before it says a word about
+			// loading.
+			if (!load_fifo_empty && !loading) begin
+				loading <= 1'b1;
+				ss_load <= 1'b1;
+				state   <= S_LOAD_RUN;
+			end
+
+			// The load command itself only has to be remembered; it is answered
+			// once the engine has drained what arrived.
+			if (load_s && !prev_load) begin
+				load_ack_q    <= 1'b1;
+				load_ok_q     <= 1'b0;
+				load_err_q    <= 1'b0;
+				load_cmd_seen <= 1'b1;
+			end
+
 			case (state)
 				S_IDLE: begin
 					start_ack_q <= 1'b0;
-					load_ack_q  <= 1'b0;
 
 					if (start_s && !prev_start) begin
-						start_ack_q  <= 1'b1;
-						start_busy_q <= 1'b1;
-						start_ok_q   <= 1'b0;
-						start_err_q  <= 1'b0;
-						ss_save      <= 1'b1;
-						state        <= S_SAVE_RUN;
-					end else if (load_s && !prev_load) begin
-						load_ack_q  <= 1'b1;
-						load_busy_q <= 1'b1;
-						load_ok_q   <= 1'b0;
-						load_err_q  <= 1'b0;
-						ss_load     <= 1'b1;
-						state       <= S_LOAD_RUN;
+						start_ack_q      <= 1'b1;
+						start_busy_q     <= 1'b1;
+						start_ok_q       <= 1'b0;
+						start_err_q      <= 1'b0;
+						ss_save          <= 1'b1;
+						state            <= S_SAVE_RUN;
 					end
 				end
 
 				S_SAVE_RUN: begin
 					start_ack_q <= 1'b0;
+
+					// The first word the engine hands over is the signal to let
+					// APF start reading. Everything after it streams.
+					if (save_fifo_wr) begin
+						start_busy_q <= 1'b0;
+						start_ok_q   <= 1'b1;
+					end
+
 					if (prev_ss_busy && !ss_busy) begin
 						start_busy_q <= 1'b0;
 						start_ok_q   <= 1'b1;
@@ -273,15 +344,28 @@ module ngpc_savestate_bridge #(
 				S_LOAD_RUN: begin
 					load_ack_q <= 1'b0;
 					if (prev_ss_busy && !ss_busy) begin
+						state <= S_LOAD_WAIT;
+					end
+				end
+
+				// The engine has consumed the blob. If APF has already said the
+				// transfer is done, answer it; otherwise wait for it to say so.
+				S_LOAD_WAIT: begin
+					load_ack_q <= 1'b0;
+					if (load_cmd_seen) begin
 						load_busy_q   <= 1'b0;
 						load_ok_q     <= 1'b1;
 						load_fifo_clr <= 1'b1;
+						loading       <= 1'b0;
+						load_cmd_seen <= 1'b0;
 						state         <= S_DONE;
 					end
 				end
 
 				S_DONE: begin
-					if (!start_s && !load_s) state <= S_IDLE;
+					if (!start_s && !load_s) begin
+						state <= S_IDLE;
+					end
 				end
 
 				default: state <= S_IDLE;
