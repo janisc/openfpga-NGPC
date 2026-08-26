@@ -47,6 +47,10 @@ set_global_assignment -name VERILOG_MACRO "NGPC_POCKET=1"
 #                  and this core has no way to deliver one, but the engine's
 #                  comparators still sit on the CPU read path -- which is also
 #                  where the timing critical path lives.
+# NGPC_NO_LINK     compiles out the serial link port. The Pocket has no wiring
+#                  to it today, though its cartridge slot carries GBA-style link
+#                  pins, so this is reversible by removing one line.
+set_global_assignment -name VERILOG_MACRO "NGPC_NO_LINK=1"
 set_global_assignment -name VERILOG_MACRO "NGPC_NO_CHEATS=1"
 set_global_assignment -name VERILOG_MACRO "SYNTHESIS=1"
 set_global_assignment -name VERILOG_MACRO "TV80_REFRESH=1"
@@ -744,3 +748,6 @@ set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_1wire
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_spiclk
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_spimiso
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_spimosi
+# Retiming buys ~3 ns but costs ~1,700 registers. FAST does less of both,
+# which is the only middle ground between "fits" and "meets timing".
+set_global_assignment -name PHYSICAL_SYNTHESIS_EFFORT FAST
