@@ -24,7 +24,7 @@
           "rom"
         ],
         "size_maximum": "0x10000",
-        "address": "0x20000000"
+        "address": "0x10010000"
       },
       {
         "name": "Cartridge",

@@ -693,27 +693,39 @@ module core_top (
       clk_sys
   );
 
-  // The two images get their own bridge addresses and their own loader rather
-  // than sharing one and switching on the slot id. Sharing would work almost
-  // always: APF finishes streaming a slot before it announces the next one. But
-  // the loader crosses into clk_sys through a FIFO, so the last words of the
-  // colour image can still be draining when the id for the mono image arrives,
-  // and those words would land in the wrong ROM. Two addresses make the
-  // destination a property of the data itself, and the race cannot exist.
+  // Both BIOS images arrive through ONE loader, at two offsets inside the same
+  // bridge nibble: the colour image at 0x10000000 and the mono image at
+  // 0x10010000.
+  //
+  // They used to have a loader each, and the reason was real: the loader
+  // crosses into clk_sys through a FIFO, so the last words of one image can
+  // still be draining when APF announces the next slot, and switching the
+  // destination on a slot id would land those words in the wrong ROM. The
+  // destination has to be a property of the data, not of what the host is
+  // currently pointing at.
+  //
+  // A single loader keeps that property. The write address travels through the
+  // FIFO beside the data, so bit 16 of the address that comes OUT is the image
+  // that word belongs to, whatever the host has moved on to. One FIFO also
+  // removes the two-loader race entirely rather than dodging it -- there is now
+  // one queue, and it drains in order.
+  //
+  // This is worth about 150 ALMs, which is the difference between fitting with
+  // register retiming and not. See the retiming note in ngpc_pocket.qsf.
   //
   // OUTPUT_WORD_SIZE 2 reproduces hps_io's WIDE(1) behaviour exactly: with
   // bridge_endian_little low the loader byte-swaps, so write_data is
   // {file_byte1, file_byte0} and write_addr counts bytes -- the same little
   // endian 16-bit word and the same addr[15:1] the MiSTer top level feeds the
   // BIOS BRAM.
-  wire        bios0_wr_raw, bios1_wr_raw;
-  wire [27:0] bios0_addr_raw, bios1_addr_raw;
-  wire [15:0] bios0_data_raw, bios1_data_raw;
+  wire        bios_wr_raw;
+  wire [27:0] bios_addr_raw;
+  wire [15:0] bios_data_raw;
 
   data_loader #(
       .ADDRESS_MASK_UPPER_4(4'h1),
       .OUTPUT_WORD_SIZE(2)
-  ) bios0_loader (
+  ) bios_loader (
       .clk_74a   (clk_74a),
       .clk_memory(clk_sys),
 
@@ -722,37 +734,19 @@ module core_top (
       .bridge_addr        (bridge_addr),
       .bridge_wr_data     (bridge_wr_data),
 
-      .write_en  (bios0_wr_raw),
-      .write_addr(bios0_addr_raw),
-      .write_data(bios0_data_raw)
+      .write_en  (bios_wr_raw),
+      .write_addr(bios_addr_raw),
+      .write_data(bios_data_raw)
   );
 
-  data_loader #(
-      .ADDRESS_MASK_UPPER_4(4'h2),
-      .OUTPUT_WORD_SIZE(2)
-  ) bios1_loader (
-      .clk_74a   (clk_74a),
-      .clk_memory(clk_sys),
-
-      .bridge_wr          (bridge_wr),
-      .bridge_endian_little(bridge_endian_little),
-      .bridge_addr        (bridge_addr),
-      .bridge_wr_data     (bridge_wr_data),
-
-      .write_en  (bios1_wr_raw),
-      .write_addr(bios1_addr_raw),
-      .write_data(bios1_data_raw)
-  );
-
-  // A BIOS image is 64 KiB. Guard the write so a longer file cannot wrap onto
-  // the start of the ROM, which is what the MiSTer top level's address guard
-  // does.
-  wire [27:0] bios_ld_addr = bios1_wr_raw ? bios1_addr_raw : bios0_addr_raw;
-
-  wire        bios_sel   = bios1_wr_raw;
-  wire        bios_wr    = (bios0_wr_raw || bios1_wr_raw) && (bios_ld_addr < 28'h10000);
-  wire [14:0] bios_addr  = bios_ld_addr[15:1];
-  wire [15:0] bios_ld_data = bios1_wr_raw ? bios1_data_raw : bios0_data_raw;
+  // A BIOS image is 64 KiB, so bit 16 selects the image and bits 15:1 address
+  // within it. The guard rejects anything past the mono image's end, which is
+  // what the MiSTer top level's address guard does for a single image: a file
+  // longer than its slot cannot wrap onto the start of either ROM.
+  wire        bios_sel     = bios_addr_raw[16];
+  wire        bios_wr      = bios_wr_raw && (bios_addr_raw < 28'h20000);
+  wire [14:0] bios_addr    = bios_addr_raw[15:1];
+  wire [15:0] bios_ld_data = bios_data_raw;
 
   // The cartridge stream. Same 16-bit word shape as the BIOS loaders; the
   // machine buffers it before ngp_cart_rom, which back-pressures.
