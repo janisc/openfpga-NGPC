@@ -245,79 +245,6 @@ module ngpc_savestate_bridge #(
 		end
 	end
 
-	// ---- APF side (clk_74a) -------------------------------------------------
-	//
-	// A plain window into the store. APF reads it after a save and writes it
-	// before a load; there is no handshake here because the sequencing below
-	// guarantees it never overlaps the engine.
-
-	wire        blob_sel  = bridge_addr[31:28] == BLOB_ADDR_NIBBLE;
-	wire [13:0] blob_word = bridge_addr[15:2];
-
-	// PROBE: how much APF has written, and where it last wrote. If the count is
-	// zero when a load fails, the blob never reached this core and the fault is
-	// in the transfer rather than anywhere in this module.
-	reg [31:0] dbg_wr_count;
-	reg [13:0] dbg_last_addr;
-
-	localparam [13:0] DBG_BASE = 14'd8420;   // past the state, 4-aligned for the decode
-
-	reg [31:0] blob_q;
-	reg [31:0] dbg_q;
-	reg        dbg_hit;
-
-	// Take only the FIRST cycle of each write strobe.
-	//
-	// bridge_wr can stay high across a word boundary, and the data advances a
-	// cycle before the address does. Writing on every cycle the strobe is high
-	// therefore leaves each address holding the NEXT word's data -- the whole
-	// blob shifted down by one, which is what the probe caught: the engine read
-	// bswap32(8416) at word 0 where the file has it at word 1.
-	//
-	// data_loader has always done it this way (`~prev_bridge_wr && bridge_wr`),
-	// which is why BIOS and cartridge images load correctly and this did not.
-	reg prev_bridge_wr;
-	wire blob_wr_stb = blob_sel && bridge_wr && !prev_bridge_wr;
-
-	always @(posedge clk_74a) begin
-		prev_bridge_wr <= bridge_wr;
-
-		if (blob_wr_stb) begin
-			blob[blob_word] <= bridge_wr_data;
-			dbg_wr_count    <= dbg_wr_count + 32'd1;
-			dbg_last_addr   <= blob_word;
-
-			// PROBE, second round. The first round proved the blob arrives
-			// complete (8424 words, last address 8423) but lands one word out.
-			// Rising-edge capture did not change that, so the strobe width is
-			// not the cause and the question is now what the BUS carries: this
-			// keeps the data seen at address 0 and at address 1, to be compared
-			// against the loaded file's payload words 0 and 1.
-			if (blob_word == 14'd0) dbg_a0 <= bridge_wr_data;
-			if (blob_word == 14'd1) dbg_a1 <= bridge_wr_data;
-		end
-
-		blob_q <= blob[blob_word];
-
-		// Exact compares rather than a range plus a subtract: four equalities
-		// against a constant are a handful of LUTs, and this is temporary.
-		dbg_hit <= blob_sel && (blob_word[13:2] == DBG_BASE[13:2])
-		                    && (blob_word[13:2] != 12'd0);
-		case (blob_word[1:0])
-			2'd0:    dbg_q <= dbg_a0;
-			2'd1:    dbg_q <= dbg_a1;
-			2'd2:    dbg_q <= dbg_wr_count;
-			default: dbg_q <= {18'd0, dbg_last_addr};
-		endcase
-	end
-
-	// The probe registers live entirely on clk_74a -- written by the bridge write
-	// strobe, read by the bridge read -- so nothing here crosses a clock domain.
-	// The previous round captured engine-side values on clk_sys and did need
-	// care about that; this one does not.
-
-	assign bridge_rd_data = dbg_hit ? dbg_q : blob_q;
-
 	// Has APF finished writing the blob?
 	//
 	// The load command and the transfer are not ordered by anything this module
@@ -346,6 +273,101 @@ module ngpc_savestate_bridge #(
 	wire blob_quiet_s;
 
 	synch_3 quiet_sync (blob_quiet_74, blob_quiet_s, clk_sys);
+
+	// ---- APF side (clk_74a) -------------------------------------------------
+	//
+	// A plain window into the store. APF reads it after a save and writes it
+	// before a load; there is no handshake here because the sequencing below
+	// guarantees it never overlaps the engine.
+
+
+	// PROBE: how much APF has written, and where it last wrote. If the count is
+	// zero when a load fails, the blob never reached this core and the fault is
+	// in the transfer rather than anywhere in this module.
+	reg [31:0] dbg_wr_count;
+	reg [13:0] dbg_last_addr;
+
+	localparam [13:0] DBG_BASE = 14'd8420;   // past the state, 4-aligned for the decode
+
+	reg [31:0] blob_q;
+	reg [31:0] dbg_q;
+	reg        dbg_hit;
+
+	wire        blob_sel  = bridge_addr[31:28] == BLOB_ADDR_NIBBLE;
+	wire [13:0] blob_word = bridge_addr[15:2];
+
+	// WRITES GO WHERE THEY ARRIVE, NOT WHERE THE ADDRESS SAYS.
+	//
+	// bridge_addr is not trustworthy per word during a write burst. Two probe
+	// rounds from the device showed the blob arriving complete and in order --
+	// 8424 words, addresses running 0 to 8423 -- but every word paired with the
+	// address one place behind it: at address 0 the bus carried payload word 1.
+	//
+	// Both working openFPGA cores that implement savestates ignore the address
+	// on this path entirely. The NES reference and the GBA core each gate a FIFO
+	// on nothing but `bridge_wr && bridge_addr[31:28] == 4'h4` and rely on
+	// arrival order. A FIFO cannot serve this engine -- it reads the header back
+	// first and writes it last -- but the ORDER it relies on is sound, so a
+	// write pointer gets the same guarantee into a memory.
+	//
+	// The pointer restarts on the first write after a quiet period, which is
+	// what separates one transfer from the next.
+	reg prev_bridge_wr;
+	reg [13:0] wr_ptr;
+	wire blob_wr_stb = blob_sel && bridge_wr && !prev_bridge_wr;
+
+	// True on the first write of a burst: the quiet counter has not been reset
+	// by this write yet, so it still reads saturated.
+	wire wr_first = blob_quiet_74;
+	wire [13:0] wr_at = wr_first ? 14'd0 : wr_ptr;
+
+	// ONE address expression for this port. Quartus will not infer block RAM
+	// from a process that indexes the array two different ways, and APF never
+	// reads and writes in the same cycle, so the write pointer and the read
+	// address can share the port. A read issued during a write returns nothing
+	// meaningful, and nothing asks for one.
+	wire [13:0] b_addr = blob_wr_stb ? wr_at : blob_word;
+
+	always @(posedge clk_74a) begin
+		prev_bridge_wr <= bridge_wr;
+
+		if (blob_wr_stb) begin
+			blob[b_addr]    <= bridge_wr_data;
+			wr_ptr          <= wr_at + 14'd1;
+			dbg_wr_count    <= dbg_wr_count + 32'd1;
+			dbg_last_addr   <= wr_at;
+
+			// PROBE, second round. The first round proved the blob arrives
+			// complete (8424 words, last address 8423) but lands one word out.
+			// Rising-edge capture did not change that, so the strobe width is
+			// not the cause and the question is now what the BUS carries: this
+			// keeps the data seen at address 0 and at address 1, to be compared
+			// against the loaded file's payload words 0 and 1.
+			if (wr_at == 14'd0) dbg_a0 <= bridge_wr_data;
+			if (wr_at == 14'd1) dbg_a1 <= bridge_wr_data;
+		end
+
+		blob_q <= blob[b_addr];
+
+		// Exact compares rather than a range plus a subtract: four equalities
+		// against a constant are a handful of LUTs, and this is temporary.
+		dbg_hit <= blob_sel && (blob_word[13:2] == DBG_BASE[13:2])
+		                    && (blob_word[13:2] != 12'd0);
+		case (blob_word[1:0])
+			2'd0:    dbg_q <= dbg_a0;
+			2'd1:    dbg_q <= dbg_a1;
+			2'd2:    dbg_q <= dbg_wr_count;
+			default: dbg_q <= {18'd0, dbg_last_addr};
+		endcase
+	end
+
+	// The probe registers live entirely on clk_74a -- written by the bridge write
+	// strobe, read by the bridge read -- so nothing here crosses a clock domain.
+	// The previous round captured engine-side values on clk_sys and did need
+	// care about that; this one does not.
+
+	assign bridge_rd_data = dbg_hit ? dbg_q : blob_q;
+
 
 	// ---- Sequencing --------------------------------------------------------
 	//
