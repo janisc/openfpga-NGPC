@@ -311,11 +311,10 @@ module ngpc_savestate_bridge #(
 		endcase
 	end
 
-	// dbg_w0/w1 cross from clk_sys with no synchroniser, deliberately. They are
-	// written once when a load reads the header and read many milliseconds
-	// later when a state is saved; there is no window in which the two coincide.
-	// A synchroniser here cost 192 flops and, at 99% occupancy, about 1.6 ns of
-	// timing across the whole design. This is a temporary probe, not a feature.
+	// The probe registers live entirely on clk_74a -- written by the bridge write
+	// strobe, read by the bridge read -- so nothing here crosses a clock domain.
+	// The previous round captured engine-side values on clk_sys and did need
+	// care about that; this one does not.
 
 	assign bridge_rd_data = dbg_hit ? dbg_q : blob_q;
 
