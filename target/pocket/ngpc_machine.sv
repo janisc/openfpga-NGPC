@@ -74,23 +74,18 @@ module ngpc_machine
 	output wire [15:0] audio_r,
 
 	// ---- Cartridge saves --------------------------------------------------
-	// The sector device is ngpc_sd_bridge, which lives in the top level
-	// because it needs the APF bridge and target-command buses.
-	output wire [22:0] sd_lba,
-	output wire        sd_rd,
-	output wire        sd_wr,
-	input  wire        sd_busy,
-	input  wire        sd_err,
-	output wire  [7:0] sd_buf_addr,
-	output wire [15:0] sd_buf_wdata,
-	output wire        sd_buf_we,
-	input  wire [15:0] sd_buf_rdata,
-
-	input  wire        save_present,     // the save slot has a file
-	input  wire        save_request,     // menu: save now
-	input  wire        load_request,     // menu: reload from file
-	input  wire        opt_autosave_off,
-	input  wire        host_in_menu,     // APF osnotify_inmenu
+	// Saving is not an action here. A nonvolatile data slot is loaded into the
+	// staging region by APF at core start and read back at exit; this machine
+	// only keeps that region current. ngpc_stage_mem lives in the top level
+	// because it also answers the bridge.
+	output wire        stage_req,
+	output wire        stage_we,
+	output wire [24:0] stage_addr,
+	output wire [15:0] stage_wdata,
+	input  wire        stage_ready,
+	input  wire        stage_done,
+	input  wire [15:0] stage_rdata,
+	input  wire        host_busy,        // APF is moving the slot
 
 	// ---- Savestates --------------------------------------------------------
 	// The engine lives here, beside the machine it serialises; the controller
@@ -98,8 +93,6 @@ module ngpc_machine
 	input  wire        ss_save_i,
 	input  wire        ss_load_i,
 	output wire        ss_busy_o,
-	input  wire        cart_save_req_i,
-	output wire        cart_save_busy_o,
 
 	output wire [63:0] bus_out_Din,
 	input  wire [63:0] bus_out_Dout,
@@ -570,10 +563,7 @@ module ngpc_machine
 	wire  [5:0] cart_dirty1_block;
 	wire  [1:0] cart_die_busy;
 
-	wire        save_pause_req;
 	wire        save_busy;
-
-	assign cart_save_busy_o = save_busy;
 
 	ngpc_cart_save cart_save
 	(
@@ -593,14 +583,8 @@ module ngpc_machine
 		.block1_i        (cart_dirty1_block),
 		.die_busy_i      (cart_die_busy),
 
-		.save_req_i      (save_request | cart_save_req_i),
-		.load_req_i      (load_request),
-		.autosave_off_i  (opt_autosave_off),
-		.host_in_menu_i  (host_in_menu),
-		.save_present_i  (save_present),
+		.host_busy_i     (host_busy),
 
-		.pause_req_o     (save_pause_req),
-		.pause_ready_i   (pause_ready),
 		.boot_hold_o     (overlay_boot_hold),
 		.busy_o          (save_busy),
 
@@ -613,15 +597,13 @@ module ngpc_machine
 		.p2_done_i       (overlay_p2_done),
 		.p2_rdata_i      (cart_bg_rdata),
 
-		.lba_o           (sd_lba),
-		.rd_o            (sd_rd),
-		.wr_o            (sd_wr),
-		.sd_busy_i       (sd_busy),
-		.sd_err_i        (sd_err),
-		.buf_addr_o      (sd_buf_addr),
-		.buf_wdata_o     (sd_buf_wdata),
-		.buf_we_o        (sd_buf_we),
-		.buf_rdata_i     (sd_buf_rdata)
+		.stage_req_o     (stage_req),
+		.stage_we_o      (stage_we),
+		.stage_addr_o    (stage_addr),
+		.stage_wdata_o   (stage_wdata),
+		.stage_ready_i   (stage_ready),
+		.stage_done_i    (stage_done),
+		.stage_rdata_i   (stage_rdata)
 	);
 
 	//////////////////////////// Savestates //////////////////////////////////
@@ -847,7 +829,7 @@ module ngpc_machine
 		.ss_mem_rdata         (ss_mem_rdata),
 		.loading_savestate    (eng_loading),
 
-		.pause_req            (seed_pause_req | save_pause_req | eng_pause_req),
+		.pause_req            (seed_pause_req | eng_pause_req),
 		.pause_ready          (pause_ready)
 	);
 

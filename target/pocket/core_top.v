@@ -275,20 +275,7 @@ module core_top (
   // there is no pin for it. ngpc_machine's header explains why that is safe
   // with this controller.
 
-  // Both PSRAMs are unused. ngpc_ddr_psram exists in the tree and presents
-  // ddram.v's channel interface over cram0, for whenever the savestate path
-  // needs a DDR-shaped memory; the save path here does not.
-  assign cram0_a                 = 'h0;
-  assign cram0_dq                = {16{1'bZ}};
-  assign cram0_clk               = 0;
-  assign cram0_adv_n             = 1;
-  assign cram0_cre               = 0;
-  assign cram0_ce0_n             = 1;
-  assign cram0_ce1_n             = 1;
-  assign cram0_oe_n              = 1;
-  assign cram0_we_n              = 1;
-  assign cram0_ub_n              = 1;
-  assign cram0_lb_n              = 1;
+  // cram0 is the save staging region -- see ngpc_stage_mem. cram1 stays free.
 
   assign cram1_a                 = 'h0;
   assign cram1_dq                = {16{1'bZ}};
@@ -330,7 +317,7 @@ module core_top (
 
     // The save block buffer, which APF drains during a target write.
     if (bridge_addr[31:28] == 4'h5) begin
-      bridge_rd_data <= sd_bridge_rd_data;
+      bridge_rd_data <= stage_bridge_rd_data;
     end else if (bridge_addr[31:28] == 4'h4) begin
       // The savestate blob, which APF drains after asking for a state.
       bridge_rd_data <= savestate_rd_data;
@@ -516,17 +503,19 @@ module core_top (
 
       .osnotify_inmenu(osnotify_inmenu),
 
-      .target_dataslot_read      (target_dataslot_read),
-      .target_dataslot_write     (target_dataslot_write),
+      // A nonvolatile slot needs no target commands: APF moves it in and out
+      // on its own schedule.
+      .target_dataslot_read      (1'b0),
+      .target_dataslot_write     (1'b0),
       .target_dataslot_getfile   (1'b0),
       .target_dataslot_openfile  (1'b0),
-      .target_dataslot_ack       (target_dataslot_ack),
-      .target_dataslot_done      (target_dataslot_done),
-      .target_dataslot_err       (target_dataslot_err),
-      .target_dataslot_id        (target_dataslot_id),
-      .target_dataslot_slotoffset(target_dataslot_slotoffset),
-      .target_dataslot_bridgeaddr(target_dataslot_bridgeaddr),
-      .target_dataslot_length    (target_dataslot_length),
+      .target_dataslot_ack       (),
+      .target_dataslot_done      (),
+      .target_dataslot_err       (),
+      .target_dataslot_id        (16'd0),
+      .target_dataslot_slotoffset(32'd0),
+      .target_dataslot_bridgeaddr(32'd0),
+      .target_dataslot_length    (32'd0),
       .target_buffer_param_struct(32'h60000000),
       .target_buffer_resp_struct (32'h60000400)
   );
@@ -538,15 +527,6 @@ module core_top (
   wire [15:0] dataslot_update_id;
   wire [31:0] dataslot_update_size;
 
-  wire        target_dataslot_read;
-  wire        target_dataslot_write;
-  wire        target_dataslot_ack;
-  wire        target_dataslot_done;
-  wire  [2:0] target_dataslot_err;
-  wire [15:0] target_dataslot_id;
-  wire [31:0] target_dataslot_slotoffset;
-  wire [31:0] target_dataslot_bridgeaddr;
-  wire [31:0] target_dataslot_length;
 
   localparam [15:0] SAVE_SLOT_ID = 16'd10;
 
@@ -578,51 +558,103 @@ module core_top (
       clk_sys
   );
 
-  wire [22:0] sd_lba;
-  wire        sd_rd;
-  wire        sd_wr;
-  wire        sd_busy;
-  wire        sd_err;
-  wire  [7:0] sd_buf_addr;
-  wire [15:0] sd_buf_wdata;
-  wire        sd_buf_we;
-  wire [15:0] sd_buf_rdata;
-  wire [31:0] sd_bridge_rd_data;
+  // ---- Save staging: a nonvolatile slot, served from PSRAM ---------------
+  //
+  // APF writes the slot into this region at core start and reads it back at
+  // exit. Neither direction involves a command from us: the core owns the
+  // memory, the host owns the file. That is the whole mechanism.
 
-  ngpc_sd_bridge #(
-      .SAVE_SLOT_ID(SAVE_SLOT_ID),
-      .BUFFER_BRIDGE_ADDR(32'h5000_0000)
-  ) sd_bridge (
-      .clk_sys(clk_sys),
-      .clk_74a(clk_74a),
-      .reset  (reset_in),
+  wire        stage_req;
+  wire        stage_we;
+  wire [24:0] stage_addr;
+  wire [15:0] stage_wdata;
+  wire        stage_ready;
+  wire        stage_done;
+  wire [15:0] stage_rdata;
+  wire        host_busy;
+
+  wire        stage_host_wr;
+  wire [27:0] stage_host_wr_addr;
+  wire [15:0] stage_host_wr_data;
+
+  data_loader #(
+      .ADDRESS_MASK_UPPER_4(4'h5),
+      .OUTPUT_WORD_SIZE(2)
+  ) stage_fill (
+      .clk_74a   (clk_74a),
+      .clk_memory(clk_sys),
 
       .bridge_wr           (bridge_wr),
-      .bridge_rd           (bridge_rd),
       .bridge_endian_little(bridge_endian_little),
       .bridge_addr         (bridge_addr),
       .bridge_wr_data      (bridge_wr_data),
-      .bridge_rd_data      (sd_bridge_rd_data),
 
-      .target_dataslot_read      (target_dataslot_read),
-      .target_dataslot_write     (target_dataslot_write),
-      .target_dataslot_ack       (target_dataslot_ack),
-      .target_dataslot_done      (target_dataslot_done),
-      .target_dataslot_err       (target_dataslot_err),
-      .target_dataslot_id        (target_dataslot_id),
-      .target_dataslot_slotoffset(target_dataslot_slotoffset),
-      .target_dataslot_bridgeaddr(target_dataslot_bridgeaddr),
-      .target_dataslot_length    (target_dataslot_length),
+      .write_en  (stage_host_wr),
+      .write_addr(stage_host_wr_addr),
+      .write_data(stage_host_wr_data)
+  );
 
-      .lba_i      (sd_lba),
-      .rd_i       (sd_rd),
-      .wr_i       (sd_wr),
-      .busy_o     (sd_busy),
-      .err_o      (sd_err),
-      .buf_addr_i (sd_buf_addr),
-      .buf_wdata_i(sd_buf_wdata),
-      .buf_we_i   (sd_buf_we),
-      .buf_rdata_o(sd_buf_rdata)
+  wire        stage_host_rd;
+  wire [27:0] stage_host_rd_addr;
+  wire [15:0] stage_host_rd_data;
+  wire [31:0] stage_bridge_rd_data;
+
+  // PSRAM answers in a bounded ~70 ns with no refresh, so the unloader's fixed
+  // read latency is honest here. Against cartridge SDRAM it would not be --
+  // a refresh or a burst of CPU fetches would stretch the access and this
+  // would latch whatever happened to be on the bus.
+  data_unloader #(
+      .ADDRESS_MASK_UPPER_4(4'h5),
+      .INPUT_WORD_SIZE(2),
+      .READ_MEM_CLOCK_DELAY(32)
+  ) stage_drain (
+      .clk_74a   (clk_74a),
+      .clk_memory(clk_sys),
+
+      .bridge_rd           (bridge_rd),
+      .bridge_endian_little(bridge_endian_little),
+      .bridge_addr         (bridge_addr),
+      .bridge_rd_data      (stage_bridge_rd_data),
+
+      .read_en  (stage_host_rd),
+      .read_addr(stage_host_rd_addr),
+      .read_data(stage_host_rd_data)
+  );
+
+  ngpc_stage_mem stage_mem (
+      .clk  (clk_sys),
+      .reset(reset_in),
+
+      .host_wr_i     (stage_host_wr),
+      .host_wr_addr_i(stage_host_wr_addr[24:0]),
+      .host_wr_data_i(stage_host_wr_data),
+
+      .host_rd_i     (stage_host_rd),
+      .host_rd_addr_i(stage_host_rd_addr[24:0]),
+      .host_rd_data_o(stage_host_rd_data),
+
+      .host_busy_o(host_busy),
+
+      .eng_req_i  (stage_req),
+      .eng_we_i   (stage_we),
+      .eng_addr_i (stage_addr),
+      .eng_wdata_i(stage_wdata),
+      .eng_ready_o(stage_ready),
+      .eng_done_o (stage_done),
+      .eng_rdata_o(stage_rdata),
+
+      .cram_a    (cram0_a),
+      .cram_dq   (cram0_dq),
+      .cram_wait (cram0_wait),
+      .cram_clk  (cram0_clk),
+      .cram_adv_n(cram0_adv_n),
+      .cram_cre  (cram0_cre),
+      .cram_ce0_n(cram0_ce0_n),
+      .cram_ce1_n(cram0_ce1_n),
+      .cram_oe_n (cram0_oe_n),
+      .cram_we_n (cram0_we_n),
+      .cram_ub_n (cram0_ub_n),
+      .cram_lb_n (cram0_lb_n)
   );
 
   // ----------------------------------------------------------------------
@@ -815,8 +847,6 @@ module core_top (
   wire        ss_save;
   wire        ss_load;
   wire        ss_busy;
-  wire        ss_cart_save_req;
-  wire        ss_cart_save_busy;
 
   wire [63:0] bus_out_Din;
   wire [63:0] bus_out_Dout;
@@ -848,9 +878,6 @@ module core_top (
       .bridge_addr   (bridge_addr),
       .bridge_wr_data(bridge_wr_data),
       .bridge_rd_data(savestate_rd_data),
-
-      .cart_save_req (ss_cart_save_req),
-      .cart_save_busy(ss_cart_save_busy),
 
       .ss_save(ss_save),
       .ss_load(ss_load),
@@ -910,27 +937,18 @@ module core_top (
       .audio_l(audio_l),
       .audio_r(audio_r),
 
-      .sd_lba      (sd_lba),
-      .sd_rd       (sd_rd),
-      .sd_wr       (sd_wr),
-      .sd_busy     (sd_busy),
-      .sd_err      (sd_err),
-      .sd_buf_addr (sd_buf_addr),
-      .sd_buf_wdata(sd_buf_wdata),
-      .sd_buf_we   (sd_buf_we),
-      .sd_buf_rdata(sd_buf_rdata),
-
-      .save_present    (save_present_s),
-      .save_request    (save_request),
-      .load_request    (load_request),
-      .opt_autosave_off(opt_autosave_off_s),
-      .host_in_menu    (host_in_menu_s),
+      .stage_req  (stage_req),
+      .stage_we   (stage_we),
+      .stage_addr (stage_addr),
+      .stage_wdata(stage_wdata),
+      .stage_ready(stage_ready),
+      .stage_done (stage_done),
+      .stage_rdata(stage_rdata),
+      .host_busy  (host_busy),
 
       .ss_save_i       (ss_save),
       .ss_load_i       (ss_load),
       .ss_busy_o       (ss_busy),
-      .cart_save_req_i (ss_cart_save_req),
-      .cart_save_busy_o(ss_cart_save_busy),
 
       .bus_out_Din (bus_out_Din),
       .bus_out_Dout(bus_out_Dout),

@@ -21,21 +21,23 @@
 // tail -- 1,752 lines of manifest and store that this device has no room for.
 //
 // That matters because sleep powers the FPGA down and SDRAM loses the
-// cartridge. On wake APF reloads the cartridge from its file, which is the
-// PRISTINE image: every block the game wrote during the session would be gone,
-// and the restored machine state would be describing flash contents that no
-// longer exist.
+// cartridge. On wake APF reloads it from its file, which is the PRISTINE image:
+// every block the game wrote during the session would be gone, and the restored
+// machine state would describe flash that no longer exists.
 //
-// So a savestate save first triggers a cartridge save through ngpc_cart_save.
-// The flash lands in the .sav, the machine state lands in the state blob, and
-// on wake the cartridge is reloaded, the .sav is applied while the machine is
-// still held in reset, and only then is the state restored. The two halves meet
-// in the right order.
+// ngpc_cart_save handles that independently and continuously -- it stages dirty
+// blocks into the nonvolatile slot whenever the flash goes quiet, so by the time
+// APF asks for a state the cartridge side is already saved. This module used to
+// trigger a save and wait for it; with staging always current there is nothing
+// to trigger.
 //
-// The cost is that a sleep takes as long as a cartridge save does, and that a
-// state blob is only meaningful alongside the .sav written at the same moment.
-// Restoring a state against a different .sav would be incoherent; nothing here
-// currently detects that, which is worth fixing before this is relied upon.
+// On wake the order still matters and still holds: the cartridge is reloaded,
+// the staged blocks are applied while the machine is held in reset, and only
+// then is the state restored.
+//
+// A state blob is only coherent with the save staged at the same moment.
+// Nothing here detects a mismatched pair, which is worth fixing before this is
+// relied upon.
 
 `default_nettype none
 
@@ -66,10 +68,6 @@ module ngpc_savestate_bridge #(
 	input  wire [31:0] bridge_addr,
 	input  wire [31:0] bridge_wr_data,
 	output wire [31:0] bridge_rd_data,
-
-	// ---- Cartridge save, run before a state save --------------------------
-	output reg         cart_save_req,
-	input  wire        cart_save_busy,
 
 	// ---- The engine (savestates.sv), clk_sys ------------------------------
 	output reg         ss_save,
@@ -200,7 +198,6 @@ module ngpc_savestate_bridge #(
 	// ---- Sequencing --------------------------------------------------------
 
 	localparam S_IDLE       = 3'd0;
-	localparam S_CART_SAVE  = 3'd1;
 	localparam S_SAVE_RUN   = 3'd2;
 	localparam S_LOAD_RUN   = 3'd3;
 	localparam S_DONE       = 3'd4;
@@ -211,7 +208,6 @@ module ngpc_savestate_bridge #(
 	always @(posedge clk_sys) begin
 		ss_save       <= 1'b0;
 		ss_load       <= 1'b0;
-		cart_save_req <= 1'b0;
 		save_fifo_wr  <= 1'b0;
 		load_fifo_rd  <= 1'b0;
 		bus_out_done  <= 1'b0;
@@ -249,13 +245,12 @@ module ngpc_savestate_bridge #(
 					load_ack_q  <= 1'b0;
 
 					if (start_s && !prev_start) begin
-						// Flash first: see the header.
 						start_ack_q  <= 1'b1;
 						start_busy_q <= 1'b1;
 						start_ok_q   <= 1'b0;
 						start_err_q  <= 1'b0;
-						cart_save_req <= 1'b1;
-						state        <= S_CART_SAVE;
+						ss_save      <= 1'b1;
+						state        <= S_SAVE_RUN;
 					end else if (load_s && !prev_load) begin
 						load_ack_q  <= 1'b1;
 						load_busy_q <= 1'b1;
@@ -266,15 +261,8 @@ module ngpc_savestate_bridge #(
 					end
 				end
 
-				S_CART_SAVE: begin
-					start_ack_q <= 1'b0;
-					if (!cart_save_busy) begin
-						ss_save <= 1'b1;
-						state   <= S_SAVE_RUN;
-					end
-				end
-
 				S_SAVE_RUN: begin
+					start_ack_q <= 1'b0;
 					if (prev_ss_busy && !ss_busy) begin
 						start_busy_q <= 1'b0;
 						start_ok_q   <= 1'b1;

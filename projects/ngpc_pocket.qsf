@@ -30,7 +30,7 @@ set_global_assignment -name PERIPHERY_TO_CORE_PLACEMENT_AND_ROUTING_OPTIMIZATION
 set_global_assignment -name PHYSICAL_SYNTHESIS_ASYNCHRONOUS_SIGNAL_PIPELINING ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION OFF
-set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING OFF
 set_global_assignment -name ROUTER_CLOCKING_TOPOLOGY_ANALYSIS ON
 set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION OFF
 set_global_assignment -name FITTER_AGGRESSIVE_ROUTABILITY_OPTIMIZATION ALWAYS
@@ -751,3 +751,14 @@ set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_spimosi
 # Retiming buys ~3 ns but costs ~1,700 registers. FAST does less of both,
 # which is the only middle ground between "fits" and "meets timing".
 set_global_assignment -name PHYSICAL_SYNTHESIS_EFFORT FAST
+
+# Register retiming: OFF, and this is a measured decision, not a default.
+#
+# Global retiming closes timing (-1.801 ns against -2.852) but costs about 600
+# ALMs and overflows the device at 18,517 of 18,480. Scoping the assignment to
+# t900_cpu, where the entire critical path lives, does not help -- 18,542, very
+# slightly worse -- because that is where the retiming registers were being
+# spent anyway. Seeds do not rescue it either: 18,512 / 18,555 / 18,573.
+#
+# So retiming and fitting are mutually exclusive on this design. OFF is what
+# fits, with saves and sleep both present and roughly 580 ALMs to spare.
