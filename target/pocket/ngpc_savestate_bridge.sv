@@ -78,6 +78,7 @@ module ngpc_savestate_bridge #(
 	output reg         ss_save,
 	output reg         ss_load,
 	input  wire        ss_busy,
+	input  wire        ss_loading,   // engine accepted the blob's header
 
 	input  wire [63:0] bus_out_Din,     // engine -> here, on a save
 	output wire [63:0] bus_out_Dout,    // here -> engine, on a restore
@@ -245,6 +246,35 @@ module ngpc_savestate_bridge #(
 
 	assign bridge_rd_data = blob_q;
 
+	// Has APF finished writing the blob?
+	//
+	// The load command and the transfer are not ordered by anything this module
+	// can see. The reference core sidesteps the question by starting the moment
+	// data appears and treating the command as a trailing acknowledgement; that
+	// works for a queue, but a memory has to be COMPLETE before the engine reads
+	// its header, not merely started.
+	//
+	// So the engine waits for the transfer to go quiet. If the data came first
+	// the wait is already satisfied when the command arrives; if the command
+	// came first, this is what stops the engine reading an empty store, failing
+	// the header check, and reporting a success that restores nothing.
+	localparam [16:0] BLOB_QUIET = 17'd100_000;   // ~1.35 ms at 74.25 MHz
+
+	reg [16:0] blob_quiet_cnt = BLOB_QUIET;
+
+	always @(posedge clk_74a) begin
+		if (blob_sel && bridge_wr) begin
+			blob_quiet_cnt <= 17'd0;
+		end else if (blob_quiet_cnt != BLOB_QUIET) begin
+			blob_quiet_cnt <= blob_quiet_cnt + 17'd1;
+		end
+	end
+
+	wire blob_quiet_74 = (blob_quiet_cnt == BLOB_QUIET);
+	wire blob_quiet_s;
+
+	synch_3 quiet_sync (blob_quiet_74, blob_quiet_s, clk_sys);
+
 	// ---- Sequencing --------------------------------------------------------
 	//
 	// With a memory behind it this is the straightforward reading of the
@@ -253,13 +283,15 @@ module ngpc_savestate_bridge #(
 	// ok means the blob is complete and sitting at savestate_addr. On a load
 	// APF has already written the whole region before it issues the command.
 
-	localparam S_IDLE     = 3'd0;
-	localparam S_SAVE_RUN = 3'd1;
-	localparam S_LOAD_RUN = 3'd2;
-	localparam S_DONE     = 3'd3;
+	localparam S_IDLE      = 3'd0;
+	localparam S_SAVE_RUN  = 3'd1;
+	localparam S_LOAD_WAIT = 3'd2;
+	localparam S_LOAD_RUN  = 3'd3;
+	localparam S_DONE      = 3'd4;
 
-	reg [2:0] state;
-	reg       prev_start, prev_load, prev_ss_busy;
+	reg [2:0]  state;
+	reg        prev_start, prev_load, prev_ss_busy;
+	reg        saw_loading;      // the engine accepted the header this run
 
 	always @(posedge clk_sys) begin
 		ss_save <= 1'b0;
@@ -271,6 +303,7 @@ module ngpc_savestate_bridge #(
 
 		if (reset) begin
 			state        <= S_IDLE;
+			saw_loading  <= 1'b0;
 			start_ack_q  <= 1'b0; start_busy_q <= 1'b0;
 			start_ok_q   <= 1'b0; start_err_q  <= 1'b0;
 			load_ack_q   <= 1'b0; load_busy_q  <= 1'b0;
@@ -289,12 +322,12 @@ module ngpc_savestate_bridge #(
 						ss_save      <= 1'b1;
 						state        <= S_SAVE_RUN;
 					end else if (load_s && !prev_load) begin
-						load_ack_q  <= 1'b1;
-						load_busy_q <= 1'b1;
-						load_ok_q   <= 1'b0;
-						load_err_q  <= 1'b0;
-						ss_load     <= 1'b1;
-						state       <= S_LOAD_RUN;
+						load_ack_q    <= 1'b1;
+						load_busy_q   <= 1'b1;
+						load_ok_q     <= 1'b0;
+						load_err_q    <= 1'b0;
+						saw_loading   <= 1'b0;
+						state         <= S_LOAD_WAIT;
 					end
 				end
 
@@ -307,11 +340,37 @@ module ngpc_savestate_bridge #(
 					end
 				end
 
+				// Hold until the transfer is quiet, then start the engine.
+				//
+				// No timeout guards this, and none is needed: the quiet counter
+				// starts SATISFIED, so a load command with no transfer behind it
+				// starts the engine at once, fails the header check and reports
+				// the failure. The only way to wait here is for writes to be
+				// actively arriving, and those stop.
+				S_LOAD_WAIT: begin
+					load_ack_q <= 1'b0;
+
+					if (blob_quiet_s) begin
+						ss_load <= 1'b1;
+						state   <= S_LOAD_RUN;
+					end
+				end
+
 				S_LOAD_RUN: begin
 					load_ack_q <= 1'b0;
+
+					if (ss_loading) begin
+						saw_loading <= 1'b1;
+					end
+
 					if (prev_ss_busy && !ss_busy) begin
 						load_busy_q <= 1'b0;
-						load_ok_q   <= 1'b1;
+						// The engine raises loading_savestate only after the
+						// header check passes. Without it the blob was rejected
+						// and nothing was restored -- which must be reported as a
+						// failure, not as a success that silently does nothing.
+						load_ok_q   <=  saw_loading;
+						load_err_q  <= !saw_loading;
 						state       <= S_DONE;
 					end
 				end

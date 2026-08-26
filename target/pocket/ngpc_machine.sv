@@ -93,6 +93,10 @@ module ngpc_machine
 	input  wire        ss_save_i,
 	input  wire        ss_load_i,
 	output wire        ss_busy_o,
+	// High only once the engine has ACCEPTED a state -- it is raised after
+	// the header check passes, so a run that ends without it is a rejected
+	// blob rather than a completed restore.
+	output wire        ss_loading_o,
 
 	output wire [63:0] bus_out_Din,
 	input  wire [63:0] bus_out_Dout,
@@ -646,7 +650,8 @@ module ngpc_machine
 	wire        eng_ss_mem_wren;
 	wire        eng_ss_mem_rden;
 
-	assign ss_busy_o = eng_busy;
+	assign ss_busy_o    = eng_busy;
+	assign ss_loading_o = eng_loading;
 
 	savestates #(
 		.STATESIZE_PARAM      (8416),

@@ -855,6 +855,7 @@ module core_top (
   wire        ss_save;
   wire        ss_load;
   wire        ss_busy;
+  wire        ss_loading;
 
   wire [63:0] bus_out_Din;
   wire [63:0] bus_out_Dout;
@@ -890,6 +891,7 @@ module core_top (
       .ss_save(ss_save),
       .ss_load(ss_load),
       .ss_busy(ss_busy),
+      .ss_loading(ss_loading),
 
       .bus_out_Din (bus_out_Din),
       .bus_out_Dout(bus_out_Dout),
@@ -957,6 +959,7 @@ module core_top (
       .ss_save_i       (ss_save),
       .ss_load_i       (ss_load),
       .ss_busy_o       (ss_busy),
+      .ss_loading_o(ss_loading),
 
       .bus_out_Din (bus_out_Din),
       .bus_out_Dout(bus_out_Dout),
