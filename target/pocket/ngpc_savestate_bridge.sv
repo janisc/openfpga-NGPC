@@ -326,10 +326,42 @@ module ngpc_savestate_bridge #(
 	// reads and writes in the same cycle, so the write pointer and the read
 	// address can share the port. A read issued during a write returns nothing
 	// meaningful, and nothing asks for one.
-	wire [13:0] b_addr = blob_wr_stb ? wr_at : blob_word;
+	// READS ANSWER THE ADDRESS THAT WAS LATCHED, NOT THE ONE ON THE BUS NOW.
+	//
+	// data_unloader -- the module APF's own reference cores use to serve a
+	// memory over the bridge -- takes bridge_addr on the RISING EDGE of
+	// bridge_rd (data_unloader.sv:133), prefetches, and then presents
+	// bridge_rd_data whenever the data turns up. Its READ_MEM_CLOCK_DELAY goes
+	// up to 32 cycles, so APF plainly tolerates a long latency; what it does
+	// not tolerate is being handed data for a different address than the one it
+	// asked for.
+	//
+	// This port used to follow bridge_addr continuously, so what APF sampled
+	// depended on where the address happened to be one cycle earlier. If APF
+	// streams addresses and samples on its own schedule, that hands back the
+	// neighbouring word -- an off-by-one in the SAVE direction, which would put
+	// the header in the wrong place in the file and make every load fail no
+	// matter how correct the load path is.
+	//
+	// Latching at the edge and holding until the next one is what the reference
+	// modules do, and it is correct for any sampling time at least one cycle
+	// after the edge.
+	reg        prev_bridge_rd;
+	reg [13:0] rd_addr_l;
+
+	wire blob_rd_stb = blob_sel && bridge_rd && !prev_bridge_rd;
+
+	wire [13:0] b_addr = blob_wr_stb ? wr_at
+	                   : blob_rd_stb ? blob_word
+	                   : rd_addr_l;
 
 	always @(posedge clk_74a) begin
 		prev_bridge_wr <= bridge_wr;
+		prev_bridge_rd <= bridge_rd;
+
+		if (blob_rd_stb) begin
+			rd_addr_l <= blob_word;
+		end
 
 		if (blob_wr_stb) begin
 			blob[b_addr]    <= bridge_wr_data;
@@ -353,11 +385,18 @@ module ngpc_savestate_bridge #(
 		// against a constant are a handful of LUTs, and this is temporary.
 		dbg_hit <= blob_sel && (blob_word[13:2] == DBG_BASE[13:2])
 		                    && (blob_word[13:2] != 12'd0);
+		// Word 8420 is a MARKER, not data. Everything measured so far has been
+		// read back through this same path, so a shift in it would move the
+		// probe values and the offset I compute from them together and stay
+		// self-consistent -- which is why "the save is correct" has never
+		// actually been proven. A constant at a known index cannot do that:
+		// wherever 0xA5A50000 turns up in the file, that IS payload word 8420,
+		// and the payload start follows from it.
 		case (blob_word[1:0])
-			2'd0:    dbg_q <= dbg_a0;
-			2'd1:    dbg_q <= dbg_a1;
-			2'd2:    dbg_q <= dbg_wr_count;
-			default: dbg_q <= {18'd0, dbg_last_addr};
+			2'd0:    dbg_q <= 32'hA5A50000;
+			2'd1:    dbg_q <= dbg_a0;
+			2'd2:    dbg_q <= dbg_a1;
+			default: dbg_q <= 32'hA5A5FFFF;
 		endcase
 	end
 
