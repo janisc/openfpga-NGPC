@@ -325,12 +325,31 @@ module ngpc_savestate_bridge #(
 	// because the transfer has been consumed, with a half-second idle backstop
 	// for a transfer that was started and abandoned. SD stalls are far shorter
 	// than that; gaps between real transfers are far longer.
+	// THE FIRST WORD OF A BURST NEVER PASSES THE NIBBLE GATE. Measured, and
+	// then reproduced in simulation (sim/tb_savestate_bridge.sv): APF's write
+	// address lags the data by one strobe, so the burst's first strobe carries
+	// word 0's data under the PRE-BURST address, which is not in this region.
+	// The first strobe this gate accepts is therefore word 1 -- recognizable
+	// beyond doubt, because word 1 of every state file is the size field the
+	// engine stamps into the header: bswap32(8416), a constant for this core.
+	//
+	// So on the first accepted strobe of a burst: if it carries the header
+	// constant it IS word 1, and it goes to slot 1 with slot 0 left stale.
+	// Slot 0 is the header COUNT word, which ST_LOAD_HEADER reads into an
+	// informational register and never checks -- the one word in the whole
+	// state whose loss costs nothing. On a bus with no lag, word 0 arrives
+	// first, fails the compare, and lands at slot 0: both worlds work, one
+	// comparator. If the state size ever changes, HEADER_HI changes with it.
+	localparam [31:0] HEADER_HI = 32'hE020_0000;   // bswap32(8416)
+
 	reg  [13:0] wr_ptr;
 	reg  [25:0] xfer_idle;
 	reg         prev_load_done_74;
 
 	wire        blob_wr_stb  = blob_sel && bridge_wr;
-	wire [13:0] wr_at        = wr_ptr;
+	wire        burst_first  = (wr_ptr == 14'd0);
+	wire        first_is_w1  = burst_first && (bridge_wr_data == HEADER_HI);
+	wire [13:0] wr_at        = first_is_w1 ? 14'd1 : wr_ptr;
 	wire        load_done_74 = savestate_load_ok || savestate_load_err;
 
 	localparam [25:0] XFER_ABANDONED = 26'd37_000_000;   // ~0.5 s at 74.25 MHz

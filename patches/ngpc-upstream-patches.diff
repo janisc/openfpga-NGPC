@@ -1,0 +1,156 @@
+diff --git a/rtl/Savestates/savestates.sv b/rtl/Savestates/savestates.sv
+index 3d8d52f..0fc22e0 100644
+--- a/rtl/Savestates/savestates.sv
++++ b/rtl/Savestates/savestates.sv
+@@ -51,7 +51,9 @@ module savestates
+ 	// inputs at request acceptance, so it must be valid in the same cycle as
+ 	// the save/load pulse.  Tie low if rewind is not wired up.
+ 	input  wire is_rewind_i,
+-	input  integer savestate_address,
++	// `input integer` is what upstream wrote; Icarus 11 rejects an integer
++	// port, and a signed 32-bit wire is the identical thing.
++	input  wire signed [31:0] savestate_address,
+ 	output wire savestate_busy,
+ 	input  wire paused,
+ 
+diff --git a/rtl/soc/k2_soc.sv b/rtl/soc/k2_soc.sv
+index 010a885..6cebbf5 100644
+--- a/rtl/soc/k2_soc.sv
++++ b/rtl/soc/k2_soc.sv
+@@ -630,6 +630,21 @@ module k2_soc
+ 	// RAM cheats behave alike. Writes, memory taps and cartridge backing traffic
+ 	// never pass through it. bus_rdy is observed only to rescan compare records
+ 	// once the raw response is valid; the engine never changes readiness.
++`ifdef NGPC_NO_CHEATS
++	// Cheats reach this core as a MiSTer cheat file. A build with no way to
++	// deliver one still pays for the engine: its comparators sit on the CPU's
++	// read path, between the fabric's raw response and the sequencer, and its
++	// four record tables occupy block RAM. With no table ever written the
++	// engine is a pass-through, but nothing in synthesis can prove that, so
++	// the whole compare cone survives.
++	//
++	// Bypassing it is exact: data_o is data_i whenever no record matches, and
++	// no record can exist. available_o and commit_done_o are only observed by
++	// the unused-signal guard above.
++	assign bus_rdata         = bus_rdata_raw;
++	assign cheat_available   = 1'b0;
++	assign cheat_commit_done = 1'b0;
++`else
+ 	ngp_cheat_engine cheat_engine
+ 	(
+ 		.clk_sys_i        (clk_sys),
+@@ -649,6 +664,7 @@ module k2_soc
+ 		.available_o      (cheat_available),
+ 		.commit_done_o    (cheat_commit_done)
+ 	);
++`endif
+ 
+ 	// fabric : k2_soc_fabric -- the internal bus and the on-chip memories
+ 
+diff --git a/rtl/soc/ngp_mainboard.sv b/rtl/soc/ngp_mainboard.sv
+index 77efed5..e0ad2bd 100644
+--- a/rtl/soc/ngp_mainboard.sv
++++ b/rtl/soc/ngp_mainboard.sv
+@@ -488,6 +488,45 @@ module ngp_mainboard
+ 	// keep normal gameplay continuous. The public raster uses clk_sys directly
+ 	// and therefore continues through every machine pause.
+ 
++`ifdef NGPC_POCKET
++	// Pocket target: APF scales the native raster directly, so the CRT frame
++	// store is replaced by a passthrough presenter that costs no M10K.
++	// See target/pocket/ngpc_pocket_video.sv.
++	ngpc_pocket_video lcd
++	(
++		.clk_sys              (clk_sys),
++		.rst                  (reset),
++
++		.lcd_dclk_ce          (lcd_dclk_ce),
++		.lcd_r                (lcd_r),
++		.lcd_g                (lcd_g),
++		.lcd_b                (lcd_b),
++		.lcd_de               (lcd_de),
++		.lcd_hs               (lcd_hs),
++		.lcd_vs               (lcd_vs),
++		.lcd_lp               (lcd_lp),
++		.lcd_sp               (lcd_sp),
++
++		.external_pause_req   (pause_req),
++		.machine_pause_ready  (machine_pause_ready),
++		.loading_savestate    (loading_savestate),
++		.video_pause_req      (video_pause_req),
++		.video_reset_hold     (video_reset_hold),
++
++		.tint                 (3'd0),
++		.lcd_persistence      (lcd_persistence),
++
++		.ce_pixel             (ce_pix),
++		.vga_r                (vga_r),
++		.vga_g                (vga_g),
++		.vga_b                (vga_b),
++		.vga_de               (lcd_vga_de),
++		.vga_hbl              (hblank),
++		.vga_vbl              (vblank),
++		.vga_hs               (hsync),
++		.vga_vs               (vsync)
++	);
++`else
+ 	ngpc_crt_framebuffer lcd
+ 	(
+ 		.clk_sys              (clk_sys),
+@@ -519,6 +558,7 @@ module ngp_mainboard
+ 		.vga_hs               (hsync),
+ 		.vga_vs               (vsync)
+ 	);
++`endif
+ 
+ 	// On silicon the PSG's analog outputs and the two R-2R DACs are summed by an
+ 	// amplifier on this board. We mix digitally instead, inside `ngp_snd` with
+diff --git a/rtl/soc/t900_mcu.sv b/rtl/soc/t900_mcu.sv
+index cc899cf..4f66ee1 100644
+--- a/rtl/soc/t900_mcu.sv
++++ b/rtl/soc/t900_mcu.sv
+@@ -474,6 +474,36 @@ module t900_mcu
+ 	assign cs_n = cs_n_i;
+ 
+ 	// Serial channels: 0x50-0x58, tap words 0x18-0x1B
++`ifdef NGPC_NO_LINK
++	// The TMP95C061's serial channels drive the NGP's link connector. This
++	// build has no wiring to that connector, and the port costs 457 ALUTs on a
++	// device that is 99.7% full with saves and savestates both present -- so it
++	// is compiled out rather than dropped, and this define brings it back.
++	//
++	// Worth bringing back: the Pocket's cartridge slot carries GBA-style link
++	// pins (port_tran_si/so/sck/sd reach core_top), so the link is reachable in
++	// principle, not just in theory.
++	//
++	// What a game sees instead: the SC0/SC1 registers read as zero, which is
++	// their reset state, and no receive or transmit interrupt is ever raised.
++	// A title that polls the link finds it permanently idle. A title that waits
++	// on a transfer completing would wait forever -- no NGP software does that
++	// without a cable present, but it is the failure this trades for the area.
++	assign rd_sio      = 8'h00;
++	assign ss_rd_sio   = 32'd0;
++	assign intrx       = 2'd0;
++	assign inttx       = 2'd0;
++	assign intrx_clear = 2'd0;
++	assign txd0_i      = 1'b1;      // mark / idle
++	assign txd1_i      = 1'b1;
++	assign txd0_oe     = 1'b0;
++	assign txd1_oe     = 1'b0;
++	assign sclk0_i     = 1'b0;
++	assign sclk1_i     = 1'b0;
++	assign sclk0_oe    = 1'b0;
++	assign sclk1_oe    = 1'b0;
++	assign pr_sio      = 1'b1;      // nothing to drain, always ready to pause
++`else
+ 	ngp_sio u_sio
+ 	(
+ 		.clk(clk),
+@@ -517,6 +547,7 @@ module t900_mcu
+ 		.pause_req(pause_req),
+ 		.pause_ready(pr_sio)
+ 	);
++`endif
+ 
+ 	assign txd0    = txd0_i;
+ 	assign txd1    = txd1_i;
