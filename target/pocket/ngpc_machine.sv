@@ -474,10 +474,24 @@ module ngpc_machine
 	// SDRAM image survive it because they sit on hard_reset. Re-strap the board
 	// from the retained byte count once the machine reset releases, so a
 	// cartridge does not disappear when the user hits Reset.
+	//
+	// A SAVESTATE RESTORE is such a reset too, and it arrives on its own wire:
+	// the engine's reset_ss goes straight to the mainboard's restore_reset
+	// port and never touches our `reset` net -- so this counter used to sleep
+	// through it, and every restored machine woke up believing no cartridge
+	// was inserted. The BIOS animation ran fine from BRAM and the machine died
+	// at the cartridge handoff: white screen at the end of the boot animation,
+	// instantly in a running game. Found from Jani's repro -- a state saved
+	// MID-ANIMATION restored and played correctly until the handoff.
+	//
+	// Arming on eng_core_reset puts the eight config strobes in the gap while
+	// the machine is still parked under loading_savestate, BEFORE the engine's
+	// internals broadcast -- so the broadcast still wins for every register it
+	// carries, and the population latch is repaired for the ones it does not.
 	reg [3:0] cart_reconfig_q;
 
 	always @(posedge clk_sys) begin
-		if (reset) cart_reconfig_q <= 4'd8;
+		if (reset || eng_core_reset) cart_reconfig_q <= 4'd8;
 		else if (cart_reconfig_q != 4'd0) cart_reconfig_q <= cart_reconfig_q - 4'd1;
 	end
 
