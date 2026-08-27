@@ -312,7 +312,6 @@ module ngpc_savestate_bridge #(
 	//
 	// The pointer restarts on the first write after a quiet period, which is
 	// what separates one transfer from the next.
-	reg prev_bridge_wr;
 	reg [13:0] wr_ptr;
 	// LEVEL, NOT EDGE -- and this cost a whole round to learn.
 	//
@@ -346,42 +345,25 @@ module ngpc_savestate_bridge #(
 	// reads and writes in the same cycle, so the write pointer and the read
 	// address can share the port. A read issued during a write returns nothing
 	// meaningful, and nothing asks for one.
-	// READS ANSWER THE ADDRESS THAT WAS LATCHED, NOT THE ONE ON THE BUS NOW.
+	// READS TRACK THE BUS ADDRESS CONTINUOUSLY -- the edge latch is reverted,
+	// and this time the verdict is measured, not argued.
 	//
-	// data_unloader -- the module APF's own reference cores use to serve a
-	// memory over the bridge -- takes bridge_addr on the RISING EDGE of
-	// bridge_rd (data_unloader.sv:133), prefetches, and then presents
-	// bridge_rd_data whenever the data turns up. Its READ_MEM_CLOCK_DELAY goes
-	// up to 32 cycles, so APF plainly tolerates a long latency; what it does
-	// not tolerate is being handed data for a different address than the one it
-	// asked for.
+	// The latch produced NONDETERMINISTIC save alignment. Two files saved
+	// through the identical path: one aligned (payload header at word 1), one
+	// shifted up by a word (header at word 2). Whether the first strobe of a
+	// burst sees a rising edge depends on whatever bridge traffic preceded it
+	// -- the same contiguity hazard that made edge-detected WRITES drop their
+	// first word, in mirror image.
 	//
-	// This port used to follow bridge_addr continuously, so what APF sampled
-	// depended on where the address happened to be one cycle earlier. If APF
-	// streams addresses and samples on its own schedule, that hands back the
-	// neighbouring word -- an off-by-one in the SAVE direction, which would put
-	// the header in the wrong place in the file and make every load fail no
-	// matter how correct the load path is.
-	//
-	// Latching at the edge and holding until the next one is what the reference
-	// modules do, and it is correct for any sampling time at least one cycle
-	// after the edge.
-	reg        prev_bridge_rd;
-	reg [13:0] rd_addr_l;
-
-	wire blob_rd_stb = blob_sel && bridge_rd && !prev_bridge_rd;
-
-	wire [13:0] b_addr = blob_wr_stb ? wr_at
-	                   : blob_rd_stb ? blob_word
-	                   : rd_addr_l;
+	// Continuous tracking is the level-gated analog for reads: APF presents the
+	// address early enough that the registered RAM read has settled by the time
+	// it samples, and the file saved through this path (before the latch went
+	// in) was deterministically aligned. data_unloader's edge+prefetch model
+	// exists for HIGH-latency backends; a block RAM does not need it, and its
+	// global prev_bridge_rd carries the same first-strobe fragility.
+	wire [13:0] b_addr = blob_wr_stb ? wr_at : blob_word;
 
 	always @(posedge clk_74a) begin
-		prev_bridge_wr <= bridge_wr;
-		prev_bridge_rd <= bridge_rd;
-
-		if (blob_rd_stb) begin
-			rd_addr_l <= blob_word;
-		end
 
 		if (blob_wr_stb) begin
 			blob[b_addr]    <= bridge_wr_data;
