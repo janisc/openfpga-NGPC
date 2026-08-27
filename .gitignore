@@ -18,3 +18,4 @@ builds/
 
 # Quartus build transcripts
 projects/*.log
+sim/*.vvp
