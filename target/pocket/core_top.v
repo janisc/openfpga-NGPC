@@ -447,10 +447,11 @@ module core_top (
   // internal register count that actually governs the transfer. It declared
   // 100,096 bytes for a 33,672 byte state, so APF read three times the blob and
   // the tail was whatever the store happened to hold.
-  // 33,672 is the real state. The extra 16 bytes are the temporary probe in
-  // ngpc_savestate_bridge -- four words served from registers instead of RAM,
-  // so a saved state carries out what the store held when a load last read it.
-  wire [31:0] savestate_size = 32'd33696;   // 8424 words: 8418 state + probe at 8420..8423
+  // 33,672 is the engine's state. The extra 24 bytes are two pad words plus
+  // the identity block ngpc_savestate_bridge stamps at words 8420-8423: magic,
+  // cartridge CRC32, layout version, inverted CRC. A load checks it before the
+  // engine starts, so a state from a different cartridge is rejected cleanly.
+  wire [31:0] savestate_size = 32'd33696;   // 8424 words: 8418 state + pad + identity
   wire [31:0] savestate_maxloadsize = savestate_size + 32'h1000;
 
   wire        savestate_start;
@@ -691,7 +692,7 @@ module core_top (
 
   always @(posedge clk_74a) begin
     if (dataslot_requestwrite) begin
-      if (dataslot_requestwrite_id == 16'd2) is_downloading_cart <= 1;
+      if (dataslot_requestwrite_id == 16'd0) is_downloading_cart <= 1;
       else                                   is_downloading_bios <= 1;
     end else if (dataslot_allcomplete) begin
       is_downloading_bios <= 0;
@@ -856,6 +857,7 @@ module core_top (
   wire        ss_load;
   wire        ss_busy;
   wire        ss_loading;
+  wire [31:0] ss_cart_crc32;
 
   wire [63:0] bus_out_Din;
   wire [63:0] bus_out_Dout;
@@ -892,6 +894,7 @@ module core_top (
       .ss_load(ss_load),
       .ss_busy(ss_busy),
       .ss_loading(ss_loading),
+      .cart_crc32(ss_cart_crc32),
 
       .bus_out_Din (bus_out_Din),
       .bus_out_Dout(bus_out_Dout),
@@ -960,6 +963,7 @@ module core_top (
       .ss_load_i       (ss_load),
       .ss_busy_o       (ss_busy),
       .ss_loading_o(ss_loading),
+      .cart_crc32_o(ss_cart_crc32),
 
       .bus_out_Din (bus_out_Din),
       .bus_out_Dout(bus_out_Dout),

@@ -180,6 +180,7 @@ module tb;
 	wire [31:0] bridge_rd_data;
 
 	reg  ss_start_req = 0, ss_load_req = 0;
+	reg  [31:0] tb_cart_crc = 32'hC0FFEE01;
 	wire start_ack, start_busy, start_ok, start_err;
 	wire load_ack,  load_busy,  load_ok,  load_err;
 
@@ -204,6 +205,7 @@ module tb;
 
 		.ss_save(ss_save), .ss_load(ss_load),
 		.ss_busy(ss_busy), .ss_loading(ss_loading),
+		.cart_crc32(tb_cart_crc),
 
 		.bus_out_Din(bus_out_Din), .bus_out_Dout(bus_out_Dout),
 		.bus_out_Adr(bus_out_Adr), .bus_out_rnw(bus_out_rnw),
@@ -334,6 +336,10 @@ module tb;
 			apf_save(read_quirks);
 			if (image[1] !== 32'hE0200000)
 				$display("    !! image word1 = %h, expected E0200000 (bswapped 8416)", image[1]);
+			if (image[8420] !== 32'h4E475053 || image[8421] !== tb_cart_crc
+			    || image[8423] !== ~tb_cart_crc)
+				$display("    !! identity tail wrong: %h %h %h %h",
+				         image[8420], image[8421], image[8422], image[8423]);
 			machine_corrupt;
 			apf_write_burst(lag, gap, stall_at, stall_len, foreign_first);
 			apf_load(ok);
@@ -372,6 +378,34 @@ module tb;
 		scenario("S4 clean bus (no lag)               ", 0,  8,  -1,     0,     0,      0,     1);
 		scenario("S5 clean + read quirks              ", 0,  4,  -1,     0,     0,      1,     1);
 
+		// S6: the state was taken on one cartridge, the load happens on another.
+		// The check must reject BEFORE the engine touches the machine.
+		begin : s6
+			integer ok, i, still;
+			$display("== S6 cross-cartridge load rejected      ");
+			machine_init;
+			apf_save(0);
+			machine_corrupt;
+			apf_write_burst(1, 8, -1, 0, 0);
+			tb_cart_crc = 32'hBAD0CA57;         // a different cartridge now
+			apf_load(ok);
+			tb_cart_crc = 32'hC0FFEE01;
+			if (ok) begin
+				$display("   FAIL: cross-cartridge load was accepted");
+				errors = errors + 1;
+			end else begin
+				still = 1;
+				for (i = 0; i < 64; i = i + 1)
+					if (mem0[i] !== 8'hFF) still = 0;
+				if (internals[0] !== 64'hDEADBEEF_DEADBEEF) still = 0;
+				if (still) $display("   PASS (rejected, machine untouched)");
+				else begin
+					$display("   FAIL: rejected but machine was modified");
+					errors = errors + 1;
+				end
+			end
+		end
+
 		if (errors == 0) $display("== ALL SCENARIOS MATCHED EXPECTATIONS");
 		else             $display("== %0d SCENARIO(S) DEVIATED", errors);
 		$finish;
@@ -379,7 +413,7 @@ module tb;
 
 	// global watchdog
 	initial begin
-		#80_000_000;   // 80 ms of sim time
+		#200_000_000;   // 200 ms of sim time -- six scenarios at ~15 ms each
 		$display("== WATCHDOG TIMEOUT");
 		$finish;
 	end

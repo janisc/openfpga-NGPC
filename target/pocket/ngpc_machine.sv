@@ -97,6 +97,8 @@ module ngpc_machine
 	// the header check passes, so a run that ends without it is a rejected
 	// blob rather than a completed restore.
 	output wire        ss_loading_o,
+	// Identity of the loaded cartridge image, for the savestate tail stamp.
+	output wire [31:0] cart_crc32_o,
 
 	output wire [63:0] bus_out_Din,
 	input  wire [63:0] bus_out_Dout,
@@ -666,6 +668,7 @@ module ngpc_machine
 
 	assign ss_busy_o    = eng_busy;
 	assign ss_loading_o = eng_loading;
+	assign cart_crc32_o = cart_image_crc32;
 
 	savestates #(
 		.STATESIZE_PARAM      (8416),

@@ -3,8 +3,21 @@
     "magic": "APF_VER_1",
     "data_slots": [
       {
-        "name": "Color BIOS",
+        "name": "Cartridge",
         "id": 0,
+        "required": false,
+        "parameters": "0x109",
+        "extensions": [
+          "ngp",
+          "ngc",
+          "npc"
+        ],
+        "address": "0x11000000",
+        "size_maximum": "0x400000"
+      },
+      {
+        "name": "Color BIOS",
+        "id": 1,
         "required": false,
         "parameters": "0x3",
         "filename": "boot0.rom",
@@ -16,7 +29,7 @@
       },
       {
         "name": "Mono BIOS",
-        "id": 1,
+        "id": 2,
         "required": false,
         "parameters": "0x3",
         "filename": "boot1.rom",
@@ -25,19 +38,6 @@
         ],
         "size_maximum": "0x10000",
         "address": "0x10010000"
-      },
-      {
-        "name": "Cartridge",
-        "id": 2,
-        "required": false,
-        "parameters": "0x109",
-        "extensions": [
-          "ngp",
-          "ngc",
-          "npc"
-        ],
-        "address": "0x11000000",
-        "size_maximum": "0x400000"
       },
       {
         "name": "Save",
