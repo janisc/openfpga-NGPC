@@ -43,7 +43,7 @@
         "name": "Save",
         "id": 10,
         "required": false,
-        "parameters": "0x84",
+        "parameters": "0x104",
         "nonvolatile": true,
         "extensions": [
           "sav"
