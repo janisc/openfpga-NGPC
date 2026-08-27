@@ -100,6 +100,8 @@ module ngpc_machine
 	output wire        ss_loading_o,
 	// Identity of the loaded cartridge image, for the savestate tail stamp.
 	output wire [31:0] cart_crc32_o,
+	// A cartridge save exists (drives APF's data-slot size table).
+	output wire        save_present_o,
 
 	output wire [63:0] bus_out_Din,
 	input  wire [63:0] bus_out_Dout,
@@ -608,6 +610,7 @@ module ngpc_machine
 		.slots_settled_i (slots_settled),
 
 		.boot_hold_o     (overlay_boot_hold),
+		.save_present_o  (save_present_o),
 		.busy_o          (save_busy),
 
 		.p2_req_o        (overlay_p2_req),

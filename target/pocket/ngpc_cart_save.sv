@@ -98,6 +98,12 @@ module ngpc_cart_save #(
 	// ---- Machine control ---------------------------------------------------
 	output reg         boot_hold_o,        // holds reset while a save is applied
 	output reg         busy_o,
+	// A save exists for this cartridge -- some block is dirty, either because
+	// the game wrote flash this session or because a staged image was applied
+	// at boot. This is what the core reports to APF's data-slot size table:
+	// present -> the slot flushes 0x40200 bytes at shutdown, absent -> zero
+	// bytes and no file is created for games that never save.
+	output wire        save_present_o,
 
 	// ---- Cartridge SDRAM, background port ----------------------------------
 	output reg         p2_req_o,
@@ -136,6 +142,8 @@ module ngpc_cart_save #(
 	reg [63:0] pending0, pending1;
 
 	wire pending_any = |pending0 || |pending1;
+
+	assign save_present_o = |dirty0 || |dirty1;
 
 	// ---- Block geometry -----------------------------------------------------
 

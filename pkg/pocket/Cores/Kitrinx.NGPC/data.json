@@ -48,7 +48,7 @@
         "extensions": [
           "sav"
         ],
-        "address": "0x50000000",
+        "address": "0x12000000",
         "size_maximum": "0x40200"
       }
     ]

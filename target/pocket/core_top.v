@@ -316,7 +316,7 @@ module core_top (
     endcase
 
     // The save block buffer, which APF drains during a target write.
-    if (bridge_addr[31:28] == 4'h5) begin
+    if (bridge_addr[31:28] == 4'h1) begin
       bridge_rd_data <= stage_bridge_rd_data;
     end else if (bridge_addr[31:28] == 4'h4) begin
       // The savestate blob, which APF drains after asking for a state.
@@ -466,6 +466,33 @@ module core_top (
   wire        savestate_load_ok;
   wire        savestate_load_err;
 
+  // THE DATA-SLOT SIZE TABLE, and why no save file ever appeared without it.
+  //
+  // At shutdown APF flushes a nonvolatile slot by asking THIS table how many
+  // bytes to read -- "size of the file is determined by the Dataslot ID/Size
+  // Table BRAM in the core" (Analogue data.json docs). With no file loaded at
+  // boot the entry holds zero, so every flush wrote zero bytes: no file, no
+  // error, forever. The core must claim the size itself; the reference NES
+  // core does exactly this, continuously.
+  //
+  // Table layout is [index*2] = id, [index*2 + 1] = size, indexed by the
+  // slot's POSITION in data.json, not its id. Save is the fourth slot, so its
+  // size lives at address 7. The size is claimed only while a save actually
+  // exists, so games that never touch flash never leave a file behind.
+  reg  [9:0] datatable_addr;
+  reg        datatable_wren;
+  reg [31:0] datatable_data;
+
+  wire save_present_s;
+
+  synch_3 save_present_sync (save_present, save_present_s, clk_74a);
+
+  always @(posedge clk_74a) begin
+    datatable_wren <= 1'b1;
+    datatable_addr <= 10'd7;                 // slot index 3 (Save), size word
+    datatable_data <= save_present_s ? 32'h40200 : 32'h0;
+  end
+
   core_bridge_cmd icb (
       .clk    (clk_74a),
       .reset_n(reset_n),
@@ -510,9 +537,9 @@ module core_top (
       .savestate_load_ok  (savestate_load_ok),
       .savestate_load_err (savestate_load_err),
 
-      .datatable_addr(10'd0),
-      .datatable_wren(1'b0),
-      .datatable_data(32'd0),
+      .datatable_addr(datatable_addr),
+      .datatable_wren(datatable_wren),
+      .datatable_data(datatable_data),
       .datatable_q   (),
 
       .dataslot_update          (dataslot_update),
@@ -546,36 +573,6 @@ module core_top (
   wire [31:0] dataslot_update_size;
 
 
-  localparam [15:0] SAVE_SLOT_ID = 16'd10;
-
-  // The overlay needs to know a save file exists and how big it is before it
-  // will consider applying one. APF announces that with a data slot update.
-  reg save_present_74 = 0;
-
-  always @(posedge clk_74a) begin
-    if (dataslot_update && dataslot_update_id == SAVE_SLOT_ID) begin
-      save_present_74 <= dataslot_update_size != 0;
-    end
-  end
-
-  // The overlay only needs to know whether a file exists; its size comes from
-  // the header inside it.
-  wire save_present_s;
-
-  synch_3 save_present_sync (
-      save_present_74,
-      save_present_s,
-      clk_sys
-  );
-
-  wire        host_in_menu_s;
-
-  synch_3 menu_sync (
-      osnotify_inmenu,
-      host_in_menu_s,
-      clk_sys
-  );
-
   // ---- Save staging: a nonvolatile slot, served from PSRAM ---------------
   //
   // APF writes the slot into this region at core start and reads it back at
@@ -595,23 +592,6 @@ module core_top (
   wire [27:0] stage_host_wr_addr;
   wire [15:0] stage_host_wr_data;
 
-  data_loader #(
-      .ADDRESS_MASK_UPPER_4(4'h5),
-      .OUTPUT_WORD_SIZE(2)
-  ) stage_fill (
-      .clk_74a   (clk_74a),
-      .clk_memory(clk_sys),
-
-      .bridge_wr           (bridge_wr),
-      .bridge_endian_little(bridge_endian_little),
-      .bridge_addr         (bridge_addr),
-      .bridge_wr_data      (bridge_wr_data),
-
-      .write_en  (stage_host_wr),
-      .write_addr(stage_host_wr_addr),
-      .write_data(stage_host_wr_data)
-  );
-
   wire        stage_host_rd;
   wire [27:0] stage_host_rd_addr;
   wire [15:0] stage_host_rd_data;
@@ -621,8 +601,11 @@ module core_top (
   // read latency is honest here. Against cartridge SDRAM it would not be --
   // a refresh or a burst of CPU fetches would stretch the access and this
   // would latch whatever happened to be on the bus.
+  // The flush reads arrive at the slot's address too -- nibble 1 now. APF
+  // never reads the BIOS or cartridge slots back, so every nibble-1 read is
+  // the save flush and the mask can stay a whole-nibble one.
   data_unloader #(
-      .ADDRESS_MASK_UPPER_4(4'h5),
+      .ADDRESS_MASK_UPPER_4(4'h1),
       .INPUT_WORD_SIZE(2),
       .READ_MEM_CLOCK_DELAY(32)
   ) stage_drain (
@@ -646,9 +629,8 @@ module core_top (
   // (BIOS/cart at nibbles 1 and 3, staging at 5) resets this counter; when it
   // saturates, nothing has streamed for ~500 ms and delivery is over. Command
   // traffic at 0xF8 deliberately does not reset it.
-  wire slot_wr_any = bridge_wr && (bridge_addr[31:28] == 4'h1 ||
-                                   bridge_addr[31:28] == 4'h3 ||
-                                   bridge_addr[31:28] == 4'h5);
+  // Every slot -- BIOSes, cartridge, save -- now streams through nibble 1.
+  wire slot_wr_any = bridge_wr && (bridge_addr[31:28] == 4'h1);
 
   localparam [25:0] SLOTS_SETTLE = 26'd37_125_000;   // ~500 ms at 74.25 MHz
 
@@ -793,14 +775,25 @@ module core_top (
   //   0x1000000 - 0x13FFFFF   cartridge (4 MB maximum)
   //
   // So bit 24 says cartridge, and below it bit 16 says which BIOS image.
-  wire        ld_is_cart = bios_addr_raw[24];
+  // Bit 25 says save slot: the fourth consumer of the ONE slot loader. All
+  // slots stream one at a time, and a third private dcfifo for the save path
+  // was the ~150 ALMs that pushed the device past full. The flush direction
+  // keeps its own unloader below -- reads cannot share a write FIFO.
+  //
+  //   0x0000000 - 0x000FFFF   colour BIOS
+  //   0x0010000 - 0x001FFFF   mono BIOS
+  //   0x1000000 - 0x13FFFFF   cartridge (4 MB maximum)
+  //   0x2000000 - 0x203FFFF   nonvolatile save -> PSRAM staging region
+  wire        ld_is_save = bios_addr_raw[25];
+  wire        ld_is_cart = !ld_is_save && bios_addr_raw[24];
 
   // A BIOS image is 64 KiB, so bit 16 selects the image and bits 15:1 address
   // within it. The guard rejects anything past the mono image's end, which is
   // what the MiSTer top level's address guard does for a single image: a file
   // longer than its slot cannot wrap onto the start of either ROM.
   wire        bios_sel     = bios_addr_raw[16];
-  wire        bios_wr      = bios_wr_raw && !ld_is_cart && (bios_addr_raw < 28'h20000);
+  wire        bios_wr      = bios_wr_raw && !ld_is_cart && !ld_is_save &&
+                             (bios_addr_raw < 28'h20000);
   wire [14:0] bios_addr    = bios_addr_raw[15:1];
   wire [15:0] bios_ld_data = bios_data_raw;
 
@@ -810,6 +803,12 @@ module core_top (
   wire        cart_wr      = bios_wr_raw && ld_is_cart;
   wire [27:0] cart_wr_addr = {4'd0, bios_addr_raw[23:0]};
   wire [15:0] cart_wr_data = bios_data_raw;
+
+  // The save slot's writes, demuxed off the same stream. The [24:0] slice is
+  // the byte offset within the slot, since bit 25 is the region select.
+  assign stage_host_wr      = bios_wr_raw && ld_is_save;
+  assign stage_host_wr_addr = {3'd0, bios_addr_raw[24:0]};
+  assign stage_host_wr_data = bios_data_raw;
 
   // ----------------------------------------------------------------------
   //  Controls
@@ -883,6 +882,7 @@ module core_top (
   wire        ss_busy;
   wire        ss_loading;
   wire [31:0] ss_cart_crc32;
+  wire        save_present;
 
   wire [63:0] bus_out_Din;
   wire [63:0] bus_out_Dout;
@@ -990,6 +990,7 @@ module core_top (
       .ss_busy_o       (ss_busy),
       .ss_loading_o(ss_loading),
       .cart_crc32_o(ss_cart_crc32),
+      .save_present_o(save_present),
 
       .bus_out_Din (bus_out_Din),
       .bus_out_Dout(bus_out_Dout),
