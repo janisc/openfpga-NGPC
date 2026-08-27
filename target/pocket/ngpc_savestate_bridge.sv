@@ -193,8 +193,22 @@ module ngpc_savestate_bridge #(
 		a_q <= blob[a_addr];
 	end
 
-	wire [13:0] e_word0 = bus_out_Adr[14:1];
-	wire [13:0] e_word1 = bus_out_Adr[14:1] + 14'd1;
+	// bus_out_Adr COUNTS 32-BIT WORDS and the engine strides by 2 per 64-bit
+	// access, so the store index is the address itself -- [13:0], not [14:1].
+	//
+	// The halved slice this used to be compacted every save 2:1 into
+	// blob[0..4209]: each word's high half was clobbered by the next word's
+	// low half, the upper half of the store was never written, and the whole
+	// VRAM region of the file fell in the unwritten zero tail -- which looked
+	// exactly like a dead type-2 savestate tap and sent the hunt into the
+	// wrong module for a full day. Restores read adjacent low halves back as
+	// 64-bit words, so every restored machine was scrambled past the header.
+	//
+	// The header sits at Adr = 0, the single address where [14:1] and [13:0]
+	// agree. Every on-device probe validated the header and the probe words --
+	// the two regions this bug could not touch.
+	wire [13:0] e_word0 = bus_out_Adr[13:0];
+	wire [13:0] e_word1 = bus_out_Adr[13:0] + 14'd1;
 
 	// The 64-bit view the engine sees on a restore, reassembled from the two
 	// halves and unswizzled. The swizzle is its own inverse, so the save and
@@ -298,47 +312,28 @@ module ngpc_savestate_bridge #(
 
 	// WRITES GO WHERE THEY ARRIVE, NOT WHERE THE ADDRESS SAYS.
 	//
-	// bridge_addr is not trustworthy per word during a write burst. Two probe
-	// rounds from the device showed the blob arriving complete and in order --
-	// 8424 words, addresses running 0 to 8423 -- but every word paired with the
-	// address one place behind it: at address 0 the bus carried payload word 1.
+	// bridge_addr is not trustworthy per word during a write burst (measured:
+	// data pairs with the address one place behind it). Both working openFPGA
+	// savestate cores ignore the address on this path and rely on arrival
+	// order; a write pointer gives a memory the same guarantee their FIFOs get.
 	//
-	// Both working openFPGA cores that implement savestates ignore the address
-	// on this path entirely. The NES reference and the GBA core each gate a FIFO
-	// on nothing but `bridge_wr && bridge_addr[31:28] == 4'h4` and rely on
-	// arrival order. A FIFO cannot serve this engine -- it reads the header back
-	// first and writes it last -- but the ORDER it relies on is sound, so a
-	// write pointer gets the same guarantee into a memory.
-	//
-	// The pointer restarts on the first write after a quiet period, which is
-	// what separates one transfer from the next.
-	reg [13:0] wr_ptr;
-	// LEVEL, NOT EDGE -- and this cost a whole round to learn.
-	//
-	// Edge detection here dropped the FIRST word of every transfer. bridge_wr is
-	// already high from preceding bridge traffic when the blob starts, so no
-	// rising edge occurs on that word; meanwhile the quiet counter below resets
-	// on the level, so wr_first was already false by the second word and it
-	// landed at pointer 0. The whole blob shifted down one and the header check
-	// read the wrong word -- which is every symptom seen since.
-	//
-	// Both working cores gate on the level and nothing else:
-	//
-	//     .wrreq (bridge_wr && bridge_addr[31:28] == 4'h4)
-	//
-	// and they are right to. bridge_wr is one cycle per word -- their FIFOs
-	// would take duplicates otherwise, and the probe counted exactly 8424 words
-	// for an 8424-word payload -- so an edge buys nothing and costs the first
-	// word whenever the strobe happens to be contiguous with what came before.
-	//
-	// data_loader edge-detects because it re-latches bridge_addr each word. This
-	// does not use the address at all, so it does not need the edge.
-	wire blob_wr_stb = blob_sel && bridge_wr;
+	// The pointer is NOT restarted by a short quiet gap. It used to restart on
+	// the same ~1.35 ms quiet threshold the engine-start gate uses, and that
+	// re-fired MID-TRANSFER whenever APF's SD streaming stalled: the rest of
+	// the blob then overwrote from word 0 (measured -- one load stored file
+	// words 2,3 at pointers 0,1). It resets instead when a load completes,
+	// because the transfer has been consumed, with a half-second idle backstop
+	// for a transfer that was started and abandoned. SD stalls are far shorter
+	// than that; gaps between real transfers are far longer.
+	reg  [13:0] wr_ptr;
+	reg  [25:0] xfer_idle;
+	reg         prev_load_done_74;
 
-	// True on the first write of a burst: the quiet counter has not been reset
-	// by this write yet, so it still reads saturated.
-	wire wr_first = blob_quiet_74;
-	wire [13:0] wr_at = wr_first ? 14'd0 : wr_ptr;
+	wire        blob_wr_stb  = blob_sel && bridge_wr;
+	wire [13:0] wr_at        = wr_ptr;
+	wire        load_done_74 = savestate_load_ok || savestate_load_err;
+
+	localparam [25:0] XFER_ABANDONED = 26'd37_000_000;   // ~0.5 s at 74.25 MHz
 
 	// ONE address expression for this port. Quartus will not infer block RAM
 	// from a process that indexes the array two different ways, and APF never
@@ -364,6 +359,13 @@ module ngpc_savestate_bridge #(
 	wire [13:0] b_addr = blob_wr_stb ? wr_at : blob_word;
 
 	always @(posedge clk_74a) begin
+		prev_load_done_74 <= load_done_74;
+
+		if (blob_wr_stb) begin
+			xfer_idle <= 26'd0;
+		end else if (xfer_idle != XFER_ABANDONED) begin
+			xfer_idle <= xfer_idle + 26'd1;
+		end
 
 		if (blob_wr_stb) begin
 			blob[b_addr]    <= bridge_wr_data;
@@ -379,6 +381,11 @@ module ngpc_savestate_bridge #(
 			// against the loaded file's payload words 0 and 1.
 			if (wr_at == 14'd0) dbg_a0 <= bridge_wr_data;
 			if (wr_at == 14'd1) dbg_a1 <= bridge_wr_data;
+		end else if ((load_done_74 && !prev_load_done_74)
+		             || xfer_idle == XFER_ABANDONED) begin
+			// The write branch wins on a write cycle, so the first word of a
+			// fresh transfer both lands at 0 and advances the pointer.
+			wr_ptr <= 14'd0;
 		end
 
 		blob_q <= blob[b_addr];
