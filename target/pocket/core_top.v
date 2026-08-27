@@ -639,6 +639,31 @@ module core_top (
       .read_data(stage_host_rd_data)
   );
 
+  // Has APF finished delivering data slots? Slots stream in id order --
+  // cartridge, BIOSes, then the nonvolatile save -- with SD file-open gaps
+  // between them, and the save-apply in the machine must not run until the
+  // save slot has actually landed in the staging region. Every slot write
+  // (BIOS/cart at nibbles 1 and 3, staging at 5) resets this counter; when it
+  // saturates, nothing has streamed for ~500 ms and delivery is over. Command
+  // traffic at 0xF8 deliberately does not reset it.
+  wire slot_wr_any = bridge_wr && (bridge_addr[31:28] == 4'h1 ||
+                                   bridge_addr[31:28] == 4'h3 ||
+                                   bridge_addr[31:28] == 4'h5);
+
+  localparam [25:0] SLOTS_SETTLE = 26'd37_125_000;   // ~500 ms at 74.25 MHz
+
+  reg [25:0] slot_idle = 26'd0;
+
+  always @(posedge clk_74a) begin
+    if (slot_wr_any)                    slot_idle <= 26'd0;
+    else if (slot_idle != SLOTS_SETTLE) slot_idle <= slot_idle + 26'd1;
+  end
+
+  wire slots_settled_74 = (slot_idle == SLOTS_SETTLE);
+  wire slots_settled;
+
+  synch_3 settle_sync (slots_settled_74, slots_settled, clk_sys);
+
   ngpc_stage_mem stage_mem (
       .clk  (clk_sys),
       .reset(reset_in),
@@ -958,6 +983,7 @@ module core_top (
       .stage_done (stage_done),
       .stage_rdata(stage_rdata),
       .host_busy  (host_busy),
+      .slots_settled(slots_settled),
 
       .ss_save_i       (ss_save),
       .ss_load_i       (ss_load),

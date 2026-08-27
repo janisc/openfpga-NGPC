@@ -56,7 +56,12 @@ module ngpc_cart_save #(
 	// 64 KB, so this holds those plus three 64 KB blocks -- far beyond what NGP
 	// saves use. It costs no FPGA resource, only slot transfer time at core
 	// start and exit.
-	parameter [24:0] STAGE_BYTES = 25'h0040000
+	parameter [24:0] STAGE_BYTES = 25'h0040000,
+	// Flash idle time before staging starts. ~20 ms at 49.152 MHz: long enough
+	// that a burst of block writes is over, short enough that a save is staged
+	// well before anyone reaches for the power switch. A parameter so the
+	// simulation bench can shrink it.
+	parameter [19:0] QUIET_CLOCKS = 20'd1_000_000
 ) (
 	input  wire        clk,
 	input  wire        reset,
@@ -80,6 +85,15 @@ module ngpc_cart_save #(
 	// While APF is moving the slot in or out it owns the staging region, and
 	// background staging stands aside.
 	input  wire        host_busy_i,
+
+	// APF has delivered every data slot: no loader region has seen a bridge
+	// write for a long settle window. The apply MUST wait for this. Slots
+	// stream in id order, so at cartridge-ready the save slot has not even
+	// begun to arrive -- an apply fired at cart_ready reads power-up garbage,
+	// fails the magic check, consumes its one chance, and the real save data
+	// lands moments later with nobody listening. That race is why in-game
+	// saves never restored in any earlier build.
+	input  wire        slots_settled_i,
 
 	// ---- Machine control ---------------------------------------------------
 	output reg         boot_hold_o,        // holds reset while a save is applied
@@ -112,11 +126,6 @@ module ngpc_cart_save #(
 	localparam [15:0] MAGIC2 = 16'h5341;  // "SA"
 	localparam [15:0] MAGIC3 = 16'h5632;  // "V2" -- layout differs from the
 	                                      // sector-based version that preceded it
-
-	// Flash idle time before staging starts. ~20 ms at 49.152 MHz: long enough
-	// that a burst of block writes is over, short enough that a save is staged
-	// well before anyone reaches for the power switch.
-	localparam [19:0] QUIET_CLOCKS = 20'd1_000_000;
 
 	// ---- Dirty and pending bitmaps -----------------------------------------
 	//
@@ -180,6 +189,7 @@ module ngpc_cart_save #(
 	localparam S_FINISH      = 4'd15;
 
 	reg  [3:0] state;
+	reg        copy_dirtied;    // the block being copied was rewritten mid-copy
 	reg [15:0] block_word;      // position within the block being copied
 	reg [15:0] xfer_data;       // the word in flight
 	reg  [4:0] hdr_idx;         // position within the header
@@ -188,6 +198,10 @@ module ngpc_cart_save #(
 	reg        apply_ok;        // the header matched this cartridge
 
 	wire flash_quiet = (die_busy_i == 2'b00) && !event0_i && !event1_i;
+
+	// A write event aimed at the very block currently being walked.
+	wire ev_this_block = (event0_i && !geo_die && block0_i == geo_block) ||
+	                     (event1_i &&  geo_die && block1_i == geo_block);
 
 	// The header as a function of its index, so it needs no storage of its own.
 	reg [15:0] hdr_word;
@@ -224,6 +238,11 @@ module ngpc_cart_save #(
 		if (event0_i) begin dirty0[block0_i] <= 1'b1; pending0[block0_i] <= 1'b1; end
 		if (event1_i) begin dirty1[block1_i] <= 1'b1; pending1[block1_i] <= 1'b1; end
 
+		if (ev_this_block && (state == S_STAGE_RD  || state == S_STAGE_RD_W ||
+		                      state == S_STAGE_WR  || state == S_STAGE_WR_W)) begin
+			copy_dirtied <= 1'b1;
+		end
+
 		if (flash_quiet && quiet != QUIET_CLOCKS) quiet <= quiet + 20'd1;
 		else if (!flash_quiet)                    quiet <= 20'd0;
 
@@ -241,33 +260,41 @@ module ngpc_cart_save #(
 		end else begin
 			case (state)
 				S_IDLE: begin
-					boot_hold_o <= 1'b0;
-					busy_o      <= 1'b0;
-
 					if (cart_ready_i && apply_pending) begin
-						// Apply before the machine runs, so the BIOS and the
-						// game only ever see restored flash.
-						apply_pending <= 1'b0;
-						boot_hold_o   <= 1'b1;
-						busy_o        <= 1'b1;
-						hdr_idx       <= 5'd0;
-						apply_ok      <= 1'b1;
-						state         <= S_APPLY_HDR;
+						// Hold the machine in reset from cartridge-ready until
+						// the apply has run, and do not run the apply until APF
+						// has finished delivering slots -- the save slot streams
+						// AFTER the cartridge, so at this moment it is still in
+						// flight. The hold covers the wait, so the BIOS and the
+						// game still only ever observe restored flash.
+						boot_hold_o <= 1'b1;
+						busy_o      <= 1'b1;
+						if (slots_settled_i) begin
+							apply_pending <= 1'b0;
+							hdr_idx       <= 5'd0;
+							apply_ok      <= 1'b1;
+							state         <= S_APPLY_HDR;
+						end
 					end else if (cart_ready_i && pending_any && !host_busy_i &&
 					             quiet == QUIET_CLOCKS) begin
+						boot_hold_o <= 1'b0;
 						busy_o       <= 1'b1;
 						geo_die      <= 1'b0;
 						geo_block    <= 6'd0;
 						stage_offset <= 25'd0;
 						state        <= S_STAGE_SCAN;
+					end else begin
+						boot_hold_o <= 1'b0;
+						busy_o      <= 1'b0;
 					end
 				end
 
 				// ---------------- stage: cartridge -> staging ----------------
 				S_STAGE_SCAN: begin
 					if (block_pending) begin
-						block_word <= 16'd0;
-						state      <= S_STAGE_RD;
+						block_word   <= 16'd0;
+						copy_dirtied <= 1'b0;
+						state        <= S_STAGE_RD;
 					end else begin
 						// Dirty-but-not-pending blocks still occupy their slot
 						// in the payload, so the offset advances for them too.
@@ -317,11 +344,16 @@ module ngpc_cart_save #(
 				S_STAGE_WR_W: begin
 					if (stage_done_i) begin
 						if (block_word + 16'd1 >= geo_words) begin
-							// The block is staged. Clear pending, but only if
-							// the game has not rewritten it in the meantime --
-							// the event handler above will have set it again.
-							if (geo_die) pending1[geo_block] <= 1'b0;
-							else         pending0[geo_block] <= 1'b0;
+							// The block is staged. Clear pending -- UNLESS the
+							// game rewrote it while the copy was in flight. The
+							// event handler above re-marks the bit, but this
+							// assignment runs later in the block and would
+							// overwrite that re-mark, so the mid-copy history
+							// has to be carried explicitly: the first version
+							// of this line wiped the re-mark and a torn copy
+							// stayed torn (caught by sim/tb_cart_save.sv, D).
+							if (geo_die) pending1[geo_block] <= copy_dirtied || ev_this_block;
+							else         pending0[geo_block] <= copy_dirtied || ev_this_block;
 
 							stage_offset <= stage_offset + {9'd0, geo_words, 1'b0};
 
