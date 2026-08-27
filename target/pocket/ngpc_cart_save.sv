@@ -95,6 +95,12 @@ module ngpc_cart_save #(
 	// saves never restored in any earlier build.
 	input  wire        slots_settled_i,
 
+	// Ingestion diagnostics from ngpc_stage_mem, stamped verbatim into header
+	// words 16-18 of every staged save so the flushed file carries them out.
+	input  wire [15:0] diag_beats_i,
+	input  wire [15:0] diag_drops_i,
+	input  wire [15:0] diag_depth_i,
+
 	// ---- Machine control ---------------------------------------------------
 	output reg         boot_hold_o,        // holds reset while a save is applied
 	output reg         busy_o,
@@ -232,6 +238,9 @@ module ngpc_cart_save #(
 			5'd13: hdr_word = dirty1[31:16];
 			5'd14: hdr_word = dirty1[47:32];
 			5'd15: hdr_word = dirty1[63:48];
+			5'd16: hdr_word = diag_beats_i;
+			5'd17: hdr_word = diag_drops_i;
+			5'd18: hdr_word = diag_depth_i;
 			default: hdr_word = 16'd0;
 		endcase
 	end
@@ -400,7 +409,7 @@ module ngpc_cart_save #(
 
 				S_STAGE_HDR_W: begin
 					if (stage_done_i) begin
-						if (hdr_idx == 5'd15) state   <= S_FINISH;
+						if (hdr_idx == 5'd18) state   <= S_FINISH;
 						else begin
 							hdr_idx <= hdr_idx + 5'd1;
 							state   <= S_STAGE_HDR;

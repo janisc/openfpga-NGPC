@@ -87,6 +87,9 @@ module ngpc_machine
 	input  wire [15:0] stage_rdata,
 	input  wire        host_busy,        // APF is moving the slot
 	input  wire        slots_settled,    // no loader region written for ~500 ms
+	input  wire [15:0] stage_diag_beats,
+	input  wire [15:0] stage_diag_drops,
+	input  wire [15:0] stage_diag_depth,
 
 	// ---- Savestates --------------------------------------------------------
 	// The engine lives here, beside the machine it serialises; the controller
@@ -608,6 +611,9 @@ module ngpc_machine
 
 		.host_busy_i     (host_busy),
 		.slots_settled_i (slots_settled),
+		.diag_beats_i    (stage_diag_beats),
+		.diag_drops_i    (stage_diag_drops),
+		.diag_depth_i    (stage_diag_depth),
 
 		.boot_hold_o     (overlay_boot_hold),
 		.save_present_o  (save_present_o),
