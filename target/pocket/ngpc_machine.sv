@@ -90,6 +90,9 @@ module ngpc_machine
 	input  wire [15:0] stage_diag_beats,
 	input  wire [15:0] stage_diag_drops,
 	input  wire [15:0] stage_diag_depth,
+	input  wire [15:0] stage_diag_first,
+	input  wire [15:0] stage_diag_last,
+	input  wire [15:0] stage_diag_reads,
 
 	// ---- Savestates --------------------------------------------------------
 	// The engine lives here, beside the machine it serialises; the controller
@@ -614,6 +617,9 @@ module ngpc_machine
 		.diag_beats_i    (stage_diag_beats),
 		.diag_drops_i    (stage_diag_drops),
 		.diag_depth_i    (stage_diag_depth),
+		.diag_first_i    (stage_diag_first),
+		.diag_last_i     (stage_diag_last),
+		.diag_reads_i    (stage_diag_reads),
 
 		.boot_hold_o     (overlay_boot_hold),
 		.save_present_o  (save_present_o),

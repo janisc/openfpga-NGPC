@@ -100,6 +100,9 @@ module ngpc_cart_save #(
 	input  wire [15:0] diag_beats_i,
 	input  wire [15:0] diag_drops_i,
 	input  wire [15:0] diag_depth_i,
+	input  wire [15:0] diag_first_i,
+	input  wire [15:0] diag_last_i,
+	input  wire [15:0] diag_reads_i,
 
 	// ---- Machine control ---------------------------------------------------
 	output reg         boot_hold_o,        // holds reset while a save is applied
@@ -241,6 +244,9 @@ module ngpc_cart_save #(
 			5'd16: hdr_word = diag_beats_i;
 			5'd17: hdr_word = diag_drops_i;
 			5'd18: hdr_word = diag_depth_i;
+			5'd19: hdr_word = diag_first_i;
+			5'd20: hdr_word = diag_last_i;
+			5'd21: hdr_word = diag_reads_i;
 			default: hdr_word = 16'd0;
 		endcase
 	end
@@ -409,7 +415,7 @@ module ngpc_cart_save #(
 
 				S_STAGE_HDR_W: begin
 					if (stage_done_i) begin
-						if (hdr_idx == 5'd18) state   <= S_FINISH;
+						if (hdr_idx == 5'd21) state   <= S_FINISH;
 						else begin
 							hdr_idx <= hdr_idx + 5'd1;
 							state   <= S_STAGE_HDR;
