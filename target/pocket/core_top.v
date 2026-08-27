@@ -487,10 +487,21 @@ module core_top (
 
   synch_3 save_present_sync (save_present, save_present_s, clk_74a);
 
+  // WRITE THE ENTRY ONLY WHILE A SAVE EXISTS -- never write zero. APF uses
+  // this same table as its own bookkeeping during slot DELIVERY, and the
+  // first version of this block stomped the entry to 0 while the save slot
+  // was still streaming in: APF delivered exactly one 512-byte sector and
+  // cleanly stopped (measured by the ingest counters: 256 beats, 0 drops).
+  // The reference NES core writes its entry continuously without breaking
+  // loads only because its has_save is known from the cartridge header
+  // before the save slot streams; ours cannot be true that early. Leaving
+  // the entry alone keeps APF's own value -- the loaded file's size -- so a
+  // restored save flushes correctly even before the game writes flash, and
+  // a game with no save leaves no file behind.
   always @(posedge clk_74a) begin
-    datatable_wren <= 1'b1;
+    datatable_wren <= save_present_s;
     datatable_addr <= 10'd7;                 // slot index 3 (Save), size word
-    datatable_data <= save_present_s ? 32'h40200 : 32'h0;
+    datatable_data <= 32'h40200;
   end
 
   core_bridge_cmd icb (
