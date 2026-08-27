@@ -49,7 +49,7 @@
           "sav"
         ],
         "address": "0x12000000",
-        "size_maximum": "0x40200"
+        "size_maximum": "0xFE00"
       }
     ]
   }

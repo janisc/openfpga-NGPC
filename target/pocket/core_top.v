@@ -498,10 +498,20 @@ module core_top (
   // the entry alone keeps APF's own value -- the loaded file's size -- so a
   // restored save flushes correctly even before the game writes flash, and
   // a game with no save leaves no file behind.
+  // 0xFE00: the slot deliberately sits UNDER 64 KB. Every probe agreed the
+  // firmware delivers exactly (size mod 0x10000) bytes of a nonvolatile slot
+  // -- our 0x40200 slot got 0x200 bytes, the file's tail, deterministically,
+  // cold boot included -- and no working core on this card has a save file
+  // over ~64 KB, so nobody had ever crossed the boundary. 512 bytes of
+  // header plus 63 KB of payload is roughly double the largest real NGP
+  // save. NOTE: staging is not yet clamped to the smaller payload; a game
+  // dirtying more than 63 KB of flash would stage past the flushed region
+  // and restore junk for the overflow blocks. No known game does; clamp
+  // before calling this done.
   always @(posedge clk_74a) begin
     datatable_wren <= save_present_s;
     datatable_addr <= 10'd7;                 // slot index 3 (Save), size word
-    datatable_data <= 32'h40200;
+    datatable_data <= 32'h0000FE00;
   end
 
   core_bridge_cmd icb (
