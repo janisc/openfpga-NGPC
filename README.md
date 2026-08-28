@@ -37,6 +37,26 @@ that are understood and intentionally left as-is (e.g. why in-game suspend
 features cannot offer resume on any cold-booting core, this one and MiSTer
 alike, and why sleep is the honest replacement).
 
+## What this port leaves out
+
+- **Cheats** — upstream's cheat engine is compiled out (`NGPC_NO_CHEATS`).
+- **Skip BIOS animation** — removed. The only honest way to skip the
+  eye-catch is the BIOS resume path, and faking resume on a cold boot makes
+  games restore a session that never existed (Faselei! draws over tilemaps
+  it never filled). The jingle stays; it's three seconds of 1998.
+- **Link cable** — upstream's serial port code is still in the tree but is
+  compiled out (`NGPC_NO_LINK`); the port terminates in a stub. Two Pockets
+  will not be trading Card Fighters cards.
+- **Analog video out / Analogizer** — not wired. Dock output is whatever
+  Analogue's scaler does with it; untested here, no dock on hand.
+
+And a word of expectation management: the design fills 99% of the Pocket's
+FPGA and does not formally close timing at this speed grade — every feature
+above was won through fit battles and seed sweeps. Realistically **no new
+features are planned**; the remaining work is polish, testing and release.
+One is of course free to try — the fabric holds about 140 spare ALMs, and
+they are spoken for by whoever gets there first. 😃
+
 ## Branches
 
 - `main` *(at release)*: curated milestone history for reading
