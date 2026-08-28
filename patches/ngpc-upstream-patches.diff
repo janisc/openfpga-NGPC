@@ -106,10 +106,10 @@ index 77efed5..e0ad2bd 100644
  	// On silicon the PSG's analog outputs and the two R-2R DACs are summed by an
  	// amplifier on this board. We mix digitally instead, inside `ngp_snd` with
 diff --git a/rtl/soc/ngp_setup_seed.sv b/rtl/soc/ngp_setup_seed.sv
-index fbeaa25..193d1b7 100644
+index fbeaa25..6aad3ee 100644
 --- a/rtl/soc/ngp_setup_seed.sv
 +++ b/rtl/soc/ngp_setup_seed.sv
-@@ -52,7 +52,13 @@ module ngp_setup_seed
+@@ -52,7 +52,15 @@ module ngp_setup_seed
  	// 1 = allow the BIOS resume request to be seeded on a cold boot. See the
  	// header: this is only honest once work RAM 0x4000-0x5FFF survives a power
  	// cycle, which nothing in this design provides yet.
@@ -120,24 +120,21 @@ index fbeaa25..193d1b7 100644
 +	// on hardware (savestate diff of two wizard entries, 2026-08-28):
 +	// 0x6F8B = year - 1900, 0x6F8C = month, 0x6F8D = day, all BINARY --
 +	// unlike the BCD RTC. 14'h0 disables the writes.
-+	parameter P_BIRTH_ADDR = 14'h2F8B
++	// (Removed from the build for area; the confirmed address stays on
++	// record: 0x6F8B=year-1900, 0x6F8C=month, 0x6F8D=day, binary.)
++	parameter P_BIRTH_ADDR = 14'h0
  )
  (
  	input  wire        clk,
-@@ -78,6 +84,12 @@ module ngp_setup_seed
+@@ -78,6 +86,7 @@ module ngp_setup_seed
  	input  wire [7:0]  cart_subcatalog,
  	input  wire [95:0] cart_title,
  
-+	// OSD birthday for the BIOS horoscope record. Month 0 means "not set"
-+	// and suppresses the writes. Binary, exactly as the BIOS stores them.
-+	input  wire [6:0]  birth_year,   // year - 1900
-+	input  wire [3:0]  birth_month,
-+	input  wire [4:0]  birth_day,
 +
  	// Existing pause tree and savestate memory/register paths. The seed engine
  	// adds no RAM port and owns these only while seed_busy is asserted.
  	output wire        pause_req,
-@@ -190,7 +202,7 @@ module ngp_setup_seed
+@@ -190,7 +199,7 @@ module ngp_setup_seed
  	                           skip_bios_animation && cart_header_valid;
  
  	reg [2:0] state;
@@ -146,38 +143,7 @@ index fbeaa25..193d1b7 100644
  	reg       need_seed;
  
  	reg       mono_q;
-@@ -231,11 +243,20 @@ module ngp_setup_seed
- 	reg [15:0] applied_catalog_q;
- 	reg [7:0]  applied_subcatalog_q;
- 	reg [95:0] applied_title_q;
-+	reg [6:0]  birth_year_q;
-+	reg [3:0]  birth_month_q;
-+	reg [4:0]  birth_day_q;
-+	reg [6:0]  applied_birth_year_q;
-+	reg [3:0]  applied_birth_month_q;
-+	reg [4:0]  applied_birth_day_q;
- 
- 	wire settings_changed = (mono != applied_mono_q) ||
- 	                        (live_language != applied_language_q) ||
- 	                        (live_palette != applied_palette_q) ||
- 	                        (use_hps_rtc != applied_rtc_q) ||
-+	                        (birth_year != applied_birth_year_q) ||
-+	                        (birth_month != applied_birth_month_q) ||
-+	                        (birth_day != applied_birth_day_q) ||
- 	                        (live_resume != applied_resume_q) ||
- 	                        (live_resume &&
- 	                         ((cart_catalog != applied_catalog_q) ||
-@@ -246,6 +267,9 @@ module ngp_setup_seed
- 	                             (live_language == language_q) &&
- 	                             (live_palette == palette_q) &&
- 	                             (use_hps_rtc == use_rtc_q) &&
-+	                             (birth_year == birth_year_q) &&
-+	                             (birth_month == birth_month_q) &&
-+	                             (birth_day == birth_day_q) &&
- 	                             (live_resume == resume_q) &&
- 	                             (!resume_q ||
- 	                              ((cart_catalog == catalog_q) &&
-@@ -293,48 +317,67 @@ module ngp_setup_seed
+@@ -293,48 +302,48 @@ module ngp_setup_seed
  			ss_mem_active = 1'b1;
  			ss_mem_wren   = 1'b1;
  			case (mem_step)
@@ -251,31 +217,12 @@ index fbeaa25..193d1b7 100644
 +				6'd25: begin ss_mem_addr = W_LAST_TITLE + 14'd10;  ss_mem_wdata = title_q[87:80];  ss_mem_wren = resume_q; end
 +				6'd26: begin ss_mem_addr = W_LAST_TITLE + 14'd11;  ss_mem_wdata = title_q[95:88];  ss_mem_wren = resume_q; end
 +				6'd27: begin ss_mem_addr = W_USER_ANSWER;          ss_mem_wdata = resume_q ? 8'h80 : 8'h00; end
-+				// Birthday record (not part of the checksummed setup bytes).
-+				// The BIOS keeps derived words at 0x6C16-0x6C19 that change with
-+				// the birthday; they are left alone on the theory that the
-+				// horoscope recomputes them -- verified on hardware before release.
-+				6'd28: begin
-+					ss_mem_addr  = P_BIRTH_ADDR;
-+					ss_mem_wdata = {1'b0, birth_year_q};
-+					ss_mem_wren  = (P_BIRTH_ADDR != 14'h0) && (birth_month_q != 4'd0);
-+				end
-+				6'd29: begin
-+					ss_mem_addr  = P_BIRTH_ADDR + 14'd1;
-+					ss_mem_wdata = {4'd0, birth_month_q};
-+					ss_mem_wren  = (P_BIRTH_ADDR != 14'h0) && (birth_month_q != 4'd0);
-+				end
-+				6'd30: begin
-+					ss_mem_addr  = P_BIRTH_ADDR + 14'd2;
-+					ss_mem_wdata = {3'd0, birth_day_q};
-+					ss_mem_wren  = (P_BIRTH_ADDR != 14'h0) && (birth_month_q != 4'd0);
-+				end
-+				6'd31: begin ss_mem_addr = W_CSUM_HI;              ss_mem_wdata = 8'h00; end
-+				6'd32: begin ss_mem_addr = W_CSUM_LO;              ss_mem_wdata = checksum_q; end
++				6'd28: begin ss_mem_addr = W_CSUM_HI;              ss_mem_wdata = 8'h00; end
++				6'd29: begin ss_mem_addr = W_CSUM_LO;              ss_mem_wdata = checksum_q; end
  				default: ss_mem_wren = 1'b0;
  			endcase
  		end
-@@ -369,7 +412,7 @@ module ngp_setup_seed
+@@ -369,7 +378,7 @@ module ngp_setup_seed
  	always @(posedge clk) begin
  		if (reset) begin
  			state              <= ST_IDLE;
@@ -284,27 +231,7 @@ index fbeaa25..193d1b7 100644
  			need_seed          <= 1'b1;
  			seed_done          <= 1'b0;
  			mono_q             <= 1'b0;
-@@ -381,6 +424,9 @@ module ngp_setup_seed
- 			catalog_q          <= 16'd0;
- 			subcatalog_q       <= 8'd0;
- 			title_q            <= 96'd0;
-+			birth_year_q       <= 7'd0;
-+			birth_month_q      <= 4'd0;
-+			birth_day_q        <= 5'd1;
- 			rtc_year_q         <= 8'h00;
- 			rtc_month_q        <= 8'h01;
- 			rtc_day_q          <= 8'h01;
-@@ -397,6 +443,9 @@ module ngp_setup_seed
- 			applied_catalog_q  <= 16'd0;
- 			applied_subcatalog_q <= 8'd0;
- 			applied_title_q    <= 96'd0;
-+			applied_birth_year_q  <= 7'd0;
-+			applied_birth_month_q <= 4'd0;
-+			applied_birth_day_q   <= 5'd1;
- 		end else begin
- 			seed_done <= 1'b0;
- 
-@@ -413,9 +462,16 @@ module ngp_setup_seed
+@@ -413,9 +422,13 @@ module ngp_setup_seed
  						checksum_q    <= bios_initial_checksum(mono, live_language, live_palette);
  						use_rtc_q     <= use_hps_rtc;
  						resume_q      <= live_resume;
@@ -318,13 +245,10 @@ index fbeaa25..193d1b7 100644
 +						catalog_q     <= P_ALLOW_RESUME_SEED ? cart_catalog : 16'd0;
 +						subcatalog_q  <= P_ALLOW_RESUME_SEED ? cart_subcatalog : 8'd0;
 +						title_q       <= P_ALLOW_RESUME_SEED ? cart_title : 96'd0;
-+						birth_year_q  <= birth_year;
-+						birth_month_q <= birth_month;
-+						birth_day_q   <= birth_day;
  						rtc_year_q    <= rtc_seed_value[47:40];
  						rtc_month_q   <= rtc_seed_value[39:32];
  						rtc_day_q     <= rtc_seed_value[31:24];
-@@ -430,13 +486,13 @@ module ngp_setup_seed
+@@ -430,13 +443,13 @@ module ngp_setup_seed
  
  				ST_WAIT: begin
  					if (pause_ready) begin
@@ -336,19 +260,11 @@ index fbeaa25..193d1b7 100644
  
  				ST_MEM: begin
 -					if (mem_step == 5'd29) begin
-+					if (mem_step == 6'd32) begin
++					if (mem_step == 6'd29) begin
  						if (use_rtc_q) begin
  							state <= ST_RTC_DATE;
  						end else begin
-@@ -448,12 +504,15 @@ module ngp_setup_seed
- 							applied_palette_q  <= palette_q;
- 							applied_rtc_q      <= use_rtc_q;
- 							applied_resume_q   <= resume_q;
-+							applied_birth_year_q  <= birth_year_q;
-+							applied_birth_month_q <= birth_month_q;
-+							applied_birth_day_q   <= birth_day_q;
- 							applied_catalog_q  <= catalog_q;
- 							applied_subcatalog_q <= subcatalog_q;
+@@ -453,7 +466,7 @@ module ngp_setup_seed
  							applied_title_q    <= title_q;
  						end
  					end else begin
@@ -357,16 +273,6 @@ index fbeaa25..193d1b7 100644
  					end
  				end
  
-@@ -469,6 +528,9 @@ module ngp_setup_seed
- 					applied_palette_q  <= palette_q;
- 					applied_rtc_q      <= use_rtc_q;
- 					applied_resume_q   <= resume_q;
-+					applied_birth_year_q  <= birth_year_q;
-+					applied_birth_month_q <= birth_month_q;
-+					applied_birth_day_q   <= birth_day_q;
- 					applied_catalog_q  <= catalog_q;
- 					applied_subcatalog_q <= subcatalog_q;
- 					applied_title_q    <= title_q;
 diff --git a/rtl/soc/t900_mcu.sv b/rtl/soc/t900_mcu.sv
 index cc899cf..4f66ee1 100644
 --- a/rtl/soc/t900_mcu.sv
