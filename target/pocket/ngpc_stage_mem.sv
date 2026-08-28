@@ -162,9 +162,13 @@ module ngpc_stage_mem
 			diag_drops_o <= 16'd0;
 		end else begin
 			if (host_wr_i) begin
+`ifdef NGPC_SAVE_DIAG
 				diag_beats_o <= diag_beats_o + 16'd1;
+`endif
 				if (skid_full) begin
+`ifdef NGPC_SAVE_DIAG
 					diag_drops_o <= diag_drops_o + 16'd1;
+`endif
 				end else begin
 					skid[skid_wp[8:0]] <= {host_wr_addr_i[22:1], host_wr_data_i};
 					skid_wp <= skid_wp + 10'd1;
