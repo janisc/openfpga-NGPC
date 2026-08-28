@@ -50,10 +50,6 @@ module ngpc_stage_mem
 	// the real bus so the two can be reconciled.
 	output reg  [15:0] diag_beats_o,
 	output reg  [15:0] diag_drops_o,
-	output reg  [15:0] diag_depth_o,
-	output reg  [15:0] diag_first_o,   // 512B sector index of first host write
-	output reg  [15:0] diag_last_o,    // ... and of the last
-	output reg  [15:0] diag_reads_o,   // host READ beats -- does APF verify?
 
 	// ---- Client B: the save engine ----------------------------------------
 	input  wire        eng_req_i,
@@ -164,14 +160,8 @@ module ngpc_stage_mem
 			skid_wp <= 10'd0;
 			diag_beats_o <= 16'd0;
 			diag_drops_o <= 16'd0;
-			diag_depth_o <= 16'd0;
-			diag_first_o <= 16'hFFFF;
-			diag_last_o  <= 16'hFFFF;
-			diag_reads_o <= 16'd0;
 		end else begin
 			if (host_wr_i) begin
-				if (diag_beats_o == 16'd0) diag_first_o <= host_wr_addr_i[24:9];
-				diag_last_o  <= host_wr_addr_i[24:9];
 				diag_beats_o <= diag_beats_o + 16'd1;
 				if (skid_full) begin
 					diag_drops_o <= diag_drops_o + 16'd1;
@@ -179,11 +169,6 @@ module ngpc_stage_mem
 					skid[skid_wp[8:0]] <= {host_wr_addr_i[22:1], host_wr_data_i};
 					skid_wp <= skid_wp + 10'd1;
 				end
-				if ({6'd0, skid_fill} > {6'd0, diag_depth_o[9:0]})
-					diag_depth_o <= {6'd0, skid_fill};
-			end
-			if (host_rd_i) begin
-				diag_reads_o <= diag_reads_o + 16'd1;
 			end
 		end
 	end

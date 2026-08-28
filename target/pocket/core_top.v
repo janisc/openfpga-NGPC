@@ -608,8 +608,7 @@ module core_top (
   wire        stage_done;
   wire [15:0] stage_rdata;
   wire        host_busy;
-  wire [15:0] stage_diag_beats, stage_diag_drops, stage_diag_depth;
-  wire [15:0] stage_diag_first, stage_diag_last, stage_diag_reads;
+  wire [15:0] stage_diag_beats, stage_diag_drops;
 
   wire        stage_host_wr;
   wire [27:0] stage_host_wr_addr;
@@ -684,10 +683,6 @@ module core_top (
       .host_busy_o(host_busy),
       .diag_beats_o(stage_diag_beats),
       .diag_drops_o(stage_diag_drops),
-      .diag_depth_o(stage_diag_depth),
-      .diag_first_o(stage_diag_first),
-      .diag_last_o (stage_diag_last),
-      .diag_reads_o(stage_diag_reads),
 
       .eng_req_i  (stage_req),
       .eng_we_i   (stage_we),
@@ -1015,10 +1010,6 @@ module core_top (
       .slots_settled(slots_settled),
       .stage_diag_beats(stage_diag_beats),
       .stage_diag_drops(stage_diag_drops),
-      .stage_diag_depth(stage_diag_depth),
-      .stage_diag_first(stage_diag_first),
-      .stage_diag_last (stage_diag_last),
-      .stage_diag_reads(stage_diag_reads),
 
       .ss_save_i       (ss_save),
       .ss_load_i       (ss_load),

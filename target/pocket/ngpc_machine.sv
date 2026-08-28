@@ -89,10 +89,6 @@ module ngpc_machine
 	input  wire        slots_settled,    // no loader region written for ~500 ms
 	input  wire [15:0] stage_diag_beats,
 	input  wire [15:0] stage_diag_drops,
-	input  wire [15:0] stage_diag_depth,
-	input  wire [15:0] stage_diag_first,
-	input  wire [15:0] stage_diag_last,
-	input  wire [15:0] stage_diag_reads,
 
 	// ---- Savestates --------------------------------------------------------
 	// The engine lives here, beside the machine it serialises; the controller
@@ -411,6 +407,17 @@ module ngpc_machine
 	wire  [1:0] cart_size_code0;
 	wire  [1:0] cart_size_code1;
 
+	// ngp_cart's die-population buckets (FlashMem datasheet p.5-6, replicated
+	// from upstream/rtl/cart/ngp_cart.sv:152-201), computed from the machine's
+	// own hard-reset-domain image size so the save engine's geometry survives
+	// the machine reset its apply itself asserts.
+	wire [1:0] save_size_code0 =
+		(cart_image_bytes == 25'd0)                              ? 2'd0 :
+		((cart_image_bytes <= 25'h080000) && !cart_force_8m_die0) ? 2'd1 :
+		(cart_image_bytes <= 25'h100000)                         ? 2'd2 : 2'd3;
+	wire [1:0] save_size_code1 =
+		(cart_image_bytes >  25'h200000)                         ? 2'd3 : 2'd0;
+
 	// ngp_cart_rom stalls its producer, and APF cannot be stalled. See
 	// ngpc_cart_fifo.
 	wire        cart_ioctl_wait;
@@ -603,8 +610,17 @@ module ngpc_machine
 		.cart_replace_i  (cart_download_start),
 		.cart_crc32_i    (cart_image_crc32),
 		.cart_bytes_i    (cart_image_bytes),
-		.size_code0_i    (cart_size_code0),
-		.size_code1_i    (cart_size_code1),
+		// NOT the mainboard's size codes. Those are ngp_cart's latched copies,
+		// and ngp_cart sits on the machine reset -- which INCLUDES the apply's
+		// own boot_hold. The audit's finding: during the apply, the hold wipes
+		// ngp_cart's codes to zero every cycle, the geometry module then calls
+		// every block invalid, and S_APPLY_SCAN walks both dies issuing not a
+		// single write -- a restore that starves itself with its own reset.
+		// These derived codes live in the machine's hard-reset domain
+		// (cart_image_bytes survives everything short of a new download) and
+		// replicate ngp_cart's own bucket table exactly.
+		.size_code0_i    (save_size_code0),
+		.size_code1_i    (save_size_code1),
 
 		.event0_i        (cart_dirty0_event),
 		.block0_i        (cart_dirty0_block),
@@ -616,10 +632,6 @@ module ngpc_machine
 		.slots_settled_i (slots_settled),
 		.diag_beats_i    (stage_diag_beats),
 		.diag_drops_i    (stage_diag_drops),
-		.diag_depth_i    (stage_diag_depth),
-		.diag_first_i    (stage_diag_first),
-		.diag_last_i     (stage_diag_last),
-		.diag_reads_i    (stage_diag_reads),
 
 		.boot_hold_o     (overlay_boot_hold),
 		.save_present_o  (save_present_o),

@@ -99,10 +99,7 @@ module ngpc_cart_save #(
 	// words 16-18 of every staged save so the flushed file carries them out.
 	input  wire [15:0] diag_beats_i,
 	input  wire [15:0] diag_drops_i,
-	input  wire [15:0] diag_depth_i,
-	input  wire [15:0] diag_first_i,
-	input  wire [15:0] diag_last_i,
-	input  wire [15:0] diag_reads_i,
+
 
 	// ---- Machine control ---------------------------------------------------
 	output reg         boot_hold_o,        // holds reset while a save is applied
@@ -205,8 +202,20 @@ module ngpc_cart_save #(
 	localparam S_APPLY_WR_W  = 4'd14;
 	localparam S_FINISH      = 4'd15;
 
+
 	reg  [3:0] state;
 	reg        copy_dirtied;    // the block being copied was rewritten mid-copy
+
+	// Apply diagnostics, stamped into header words 22-24 of every staged save:
+	// how many applies ran since reset, the last apply's verdict (1 = header
+	// accepted, 2 = rejected), and how many p2 writes COMPLETED during the
+	// last apply. Delivery is proven complete on hardware and the header
+	// provably passes, yet the game sees unchanged flash -- these words say
+	// whether the writes themselves are being acknowledged.
+	reg [15:0] diag_applies;
+	reg [15:0] diag_verdict;
+	reg [15:0] diag_p2wr;
+
 	reg [15:0] block_word;      // position within the block being copied
 	reg [15:0] xfer_data;       // the word in flight
 	reg  [4:0] hdr_idx;         // position within the header
@@ -243,10 +252,14 @@ module ngpc_cart_save #(
 			5'd15: hdr_word = dirty1[63:48];
 			5'd16: hdr_word = diag_beats_i;
 			5'd17: hdr_word = diag_drops_i;
-			5'd18: hdr_word = diag_depth_i;
-			5'd19: hdr_word = diag_first_i;
-			5'd20: hdr_word = diag_last_i;
-			5'd21: hdr_word = diag_reads_i;
+			// 18 retired with 19-21: high-water read zero through every
+			// test; drops alone detect an overrun.
+			// 19-21 retired: delivery completeness and the no-verify-reads
+			// question were answered for good; the words stay zero so the
+			// header layout is stable.
+			5'd22: hdr_word = diag_applies;
+			5'd23: hdr_word = diag_verdict;
+			5'd24: hdr_word = diag_p2wr;
 			default: hdr_word = 16'd0;
 		endcase
 	end
@@ -270,6 +283,9 @@ module ngpc_cart_save #(
 		else if (!flash_quiet)                    quiet <= 20'd0;
 
 		if (reset || cart_replace_i) begin
+			diag_applies  <= 16'd0;
+			diag_verdict  <= 16'd0;
+			diag_p2wr     <= 16'd0;
 			state         <= S_IDLE;
 			boot_hold_o   <= 1'b0;
 			busy_o        <= 1'b0;
@@ -294,8 +310,11 @@ module ngpc_cart_save #(
 						busy_o      <= 1'b1;
 						if (slots_settled_i) begin
 							apply_pending <= 1'b0;
-							hdr_idx       <= 5'd0;
+							hdr_idx       <= 4'd0;
 							apply_ok      <= 1'b1;
+							diag_applies  <= diag_applies + 16'd1;
+							diag_verdict  <= 16'd0;
+							diag_p2wr     <= 16'd0;
 							state         <= S_APPLY_HDR;
 						end
 					end else if (cart_ready_i && pending_any && !host_busy_i &&
@@ -325,7 +344,7 @@ module ngpc_cart_save #(
 
 						if (geo_block == 6'd63) begin
 							if (geo_die) begin
-								hdr_idx <= 5'd0;
+								hdr_idx <= 4'd0;
 								state   <= S_STAGE_HDR;
 							end else begin
 								geo_die   <= 1'b1;
@@ -382,7 +401,7 @@ module ngpc_cart_save #(
 
 							if (geo_block == 6'd63) begin
 								if (geo_die) begin
-									hdr_idx <= 5'd0;
+									hdr_idx <= 4'd0;
 									state   <= S_STAGE_HDR;
 								end else begin
 									geo_die   <= 1'b1;
@@ -415,7 +434,7 @@ module ngpc_cart_save #(
 
 				S_STAGE_HDR_W: begin
 					if (stage_done_i) begin
-						if (hdr_idx == 5'd21) state   <= S_FINISH;
+						if (hdr_idx == 5'd24) state   <= S_FINISH;
 						else begin
 							hdr_idx <= hdr_idx + 5'd1;
 							state   <= S_STAGE_HDR;
@@ -457,6 +476,7 @@ module ngpc_cart_save #(
 							geo_die      <= 1'b0;
 							geo_block    <= 6'd0;
 							stage_offset <= 25'd0;
+							diag_verdict <= apply_ok ? 16'd1 : 16'd2;
 							state        <= apply_ok ? S_APPLY_SCAN : S_FINISH;
 						end else begin
 							hdr_idx <= hdr_idx + 5'd1;
@@ -509,6 +529,7 @@ module ngpc_cart_save #(
 
 				S_APPLY_WR_W: begin
 					if (p2_done_i) begin
+						diag_p2wr <= diag_p2wr + 16'd1;
 						if (block_word + 16'd1 >= geo_words) begin
 							stage_offset <= stage_offset + {9'd0, geo_words, 1'b0};
 
