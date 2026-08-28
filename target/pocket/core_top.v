@@ -338,6 +338,7 @@ module core_top (
   reg       opt_skip_anim = 0;      // !status[19]
   reg       opt_auto_power = 1;     // status[18]
   reg       opt_lcd_response = 0;   // status[20]    accepted, presenter ignores
+  reg [6:0] opt_birth_year = 7'd80; // year - 1900, from a full-year slider
   reg [3:0] opt_birth_month = 4'd0; // 0 = not set
   reg [4:0] opt_birth_day = 5'd1;
 
@@ -364,6 +365,7 @@ module core_top (
         32'h110: opt_auto_power   <= bridge_wr_data[0];
         32'h114: opt_lcd_response <= bridge_wr_data[0];
         32'h11C: opt_birth_month  <= bridge_wr_data[3:0];
+        32'h130: opt_birth_year   <= bridge_wr_data[10:0] - 11'd1900;
         32'h12C: opt_birth_day    <= bridge_wr_data[4:0];
         32'h120: opt_autosave_off <= bridge_wr_data[0];
         32'h124: save_pulse_74    <= ~save_pulse_74;
@@ -378,6 +380,7 @@ module core_top (
   wire       opt_language_jp_s;
   wire [2:0] opt_palette_s;
   wire       opt_skip_anim_s;
+  wire [6:0] opt_birth_year_s;
   wire [3:0] opt_birth_month_s;
   wire [4:0] opt_birth_day_s;
   wire       opt_auto_power_s;
@@ -387,13 +390,13 @@ module core_top (
   wire       load_pulse_s;
 
   synch_3 #(
-      .WIDTH(21)
+      .WIDTH(28)
   ) settings_sync (
       {opt_system, opt_language_jp, opt_palette, opt_skip_anim,
-       opt_birth_month, opt_birth_day, opt_auto_power, opt_lcd_response,
+       opt_birth_year, opt_birth_month, opt_birth_day, opt_auto_power, opt_lcd_response,
        opt_autosave_off, save_pulse_74, load_pulse_74},
       {opt_system_s, opt_language_jp_s, opt_palette_s, opt_skip_anim_s,
-       opt_birth_month_s, opt_birth_day_s, opt_auto_power_s, opt_lcd_response_s,
+       opt_birth_year_s, opt_birth_month_s, opt_birth_day_s, opt_auto_power_s, opt_lcd_response_s,
        opt_autosave_off_s, save_pulse_s, load_pulse_s},
       clk_sys
   );
@@ -990,6 +993,7 @@ module core_top (
       .opt_palette     (opt_palette_s),
       .opt_skip_anim   (opt_skip_anim_s),
       .opt_use_host_rtc(apf_rtc_ready),
+      .opt_birth_year  (opt_birth_year_s),
       .opt_birth_month (opt_birth_month_s),
       .opt_birth_day   (opt_birth_day_s),
       .opt_auto_power  (opt_auto_power_s),
