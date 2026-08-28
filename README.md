@@ -49,6 +49,30 @@ alike, and why sleep is the honest replacement).
   will not be trading Card Fighters cards.
 - **Analog video out / Analogizer** — not wired. Dock output is whatever
   Analogue's scaler does with it; untested here, no dock on hand.
+- **MiSTer's video processing options** — LCD Response simulation and
+  Saturation are not wired; that ground is covered (better) by Analogue's
+  display modes, including their Neo Geo Pocket screen simulations.
+- **Stereo Mix** — the NGP's stereo comes through as-is, no blend option.
+- **Savestate slots and hotkeys** — MiSTer's four slots and F-keys are
+  replaced by the Pocket's own Memories UI, which manages any number of
+  states. Nothing lost, different furniture.
+
+**Saves are a ground-up rewrite, not a port of MiSTer's.** MiSTer keeps a
+sparse overlay of the whole 8 MB cartridge space; this port tracks exactly
+the flash blocks a game dirties and persists them in a sub-64 KB Pocket
+nonvolatile slot, CRC-bound to the cartridge, applied before boot. What that
+trades away, knowingly:
+
+- **No MiSTer `.sav` interchange** — the formats share nothing; saves do not
+  travel between the platforms in either direction.
+- **No autosave toggle, no manual backup buttons** — saving is always on and
+  invisible. Backup is copying the `.sav` off the SD card, which is also the
+  honest version of what those buttons did.
+- **A save set is capped at 63 KB of dirty blocks** — no licensed game comes
+  anywhere near it (the hungriest known dirties ~32 KB).
+- **Savestates deliberately exclude cartridge flash** — a state restores the
+  machine, the `.sav` restores the cartridge, and the two are independent.
+  MiSTer's 8 MB states capture both at once; ours are 33 KB and instant.
 
 And a word of expectation management: the design fills 99% of the Pocket's
 FPGA and does not formally close timing at this speed grade — every feature
