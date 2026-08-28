@@ -754,7 +754,9 @@ set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_spimiso
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_spimosi
 # Retiming buys ~3 ns but costs ~1,700 registers. FAST does less of both,
 # which is the only middle ground between "fits" and "meets timing".
-set_global_assignment -name PHYSICAL_SYNTHESIS_EFFORT FAST
+# NORMAL again (2026-08-28): with retiming off there are ~420 spare ALMs,
+# so full physical synthesis can spend area on combinational timing.
+set_global_assignment -name PHYSICAL_SYNTHESIS_EFFORT NORMAL
 
 # Register retiming: OFF, and this is a measured decision, not a default.
 #
