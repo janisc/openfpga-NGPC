@@ -21,12 +21,12 @@
         "defaultval": 0,
         "options": [
           {
-            "value": 0,
-            "name": "Color"
-          },
-          {
             "value": 1,
             "name": "Auto"
+          },
+          {
+            "value": 0,
+            "name": "Color"
           },
           {
             "value": 2,
@@ -87,17 +87,6 @@
         ]
       },
       {
-        "name": "Skip BIOS Animation",
-        "id": 23,
-        "type": "check",
-        "enabled": true,
-        "persist": true,
-        "writeonly": true,
-        "address": "0x10C",
-        "defaultval": 0,
-        "value": 1
-      },
-      {
         "name": "Automatic Power On",
         "id": 24,
         "type": "check",
@@ -107,6 +96,86 @@
         "address": "0x110",
         "defaultval": 1,
         "value": 1
+      },
+      {
+        "name": "Birthday Month",
+        "id": 25,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "address": "0x11C",
+        "defaultval": 0,
+        "options": [
+          {
+            "value": 0,
+            "name": "Not Set"
+          },
+          {
+            "value": 1,
+            "name": "January"
+          },
+          {
+            "value": 2,
+            "name": "February"
+          },
+          {
+            "value": 3,
+            "name": "March"
+          },
+          {
+            "value": 4,
+            "name": "April"
+          },
+          {
+            "value": 5,
+            "name": "May"
+          },
+          {
+            "value": 6,
+            "name": "June"
+          },
+          {
+            "value": 7,
+            "name": "July"
+          },
+          {
+            "value": 8,
+            "name": "August"
+          },
+          {
+            "value": 9,
+            "name": "September"
+          },
+          {
+            "value": 10,
+            "name": "October"
+          },
+          {
+            "value": 11,
+            "name": "November"
+          },
+          {
+            "value": 12,
+            "name": "December"
+          }
+        ]
+      },
+      {
+        "name": "Birthday Day",
+        "id": 26,
+        "type": "slider_u32",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "address": "0x12C",
+        "defaultval": 1,
+        "graphical": {
+          "min": 1,
+          "max": 31,
+          "adjust_small": 1,
+          "adjust_large": 5
+        }
       }
     ]
   }

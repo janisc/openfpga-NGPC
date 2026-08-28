@@ -336,9 +336,10 @@ module core_top (
   reg       opt_language_jp = 0;    // status[3]
   reg [2:0] opt_palette = 3'd0;     // status[16:14]
   reg       opt_skip_anim = 0;      // !status[19]
-  reg       opt_use_host_rtc = 0;   // !status[17]   PHASE 3: needs the APF RTC
   reg       opt_auto_power = 1;     // status[18]
   reg       opt_lcd_response = 0;   // status[20]    accepted, presenter ignores
+  reg [3:0] opt_birth_month = 4'd0; // 0 = not set
+  reg [4:0] opt_birth_day = 5'd1;
 
 
   // Cartridge saves. The two actions are toggles rather than levels: APF
@@ -362,7 +363,8 @@ module core_top (
         32'h10C: opt_skip_anim    <= bridge_wr_data[0];
         32'h110: opt_auto_power   <= bridge_wr_data[0];
         32'h114: opt_lcd_response <= bridge_wr_data[0];
-        32'h118: opt_use_host_rtc <= bridge_wr_data[0];
+        32'h11C: opt_birth_month  <= bridge_wr_data[3:0];
+        32'h12C: opt_birth_day    <= bridge_wr_data[4:0];
         32'h120: opt_autosave_off <= bridge_wr_data[0];
         32'h124: save_pulse_74    <= ~save_pulse_74;
         32'h128: load_pulse_74    <= ~load_pulse_74;
@@ -376,7 +378,8 @@ module core_top (
   wire       opt_language_jp_s;
   wire [2:0] opt_palette_s;
   wire       opt_skip_anim_s;
-  wire       opt_use_host_rtc_s;
+  wire [3:0] opt_birth_month_s;
+  wire [4:0] opt_birth_day_s;
   wire       opt_auto_power_s;
   wire       opt_lcd_response_s;
   wire       opt_autosave_off_s;
@@ -384,13 +387,13 @@ module core_top (
   wire       load_pulse_s;
 
   synch_3 #(
-      .WIDTH(13)
+      .WIDTH(21)
   ) settings_sync (
       {opt_system, opt_language_jp, opt_palette, opt_skip_anim,
-       opt_use_host_rtc, opt_auto_power, opt_lcd_response,
+       opt_birth_month, opt_birth_day, opt_auto_power, opt_lcd_response,
        opt_autosave_off, save_pulse_74, load_pulse_74},
       {opt_system_s, opt_language_jp_s, opt_palette_s, opt_skip_anim_s,
-       opt_use_host_rtc_s, opt_auto_power_s, opt_lcd_response_s,
+       opt_birth_month_s, opt_birth_day_s, opt_auto_power_s, opt_lcd_response_s,
        opt_autosave_off_s, save_pulse_s, load_pulse_s},
       clk_sys
   );
@@ -540,6 +543,10 @@ module core_top (
       .dataslot_requestwrite_ok (dataslot_requestwrite_ok),
 
       .dataslot_allcomplete(dataslot_allcomplete),
+
+      .rtc_valid    (rtc_valid),
+      .rtc_date_bcd (rtc_date_bcd),
+      .rtc_time_bcd (rtc_time_bcd),
 
       .savestate_supported  (savestate_supported),
       .savestate_addr       (savestate_addr),
@@ -954,6 +961,25 @@ module core_top (
       .bus_out_done(bus_out_done)
   );
 
+  // APF wall clock (clk_74a) -> MSM6242B packet (clk_sys). rtc_ready
+  // doubles as use_hps_rtc: a Pocket that never delivers a clock seeds
+  // the BIOS default date exactly as before.
+  wire        rtc_valid;
+  wire [31:0] rtc_date_bcd;
+  wire [31:0] rtc_time_bcd;
+  wire [64:0] apf_rtc_packet;
+  wire        apf_rtc_ready;
+
+  ngpc_apf_rtc apf_rtc (
+      .clk_74a      (clk_74a),
+      .clk_sys      (clk_sys),
+      .rtc_valid    (rtc_valid),
+      .rtc_date_bcd (rtc_date_bcd),
+      .rtc_time_bcd (rtc_time_bcd),
+      .hps_rtc      (apf_rtc_packet),
+      .rtc_ready    (apf_rtc_ready)
+  );
+
   ngpc_machine machine (
       .clk_sys (clk_sys),
       .clk_ram (clk_ram),
@@ -963,7 +989,9 @@ module core_top (
       .opt_language_jp (opt_language_jp_s),
       .opt_palette     (opt_palette_s),
       .opt_skip_anim   (opt_skip_anim_s),
-      .opt_use_host_rtc(opt_use_host_rtc_s),
+      .opt_use_host_rtc(apf_rtc_ready),
+      .opt_birth_month (opt_birth_month_s),
+      .opt_birth_day   (opt_birth_day_s),
       .opt_auto_power  (opt_auto_power_s),
       .opt_lcd_response(opt_lcd_response_s),
 
@@ -979,10 +1007,7 @@ module core_top (
       .cart_wr_data      (cart_wr_data),
       .cart_fifo_overflow(cart_fifo_overflow),
 
-      // PHASE 3: build this from APF host command 0x0090 in the MSM6242B
-      // packet shape ngp_host_clock expects. Until then opt_use_host_rtc
-      // defaults low and the BIOS seeds its own default date.
-      .hps_rtc(65'd0),
+      .hps_rtc(apf_rtc_packet),
 
       .joystick(joystick),
 

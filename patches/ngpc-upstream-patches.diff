@@ -105,6 +105,171 @@ index 77efed5..e0ad2bd 100644
  
  	// On silicon the PSG's analog outputs and the two R-2R DACs are summed by an
  	// amplifier on this board. We mix digitally instead, inside `ngp_snd` with
+diff --git a/rtl/soc/ngp_setup_seed.sv b/rtl/soc/ngp_setup_seed.sv
+index fbeaa25..71c8985 100644
+--- a/rtl/soc/ngp_setup_seed.sv
++++ b/rtl/soc/ngp_setup_seed.sv
+@@ -52,7 +52,12 @@ module ngp_setup_seed
+ 	// 1 = allow the BIOS resume request to be seeded on a cold boot. See the
+ 	// header: this is only honest once work RAM 0x4000-0x5FFF survives a power
+ 	// cycle, which nothing in this design provides yet.
+-	parameter P_ALLOW_RESUME_SEED = 1'b0
++	parameter P_ALLOW_RESUME_SEED = 1'b0,
++
++	// Work-RAM address of the BIOS birthday record: month byte, day at +1.
++	// 14'h0 disables the writes entirely -- the address is confirmed
++	// empirically (savestate diff of two wizard entries) before being set.
++	parameter P_BIRTH_ADDR = 14'h0
+ )
+ (
+ 	input  wire        clk,
+@@ -78,6 +83,11 @@ module ngp_setup_seed
+ 	input  wire [7:0]  cart_subcatalog,
+ 	input  wire [95:0] cart_title,
+ 
++	// OSD birthday for the BIOS horoscope record. Month 0 means "not set"
++	// and suppresses the writes. Binary inputs, converted to BCD here.
++	input  wire [3:0]  birth_month,
++	input  wire [4:0]  birth_day,
++
+ 	// Existing pause tree and savestate memory/register paths. The seed engine
+ 	// adds no RAM port and owns these only while seed_busy is asserted.
+ 	output wire        pause_req,
+@@ -141,6 +151,30 @@ module ngp_setup_seed
+ 	end
+ 	endfunction
+ 
++	function automatic [7:0] bios_bcd_month(input [3:0] m);
++	begin
++		bios_bcd_month = (m >= 4'd10) ? {4'h1, m - 4'd10} : {4'h0, m};
++	end
++	endfunction
++
++	function automatic [7:0] bios_bcd_day(input [4:0] d);
++		reg [4:0] r;
++	begin
++		if (d >= 5'd30) begin
++			r = d - 5'd30;
++			bios_bcd_day = {4'd3, r[3:0]};
++		end else if (d >= 5'd20) begin
++			r = d - 5'd20;
++			bios_bcd_day = {4'd2, r[3:0]};
++		end else if (d >= 5'd10) begin
++			r = d - 5'd10;
++			bios_bcd_day = {4'd1, r[3:0]};
++		end else begin
++			bios_bcd_day = {4'd0, d[3:0]};
++		end
++	end
++	endfunction
++
+ 	function automatic [7:0] bios_initial_checksum
+ 	(
+ 		input       mono_bios,
+@@ -231,11 +265,17 @@ module ngp_setup_seed
+ 	reg [15:0] applied_catalog_q;
+ 	reg [7:0]  applied_subcatalog_q;
+ 	reg [95:0] applied_title_q;
++	reg [3:0]  birth_month_q;
++	reg [4:0]  birth_day_q;
++	reg [3:0]  applied_birth_month_q;
++	reg [4:0]  applied_birth_day_q;
+ 
+ 	wire settings_changed = (mono != applied_mono_q) ||
+ 	                        (live_language != applied_language_q) ||
+ 	                        (live_palette != applied_palette_q) ||
+ 	                        (use_hps_rtc != applied_rtc_q) ||
++	                        (birth_month != applied_birth_month_q) ||
++	                        (birth_day != applied_birth_day_q) ||
+ 	                        (live_resume != applied_resume_q) ||
+ 	                        (live_resume &&
+ 	                         ((cart_catalog != applied_catalog_q) ||
+@@ -246,6 +286,8 @@ module ngp_setup_seed
+ 	                             (live_language == language_q) &&
+ 	                             (live_palette == palette_q) &&
+ 	                             (use_hps_rtc == use_rtc_q) &&
++	                             (birth_month == birth_month_q) &&
++	                             (birth_day == birth_day_q) &&
+ 	                             (live_resume == resume_q) &&
+ 	                             (!resume_q ||
+ 	                              ((cart_catalog == catalog_q) &&
+@@ -333,8 +375,20 @@ module ngp_setup_seed
+ 				5'd25: begin ss_mem_addr = W_LAST_TITLE + 14'd10;  ss_mem_wdata = title_q[87:80];  ss_mem_wren = resume_q; end
+ 				5'd26: begin ss_mem_addr = W_LAST_TITLE + 14'd11;  ss_mem_wdata = title_q[95:88];  ss_mem_wren = resume_q; end
+ 				5'd27: begin ss_mem_addr = W_USER_ANSWER;          ss_mem_wdata = resume_q ? 8'h80 : 8'h00; end
+-				5'd28: begin ss_mem_addr = W_CSUM_HI;              ss_mem_wdata = 8'h00; end
+-				5'd29: begin ss_mem_addr = W_CSUM_LO;              ss_mem_wdata = checksum_q; end
++				// Birthday record (not part of the checksummed setup bytes);
++				// gated off until P_BIRTH_ADDR names the confirmed address.
++				5'd28: begin
++					ss_mem_addr  = P_BIRTH_ADDR;
++					ss_mem_wdata = bios_bcd_month(birth_month_q);
++					ss_mem_wren  = (P_BIRTH_ADDR != 14'h0) && (birth_month_q != 4'd0);
++				end
++				5'd29: begin
++					ss_mem_addr  = P_BIRTH_ADDR + 14'd1;
++					ss_mem_wdata = bios_bcd_day(birth_day_q);
++					ss_mem_wren  = (P_BIRTH_ADDR != 14'h0) && (birth_month_q != 4'd0);
++				end
++				5'd30: begin ss_mem_addr = W_CSUM_HI;              ss_mem_wdata = 8'h00; end
++				5'd31: begin ss_mem_addr = W_CSUM_LO;              ss_mem_wdata = checksum_q; end
+ 				default: ss_mem_wren = 1'b0;
+ 			endcase
+ 		end
+@@ -381,6 +435,8 @@ module ngp_setup_seed
+ 			catalog_q          <= 16'd0;
+ 			subcatalog_q       <= 8'd0;
+ 			title_q            <= 96'd0;
++			birth_month_q      <= 4'd0;
++			birth_day_q        <= 5'd1;
+ 			rtc_year_q         <= 8'h00;
+ 			rtc_month_q        <= 8'h01;
+ 			rtc_day_q          <= 8'h01;
+@@ -397,6 +453,8 @@ module ngp_setup_seed
+ 			applied_catalog_q  <= 16'd0;
+ 			applied_subcatalog_q <= 8'd0;
+ 			applied_title_q    <= 96'd0;
++			applied_birth_month_q <= 4'd0;
++			applied_birth_day_q   <= 5'd1;
+ 		end else begin
+ 			seed_done <= 1'b0;
+ 
+@@ -416,6 +474,8 @@ module ngp_setup_seed
+ 						catalog_q     <= cart_catalog;
+ 						subcatalog_q  <= cart_subcatalog;
+ 						title_q       <= cart_title;
++						birth_month_q <= birth_month;
++						birth_day_q   <= birth_day;
+ 						rtc_year_q    <= rtc_seed_value[47:40];
+ 						rtc_month_q   <= rtc_seed_value[39:32];
+ 						rtc_day_q     <= rtc_seed_value[31:24];
+@@ -436,7 +496,7 @@ module ngp_setup_seed
+ 				end
+ 
+ 				ST_MEM: begin
+-					if (mem_step == 5'd29) begin
++					if (mem_step == 5'd31) begin
+ 						if (use_rtc_q) begin
+ 							state <= ST_RTC_DATE;
+ 						end else begin
+@@ -448,6 +508,8 @@ module ngp_setup_seed
+ 							applied_palette_q  <= palette_q;
+ 							applied_rtc_q      <= use_rtc_q;
+ 							applied_resume_q   <= resume_q;
++							applied_birth_month_q <= birth_month_q;
++							applied_birth_day_q   <= birth_day_q;
+ 							applied_catalog_q  <= catalog_q;
+ 							applied_subcatalog_q <= subcatalog_q;
+ 							applied_title_q    <= title_q;
+@@ -469,6 +531,8 @@ module ngp_setup_seed
+ 					applied_palette_q  <= palette_q;
+ 					applied_rtc_q      <= use_rtc_q;
+ 					applied_resume_q   <= resume_q;
++					applied_birth_month_q <= birth_month_q;
++					applied_birth_day_q   <= birth_day_q;
+ 					applied_catalog_q  <= catalog_q;
+ 					applied_subcatalog_q <= subcatalog_q;
+ 					applied_title_q    <= title_q;
 diff --git a/rtl/soc/t900_mcu.sv b/rtl/soc/t900_mcu.sv
 index cc899cf..4f66ee1 100644
 --- a/rtl/soc/t900_mcu.sv

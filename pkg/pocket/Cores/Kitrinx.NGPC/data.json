@@ -19,7 +19,7 @@
         "name": "Color BIOS",
         "id": 1,
         "required": false,
-        "parameters": "0x3",
+        "parameters": "0x2",
         "filename": "boot0.rom",
         "extensions": [
           "rom"
@@ -31,7 +31,7 @@
         "name": "Mono BIOS",
         "id": 2,
         "required": false,
-        "parameters": "0x3",
+        "parameters": "0x2",
         "filename": "boot1.rom",
         "extensions": [
           "rom"
