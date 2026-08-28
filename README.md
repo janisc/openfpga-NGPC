@@ -77,12 +77,23 @@ not formally close timing at this speed grade; see the commit history on
   openFPGA template ecosystem. MIT.
 - **Analogue** — the openFPGA platform.
 - **janisc** — port direction, hardware testing, and the patience to enter
-  probe birthdays into a golf game's BIOS.
+  probe birthdays into the BIOS's own horoscope so the save-state diff could
+  name their address.
 - **Claude (Anthropic)** — AI co-developer: the port, the savestate
   transport, the cart save engine, the debugging.
 
 ## License
 
-GPL-2.0, inherited from the upstream core — see [LICENSE](LICENSE).
+Three layers, each carried where it applies:
+
+- **GPL-2.0** for the core and this port — inherited from upstream, see
+  [LICENSE](LICENSE). Kitrinx's copyright headers are preserved throughout.
+- **MIT** for the agg23 modules (`psram.sv`, `data_loader.sv`) — their
+  headers carry it.
+- **Analogue's APF Software License Agreement** for `platform/pocket/` —
+  every APF file carries Analogue's agreement in its header, referencing
+  their [EULA](https://www.analogue.link/pocket-eula); this is how all
+  published openFPGA cores ship these files.
+
 BIOS images and game ROMs are copyrighted by their owners and are not part
 of this repository or any release.
