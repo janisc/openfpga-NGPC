@@ -31,6 +31,9 @@ module ngpc_machine
 	input  wire [2:0]  opt_palette,      // mono palette                       (status[16:14])
 	input  wire        opt_skip_anim,    // 1 = skip the BIOS eye-catch        (!status[19])
 	input  wire        opt_use_host_rtc, //                                    (!status[17])
+	input  wire [6:0]  opt_birth_year,   // year - 1900
+	input  wire [3:0]  opt_birth_month,  // 1-12 binary, 0 = not set
+	input  wire [4:0]  opt_birth_day,    // 1-31 binary
 	input  wire        opt_auto_power,   // 1 = power on automatically         (status[18])
 	input  wire        opt_lcd_response, // panel response (accepted, unused)  (status[20])
 
@@ -343,6 +346,9 @@ module ngpc_machine
 		.use_hps_rtc            (opt_use_host_rtc),
 		.hps_rtc                (host_rtc),
 		.skip_bios_animation    (opt_skip_anim),
+		.birth_year             (opt_birth_year),
+		.birth_month            (opt_birth_month),
+		.birth_day              (opt_birth_day),
 		.cart_header_valid      (cart_header_valid),
 		.cart_catalog           (cart_header_catalog),
 		.cart_subcatalog        (cart_header_subcatalog),

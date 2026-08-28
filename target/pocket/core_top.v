@@ -336,6 +336,9 @@ module core_top (
   reg       opt_language_jp = 0;    // status[3]
   reg [2:0] opt_palette = 3'd0;     // status[16:14]
   reg       opt_auto_power = 1;     // status[18]
+  reg [6:0] opt_birth_year = 7'd80; // year - 1900, from a full-year slider
+  reg [3:0] opt_birth_month = 4'd0; // 0 = not set
+  reg [4:0] opt_birth_day = 5'd1;
 
 
   // Cartridge saves. The two actions are toggles rather than levels: APF
@@ -354,6 +357,9 @@ module core_top (
         32'h104: opt_language_jp  <= bridge_wr_data[0];
         32'h108: opt_palette      <= bridge_wr_data[2:0];
         32'h110: opt_auto_power   <= bridge_wr_data[0];
+        32'h11C: opt_birth_month  <= bridge_wr_data[3:0];
+        32'h12C: opt_birth_day    <= bridge_wr_data[4:0];
+        32'h130: opt_birth_year   <= bridge_wr_data[10:0] - 11'd1900;
       endcase
     end
   end
@@ -364,12 +370,17 @@ module core_top (
   wire       opt_language_jp_s;
   wire [2:0] opt_palette_s;
   wire       opt_auto_power_s;
+  wire [6:0] opt_birth_year_s;
+  wire [3:0] opt_birth_month_s;
+  wire [4:0] opt_birth_day_s;
 
   synch_3 #(
-      .WIDTH(7)
+      .WIDTH(23)
   ) settings_sync (
-      {opt_system, opt_language_jp, opt_palette, opt_auto_power},
-      {opt_system_s, opt_language_jp_s, opt_palette_s, opt_auto_power_s},
+      {opt_system, opt_language_jp, opt_palette, opt_auto_power,
+       opt_birth_year, opt_birth_month, opt_birth_day},
+      {opt_system_s, opt_language_jp_s, opt_palette_s, opt_auto_power_s,
+       opt_birth_year_s, opt_birth_month_s, opt_birth_day_s},
       clk_sys
   );
 
@@ -955,6 +966,9 @@ module core_top (
       .opt_palette     (opt_palette_s),
       .opt_skip_anim   (1'b0),
       .opt_use_host_rtc(apf_rtc_ready),
+      .opt_birth_year  (opt_birth_year_s),
+      .opt_birth_month (opt_birth_month_s),
+      .opt_birth_day   (opt_birth_day_s),
       .opt_auto_power  (opt_auto_power_s),
       .opt_lcd_response(1'b0),
 
