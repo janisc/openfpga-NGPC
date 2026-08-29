@@ -106,10 +106,10 @@ index 77efed5..e0ad2bd 100644
  	// On silicon the PSG's analog outputs and the two R-2R DACs are summed by an
  	// amplifier on this board. We mix digitally instead, inside `ngp_snd` with
 diff --git a/rtl/soc/ngp_setup_seed.sv b/rtl/soc/ngp_setup_seed.sv
-index fbeaa25..8ac519a 100644
+index fbeaa25..b06ce9f 100644
 --- a/rtl/soc/ngp_setup_seed.sv
 +++ b/rtl/soc/ngp_setup_seed.sv
-@@ -52,7 +52,14 @@ module ngp_setup_seed
+@@ -52,7 +52,15 @@ module ngp_setup_seed
  	// 1 = allow the BIOS resume request to be seeded on a cold boot. See the
  	// header: this is only honest once work RAM 0x4000-0x5FFF survives a power
  	// cycle, which nothing in this design provides yet.
@@ -119,194 +119,22 @@ index fbeaa25..8ac519a 100644
 +	// Work-RAM address of the BIOS birthday record, confirmed empirically
 +	// on hardware (savestate diff of two wizard entries, 2026-08-28):
 +	// 0x6F8B = year - 1900, 0x6F8C = month, 0x6F8D = day, all BINARY --
-+	// unlike the BCD RTC. 14'h0 disables the writes. Removed once for
-+	// area, restored when retiming-off freed the fabric.
-+	parameter P_BIRTH_ADDR = 14'h2F8B
++	// unlike the BCD RTC. 14'h0 disables the writes.
++	// (Removed from the build for area; the confirmed address stays on
++	// record: 0x6F8B=year-1900, 0x6F8C=month, 0x6F8D=day, binary.)
++	parameter P_BIRTH_ADDR = 14'h0
  )
  (
  	input  wire        clk,
-@@ -78,6 +85,13 @@ module ngp_setup_seed
+@@ -78,6 +86,7 @@ module ngp_setup_seed
  	input  wire [7:0]  cart_subcatalog,
  	input  wire [95:0] cart_title,
  
-+	// OSD birthday for the BIOS horoscope record. Month 0 means "not set"
-+	// and suppresses the writes. Binary, exactly as the BIOS stores them.
-+	input  wire [6:0]  birth_year,   // year - 1900
-+	input  wire [3:0]  birth_month,
-+	input  wire [4:0]  birth_day,
-+
 +
  	// Existing pause tree and savestate memory/register paths. The seed engine
  	// adds no RAM port and owns these only while seed_busy is asserted.
  	output wire        pause_req,
-@@ -190,7 +204,7 @@ module ngp_setup_seed
- 	                           skip_bios_animation && cart_header_valid;
- 
- 	reg [2:0] state;
--	reg [4:0] mem_step;
-+	reg [5:0] mem_step;
- 	reg       need_seed;
- 
- 	reg       mono_q;
-@@ -231,11 +245,20 @@ module ngp_setup_seed
- 	reg [15:0] applied_catalog_q;
- 	reg [7:0]  applied_subcatalog_q;
- 	reg [95:0] applied_title_q;
-+	reg [6:0]  birth_year_q;
-+	reg [3:0]  birth_month_q;
-+	reg [4:0]  birth_day_q;
-+	reg [6:0]  applied_birth_year_q;
-+	reg [3:0]  applied_birth_month_q;
-+	reg [4:0]  applied_birth_day_q;
- 
- 	wire settings_changed = (mono != applied_mono_q) ||
- 	                        (live_language != applied_language_q) ||
- 	                        (live_palette != applied_palette_q) ||
- 	                        (use_hps_rtc != applied_rtc_q) ||
-+	                        (birth_year != applied_birth_year_q) ||
-+	                        (birth_month != applied_birth_month_q) ||
-+	                        (birth_day != applied_birth_day_q) ||
- 	                        (live_resume != applied_resume_q) ||
- 	                        (live_resume &&
- 	                         ((cart_catalog != applied_catalog_q) ||
-@@ -246,6 +269,9 @@ module ngp_setup_seed
- 	                             (live_language == language_q) &&
- 	                             (live_palette == palette_q) &&
- 	                             (use_hps_rtc == use_rtc_q) &&
-+	                             (birth_year == birth_year_q) &&
-+	                             (birth_month == birth_month_q) &&
-+	                             (birth_day == birth_day_q) &&
- 	                             (live_resume == resume_q) &&
- 	                             (!resume_q ||
- 	                              ((cart_catalog == catalog_q) &&
-@@ -293,48 +319,67 @@ module ngp_setup_seed
- 			ss_mem_active = 1'b1;
- 			ss_mem_wren   = 1'b1;
- 			case (mem_step)
--				5'd0:  begin ss_mem_addr = W_INTE45;               ss_mem_wdata = 8'hDC; end
--				5'd1:  begin ss_mem_addr = W_INTE45 + 14'd1;       ss_mem_wdata = 8'h00; end
--				5'd2:  begin ss_mem_addr = W_INTE45 + 14'd2;       ss_mem_wdata = 8'h00; end
--				5'd3:  begin ss_mem_addr = W_INTE45 + 14'd3;       ss_mem_wdata = 8'h00; end
--				5'd4:  begin ss_mem_addr = W_INTE45 + 14'd4;       ss_mem_wdata = 8'h00; end
--				5'd5:  begin ss_mem_addr = W_INTE45 + 14'd5;       ss_mem_wdata = 8'h00; end
--				5'd6:  begin ss_mem_addr = W_INTE45 + 14'd6;       ss_mem_wdata = 8'h00; end
--				5'd7:  begin ss_mem_addr = W_LANG;                 ss_mem_wdata = language_q; end
--				5'd8:  begin
-+				6'd0:  begin ss_mem_addr = W_INTE45;               ss_mem_wdata = 8'hDC; end
-+				6'd1:  begin ss_mem_addr = W_INTE45 + 14'd1;       ss_mem_wdata = 8'h00; end
-+				6'd2:  begin ss_mem_addr = W_INTE45 + 14'd2;       ss_mem_wdata = 8'h00; end
-+				6'd3:  begin ss_mem_addr = W_INTE45 + 14'd3;       ss_mem_wdata = 8'h00; end
-+				6'd4:  begin ss_mem_addr = W_INTE45 + 14'd4;       ss_mem_wdata = 8'h00; end
-+				6'd5:  begin ss_mem_addr = W_INTE45 + 14'd5;       ss_mem_wdata = 8'h00; end
-+				6'd6:  begin ss_mem_addr = W_INTE45 + 14'd6;       ss_mem_wdata = 8'h00; end
-+				6'd7:  begin ss_mem_addr = W_LANG;                 ss_mem_wdata = language_q; end
-+				6'd8:  begin
- 					ss_mem_addr  = W_PALETTE;
- 					ss_mem_wdata = palette_q;
- 					ss_mem_wren  = !mono_q;
- 				end
--				5'd9:  begin
-+				6'd9:  begin
- 					ss_mem_addr  = W_MARK_P;
- 					ss_mem_wdata = 8'h50;
- 					ss_mem_wren  = !mono_q;
- 				end
--				5'd10: begin
-+				6'd10: begin
- 					ss_mem_addr  = W_MARK_N;
- 					ss_mem_wdata = 8'h4E;
- 					ss_mem_wren  = !mono_q;
- 				end
--				5'd11: begin ss_mem_addr = W_STATE;                ss_mem_wdata = 8'h00; end
--				5'd12: begin ss_mem_addr = W_LAST_CATALOG;         ss_mem_wdata = catalog_q[7:0];  ss_mem_wren = resume_q; end
--				5'd13: begin ss_mem_addr = W_LAST_CATALOG + 14'd1; ss_mem_wdata = catalog_q[15:8]; ss_mem_wren = resume_q; end
--				5'd14: begin ss_mem_addr = W_LAST_SUBCAT;          ss_mem_wdata = subcatalog_q;    ss_mem_wren = resume_q; end
--				5'd15: begin ss_mem_addr = W_LAST_TITLE;           ss_mem_wdata = title_q[7:0];    ss_mem_wren = resume_q; end
--				5'd16: begin ss_mem_addr = W_LAST_TITLE + 14'd1;   ss_mem_wdata = title_q[15:8];   ss_mem_wren = resume_q; end
--				5'd17: begin ss_mem_addr = W_LAST_TITLE + 14'd2;   ss_mem_wdata = title_q[23:16];  ss_mem_wren = resume_q; end
--				5'd18: begin ss_mem_addr = W_LAST_TITLE + 14'd3;   ss_mem_wdata = title_q[31:24];  ss_mem_wren = resume_q; end
--				5'd19: begin ss_mem_addr = W_LAST_TITLE + 14'd4;   ss_mem_wdata = title_q[39:32];  ss_mem_wren = resume_q; end
--				5'd20: begin ss_mem_addr = W_LAST_TITLE + 14'd5;   ss_mem_wdata = title_q[47:40];  ss_mem_wren = resume_q; end
--				5'd21: begin ss_mem_addr = W_LAST_TITLE + 14'd6;   ss_mem_wdata = title_q[55:48];  ss_mem_wren = resume_q; end
--				5'd22: begin ss_mem_addr = W_LAST_TITLE + 14'd7;   ss_mem_wdata = title_q[63:56];  ss_mem_wren = resume_q; end
--				5'd23: begin ss_mem_addr = W_LAST_TITLE + 14'd8;   ss_mem_wdata = title_q[71:64];  ss_mem_wren = resume_q; end
--				5'd24: begin ss_mem_addr = W_LAST_TITLE + 14'd9;   ss_mem_wdata = title_q[79:72];  ss_mem_wren = resume_q; end
--				5'd25: begin ss_mem_addr = W_LAST_TITLE + 14'd10;  ss_mem_wdata = title_q[87:80];  ss_mem_wren = resume_q; end
--				5'd26: begin ss_mem_addr = W_LAST_TITLE + 14'd11;  ss_mem_wdata = title_q[95:88];  ss_mem_wren = resume_q; end
--				5'd27: begin ss_mem_addr = W_USER_ANSWER;          ss_mem_wdata = resume_q ? 8'h80 : 8'h00; end
--				5'd28: begin ss_mem_addr = W_CSUM_HI;              ss_mem_wdata = 8'h00; end
--				5'd29: begin ss_mem_addr = W_CSUM_LO;              ss_mem_wdata = checksum_q; end
-+				6'd11: begin ss_mem_addr = W_STATE;                ss_mem_wdata = 8'h00; end
-+				6'd12: begin ss_mem_addr = W_LAST_CATALOG;         ss_mem_wdata = catalog_q[7:0];  ss_mem_wren = resume_q; end
-+				6'd13: begin ss_mem_addr = W_LAST_CATALOG + 14'd1; ss_mem_wdata = catalog_q[15:8]; ss_mem_wren = resume_q; end
-+				6'd14: begin ss_mem_addr = W_LAST_SUBCAT;          ss_mem_wdata = subcatalog_q;    ss_mem_wren = resume_q; end
-+				6'd15: begin ss_mem_addr = W_LAST_TITLE;           ss_mem_wdata = title_q[7:0];    ss_mem_wren = resume_q; end
-+				6'd16: begin ss_mem_addr = W_LAST_TITLE + 14'd1;   ss_mem_wdata = title_q[15:8];   ss_mem_wren = resume_q; end
-+				6'd17: begin ss_mem_addr = W_LAST_TITLE + 14'd2;   ss_mem_wdata = title_q[23:16];  ss_mem_wren = resume_q; end
-+				6'd18: begin ss_mem_addr = W_LAST_TITLE + 14'd3;   ss_mem_wdata = title_q[31:24];  ss_mem_wren = resume_q; end
-+				6'd19: begin ss_mem_addr = W_LAST_TITLE + 14'd4;   ss_mem_wdata = title_q[39:32];  ss_mem_wren = resume_q; end
-+				6'd20: begin ss_mem_addr = W_LAST_TITLE + 14'd5;   ss_mem_wdata = title_q[47:40];  ss_mem_wren = resume_q; end
-+				6'd21: begin ss_mem_addr = W_LAST_TITLE + 14'd6;   ss_mem_wdata = title_q[55:48];  ss_mem_wren = resume_q; end
-+				6'd22: begin ss_mem_addr = W_LAST_TITLE + 14'd7;   ss_mem_wdata = title_q[63:56];  ss_mem_wren = resume_q; end
-+				6'd23: begin ss_mem_addr = W_LAST_TITLE + 14'd8;   ss_mem_wdata = title_q[71:64];  ss_mem_wren = resume_q; end
-+				6'd24: begin ss_mem_addr = W_LAST_TITLE + 14'd9;   ss_mem_wdata = title_q[79:72];  ss_mem_wren = resume_q; end
-+				6'd25: begin ss_mem_addr = W_LAST_TITLE + 14'd10;  ss_mem_wdata = title_q[87:80];  ss_mem_wren = resume_q; end
-+				6'd26: begin ss_mem_addr = W_LAST_TITLE + 14'd11;  ss_mem_wdata = title_q[95:88];  ss_mem_wren = resume_q; end
-+				6'd27: begin ss_mem_addr = W_USER_ANSWER;          ss_mem_wdata = resume_q ? 8'h80 : 8'h00; end
-+				// Birthday record (not part of the checksummed setup bytes).
-+				// The BIOS keeps derived words at 0x6C16-0x6C19 that change with
-+				// the birthday; left alone on the theory the horoscope recomputes
-+				// them -- to be verified on hardware.
-+				6'd28: begin
-+					ss_mem_addr  = P_BIRTH_ADDR;
-+					ss_mem_wdata = {1'b0, birth_year_q};
-+					ss_mem_wren  = (P_BIRTH_ADDR != 14'h0) && (birth_month_q != 4'd0);
-+				end
-+				6'd29: begin
-+					ss_mem_addr  = P_BIRTH_ADDR + 14'd1;
-+					ss_mem_wdata = {4'd0, birth_month_q};
-+					ss_mem_wren  = (P_BIRTH_ADDR != 14'h0) && (birth_month_q != 4'd0);
-+				end
-+				6'd30: begin
-+					ss_mem_addr  = P_BIRTH_ADDR + 14'd2;
-+					ss_mem_wdata = {3'd0, birth_day_q};
-+					ss_mem_wren  = (P_BIRTH_ADDR != 14'h0) && (birth_month_q != 4'd0);
-+				end
-+				6'd31: begin ss_mem_addr = W_CSUM_HI;              ss_mem_wdata = 8'h00; end
-+				6'd32: begin ss_mem_addr = W_CSUM_LO;              ss_mem_wdata = checksum_q; end
- 				default: ss_mem_wren = 1'b0;
- 			endcase
- 		end
-@@ -369,7 +414,7 @@ module ngp_setup_seed
- 	always @(posedge clk) begin
- 		if (reset) begin
- 			state              <= ST_IDLE;
--			mem_step           <= 5'd0;
-+			mem_step           <= 6'd0;
- 			need_seed          <= 1'b1;
- 			seed_done          <= 1'b0;
- 			mono_q             <= 1'b0;
-@@ -381,6 +426,9 @@ module ngp_setup_seed
- 			catalog_q          <= 16'd0;
- 			subcatalog_q       <= 8'd0;
- 			title_q            <= 96'd0;
-+			birth_year_q       <= 7'd0;
-+			birth_month_q      <= 4'd0;
-+			birth_day_q        <= 5'd1;
- 			rtc_year_q         <= 8'h00;
- 			rtc_month_q        <= 8'h01;
- 			rtc_day_q          <= 8'h01;
-@@ -397,6 +445,9 @@ module ngp_setup_seed
- 			applied_catalog_q  <= 16'd0;
- 			applied_subcatalog_q <= 8'd0;
- 			applied_title_q    <= 96'd0;
-+			applied_birth_year_q  <= 7'd0;
-+			applied_birth_month_q <= 4'd0;
-+			applied_birth_day_q   <= 5'd1;
- 		end else begin
- 			seed_done <= 1'b0;
- 
-@@ -413,9 +464,16 @@ module ngp_setup_seed
+@@ -413,9 +422,13 @@ module ngp_setup_seed
  						checksum_q    <= bios_initial_checksum(mono, live_language, live_palette);
  						use_rtc_q     <= use_hps_rtc;
  						resume_q      <= live_resume;
@@ -320,55 +148,9 @@ index fbeaa25..8ac519a 100644
 +						catalog_q     <= P_ALLOW_RESUME_SEED ? cart_catalog : 16'd0;
 +						subcatalog_q  <= P_ALLOW_RESUME_SEED ? cart_subcatalog : 8'd0;
 +						title_q       <= P_ALLOW_RESUME_SEED ? cart_title : 96'd0;
-+						birth_year_q  <= birth_year;
-+						birth_month_q <= birth_month;
-+						birth_day_q   <= birth_day;
  						rtc_year_q    <= rtc_seed_value[47:40];
  						rtc_month_q   <= rtc_seed_value[39:32];
  						rtc_day_q     <= rtc_seed_value[31:24];
-@@ -430,13 +488,13 @@ module ngp_setup_seed
- 
- 				ST_WAIT: begin
- 					if (pause_ready) begin
--						mem_step <= 5'd0;
-+						mem_step <= 6'd0;
- 						state    <= ST_MEM;
- 					end
- 				end
- 
- 				ST_MEM: begin
--					if (mem_step == 5'd29) begin
-+					if (mem_step == 6'd32) begin
- 						if (use_rtc_q) begin
- 							state <= ST_RTC_DATE;
- 						end else begin
-@@ -448,12 +506,15 @@ module ngp_setup_seed
- 							applied_palette_q  <= palette_q;
- 							applied_rtc_q      <= use_rtc_q;
- 							applied_resume_q   <= resume_q;
-+							applied_birth_year_q  <= birth_year_q;
-+							applied_birth_month_q <= birth_month_q;
-+							applied_birth_day_q   <= birth_day_q;
- 							applied_catalog_q  <= catalog_q;
- 							applied_subcatalog_q <= subcatalog_q;
- 							applied_title_q    <= title_q;
- 						end
- 					end else begin
--						mem_step <= mem_step + 5'd1;
-+						mem_step <= mem_step + 6'd1;
- 					end
- 				end
- 
-@@ -469,6 +530,9 @@ module ngp_setup_seed
- 					applied_palette_q  <= palette_q;
- 					applied_rtc_q      <= use_rtc_q;
- 					applied_resume_q   <= resume_q;
-+					applied_birth_year_q  <= birth_year_q;
-+					applied_birth_month_q <= birth_month_q;
-+					applied_birth_day_q   <= birth_day_q;
- 					applied_catalog_q  <= catalog_q;
- 					applied_subcatalog_q <= subcatalog_q;
- 					applied_title_q    <= title_q;
 diff --git a/rtl/soc/t900_mcu.sv b/rtl/soc/t900_mcu.sv
 index cc899cf..4f66ee1 100644
 --- a/rtl/soc/t900_mcu.sv
