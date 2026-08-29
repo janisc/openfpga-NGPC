@@ -90,6 +90,20 @@ module ngpc_savestate_bridge #(
 	input  wire        ss_loading,   // engine accepted the blob's header
 	input  wire [31:0] cart_crc32,   // identity of the loaded cartridge image
 
+	// Cart image section (the embedded .sav, CART_WORDS x 32 at CART_BASE).
+	// The state-cart copier fills it on save and drains it on load; addresses
+	// are section-relative words. Read data is registered twice: sample
+	// cart_img_rd_data three clk_sys after presenting cart_img_rd_addr.
+	output reg         cart_save_req,    // pulse: capture the cart image now
+	input  wire        cart_save_done,   // pulse: image written via cart_img_wr
+	input  wire        cart_img_wr,
+	input  wire [13:0] cart_img_addr,
+	input  wire [31:0] cart_img_data,
+	output reg         cart_load_req,    // pulse: section valid, drain and apply
+	input  wire        cart_load_done,   // pulse: copier finished with it
+	input  wire [13:0] cart_img_rd_addr,
+	output wire [31:0] cart_img_rd_data,
+
 	input  wire [63:0] bus_out_Din,     // engine -> here, on a save
 	output wire [63:0] bus_out_Dout,    // here -> engine, on a restore
 	input  wire [25:0] bus_out_Adr,
@@ -126,7 +140,8 @@ module ngpc_savestate_bridge #(
 
 	// ---- The blob store ----------------------------------------------------
 	//
-	// 16384 x 32 bits = 64 KB, against a state of 33,672 bytes. Sized to a power
+	// 32768 x 32 bits = 128 KB: the engine state plus the embedded cart image
+	// (a full .sav, header and payload) at CART_BASE. Sized to a power
 	// of two so the address decode is a slice rather than a comparison; the
 	// spare space costs M10K blocks the design is not using.
 	//
@@ -135,13 +150,13 @@ module ngpc_savestate_bridge #(
 	// it has been told the save is complete, and writes only before it asks for
 	// a load -- so no arbitration is needed between them.
 
-	localparam integer BLOB_WORDS = 16384;   // 32-bit words
+	localparam integer BLOB_WORDS = 32768;   // 32-bit words
 
 	// no_rw_check: the two ports never touch the same word at the same time, so
 	// what a read returns during a simultaneous write to that word is not a
 	// question this design asks. Without it Quartus declines to infer block RAM
 	// at all -- it cannot guarantee read-during-write semantics across two
-	// clocks -- and tries to build 16384 words out of registers instead.
+	// clocks -- and tries to build 32768 words out of registers instead.
 	(* ramstyle = "no_rw_check, M10K" *)
 	reg [31:0] blob [0:BLOB_WORDS-1];
 
@@ -170,7 +185,7 @@ module ngpc_savestate_bridge #(
 	reg [31:0] e_lo_captured;
 
 	// The port itself. ONE address, ONE access per cycle -- both ports have to
-	// look like this or Quartus will not infer block RAM, and 16384 words of
+	// look like this or Quartus will not infer block RAM, and 32768 words of
 	// registers does not fit in anything.
 	//
 	// Port A has two masters that can never collide: the engine's word
@@ -179,17 +194,17 @@ module ngpc_savestate_bridge #(
 	// -- the stamp runs after a save's busy falls, the check before a load's
 	// ss_load is issued). seq_pa_sel picks; pa_addr stays the port's single
 	// index expression, which is what RAM inference requires.
-	reg [13:0] a_addr;
+	reg [14:0] a_addr;
 	reg        a_we;
 	reg [31:0] a_din;
 	reg [31:0] a_q;
 
 	reg        seq_pa_sel;
-	reg [13:0] seq_pa_addr;
+	reg [14:0] seq_pa_addr;
 	reg        seq_pa_we;
 	reg [31:0] seq_pa_din;
 
-	wire [13:0] pa_addr = seq_pa_sel ? seq_pa_addr : a_addr;
+	wire [14:0] pa_addr = seq_pa_sel ? seq_pa_addr : a_addr;
 	wire        pa_we   = seq_pa_sel ? seq_pa_we   : a_we;
 	wire [31:0] pa_din  = seq_pa_sel ? seq_pa_din  : a_din;
 
@@ -214,8 +229,8 @@ module ngpc_savestate_bridge #(
 	// The header sits at Adr = 0, the single address where [14:1] and [13:0]
 	// agree. Every on-device probe validated the header and the probe words --
 	// the two regions this bug could not touch.
-	wire [13:0] e_word0 = bus_out_Adr[13:0];
-	wire [13:0] e_word1 = bus_out_Adr[13:0] + 14'd1;
+	wire [14:0] e_word0 = {1'b0, bus_out_Adr[13:0]};
+	wire [14:0] e_word1 = {1'b0, bus_out_Adr[13:0]} + 15'd1;
 
 	// The 64-bit view the engine sees on a restore, reassembled from the two
 	// halves and unswizzled. The swizzle is its own inverse, so the save and
@@ -305,7 +320,7 @@ module ngpc_savestate_bridge #(
 	reg [31:0] blob_q;
 
 	wire        blob_sel  = bridge_addr[31:28] == BLOB_ADDR_NIBBLE;
-	wire [13:0] blob_word = bridge_addr[15:2];
+	wire [14:0] blob_word = bridge_addr[16:2];
 
 	// WRITES GO WHERE THEY ARRIVE, NOT WHERE THE ADDRESS SAYS.
 	//
@@ -339,14 +354,14 @@ module ngpc_savestate_bridge #(
 	// comparator. If the state size ever changes, HEADER_HI changes with it.
 	localparam [31:0] HEADER_HI = 32'hE020_0000;   // bswap32(8416)
 
-	reg  [13:0] wr_ptr;
+	reg  [14:0] wr_ptr;
 	reg  [25:0] xfer_idle;
 	reg         prev_load_done_74;
 
 	wire        blob_wr_stb  = blob_sel && bridge_wr;
-	wire        burst_first  = (wr_ptr == 14'd0);
+	wire        burst_first  = (wr_ptr == 15'd0);
 	wire        first_is_w1  = burst_first && (bridge_wr_data == HEADER_HI);
-	wire [13:0] wr_at        = first_is_w1 ? 14'd1 : wr_ptr;
+	wire [14:0] wr_at        = first_is_w1 ? 15'd1 : wr_ptr;
 	wire        load_done_74 = savestate_load_ok || savestate_load_err;
 
 	localparam [25:0] XFER_ABANDONED = 26'd37_000_000;   // ~0.5 s at 74.25 MHz
@@ -372,7 +387,7 @@ module ngpc_savestate_bridge #(
 	// in) was deterministically aligned. data_unloader's edge+prefetch model
 	// exists for HIGH-latency backends; a block RAM does not need it, and its
 	// global prev_bridge_rd carries the same first-strobe fragility.
-	wire [13:0] b_addr = blob_wr_stb ? wr_at : blob_word;
+	wire [14:0] b_addr = blob_wr_stb ? wr_at : blob_word;
 
 	always @(posedge clk_74a) begin
 		prev_load_done_74 <= load_done_74;
@@ -385,18 +400,21 @@ module ngpc_savestate_bridge #(
 
 		if (blob_wr_stb) begin
 			blob[b_addr]    <= bridge_wr_data;
-			wr_ptr          <= wr_at + 14'd1;
+			wr_ptr          <= wr_at + 15'd1;
 		end else if ((load_done_74 && !prev_load_done_74)
 		             || xfer_idle == XFER_ABANDONED) begin
 			// The write branch wins on a write cycle, so the first word of a
 			// fresh transfer both lands at 0 and advances the pointer.
-			wr_ptr <= 14'd0;
+			wr_ptr <= 15'd0;
 		end
 
 		blob_q <= blob[b_addr];
 	end
 
 	assign bridge_rd_data = blob_q;
+
+	// Copier read-back: port A, valid three clk_sys after the address.
+	assign cart_img_rd_data = a_q;
 
 
 	// ---- Sequencing --------------------------------------------------------
@@ -407,32 +425,37 @@ module ngpc_savestate_bridge #(
 	// ok means the blob is complete and sitting at savestate_addr. On a load
 	// APF has already written the whole region before it issues the command.
 
-	localparam S_IDLE       = 3'd0;
-	localparam S_SAVE_RUN   = 3'd1;
-	localparam S_SAVE_STAMP = 3'd2;
-	localparam S_LOAD_WAIT  = 3'd3;
-	localparam S_LOAD_CHECK = 3'd4;
-	localparam S_LOAD_RUN   = 3'd5;
-	localparam S_DONE       = 3'd6;
+	localparam S_IDLE       = 4'd0;
+	localparam S_SAVE_RUN   = 4'd1;
+	localparam S_SAVE_STAMP = 4'd2;
+	localparam S_LOAD_WAIT  = 4'd3;
+	localparam S_LOAD_CHECK = 4'd4;
+	localparam S_LOAD_RUN   = 4'd5;
+	localparam S_DONE       = 4'd6;
+	localparam S_SAVE_CART  = 4'd7;
+	localparam S_LOAD_CART  = 4'd8;
 
 	// The identity block, in the four words past the engine's 8418 (plus two
 	// pad words). Stamped after every save, checked before every load starts
 	// the engine. The magic also versions the tail format itself: a state from
 	// a build that kept probe data there fails the magic and is rejected
 	// cleanly instead of restoring against the wrong cartridge context.
-	localparam [13:0] ID_BASE   = 14'd8420;
+	localparam [14:0] ID_BASE   = 15'd8420;
 	localparam [31:0] ID_MAGIC  = 32'h4E475053;   // "NGPS"
-	localparam [31:0] ID_LAYOUT = 32'd1;
+	localparam [31:0] ID_LAYOUT = 32'd2;   // 2 = cart image section present
+	localparam [14:0] CART_BASE = 15'd8424;
 
-	reg [2:0]  state;
+	reg [3:0]  state;
 	reg [2:0]  id_cnt;
-	reg [31:0] chk_magic, chk_crc;
+	reg [31:0] chk_magic, chk_crc, chk_layout;
 	reg        prev_start, prev_load, prev_ss_busy;
 	reg        saw_loading;      // the engine accepted the header this run
 
 	always @(posedge clk_sys) begin
 		ss_save    <= 1'b0;
 		ss_load    <= 1'b0;
+		cart_save_req <= 1'b0;
+		cart_load_req <= 1'b0;
 		seq_pa_sel <= 1'b0;
 		seq_pa_we  <= 1'b0;
 
@@ -492,9 +515,8 @@ module ngpc_savestate_bridge #(
 					endcase
 					id_cnt <= id_cnt + 3'd1;
 					if (id_cnt == 3'd3) begin
-						start_busy_q <= 1'b0;
-						start_ok_q   <= 1'b1;
-						state        <= S_DONE;
+						cart_save_req <= 1'b1;
+						state         <= S_SAVE_CART;
 					end
 				end
 
@@ -519,20 +541,21 @@ module ngpc_savestate_bridge #(
 				// after the address, so each word is a two-step: address, then
 				// capture on the next visit.
 				//   step 0/1: magic     step 2/3: crc     step 4/5: ~crc
+				//   step 0/1: magic  2: crc  3: layout  4: ~crc  5: verdict
 				S_LOAD_CHECK: begin
 					seq_pa_sel <= 1'b1;
 					id_cnt     <= id_cnt + 3'd1;
 					case (id_cnt)
 						3'd0: seq_pa_addr <= ID_BASE;           // magic
-						3'd1: seq_pa_addr <= ID_BASE + 14'd1;   // crc
-						3'd2: begin chk_magic <= a_q; seq_pa_addr <= ID_BASE + 14'd3; end
-						3'd3: chk_crc <= a_q;
-						3'd4: ;   // a_q settles on ~crc
+						3'd1: seq_pa_addr <= ID_BASE + 15'd1;   // crc
+						3'd2: begin chk_magic <= a_q; seq_pa_addr <= ID_BASE + 15'd2; end
+						3'd3: begin chk_crc <= a_q; seq_pa_addr <= ID_BASE + 15'd3; end
+						3'd4: chk_layout <= a_q;
 						default: begin
 							if (chk_magic == ID_MAGIC && chk_crc == cart_crc32
-							    && a_q == ~cart_crc32) begin
-								ss_load <= 1'b1;
-								state   <= S_LOAD_RUN;
+							    && chk_layout == ID_LAYOUT && a_q == ~cart_crc32) begin
+								cart_load_req <= 1'b1;
+								state         <= S_LOAD_CART;
 							end else begin
 								// Wrong cartridge, or a tail this build does not
 								// recognize. The machine has not been touched.
@@ -560,6 +583,33 @@ module ngpc_savestate_bridge #(
 						load_ok_q   <=  saw_loading;
 						load_err_q  <= !saw_loading;
 						state       <= S_DONE;
+					end
+				end
+
+				// The copier owns port A's sequencer side while it streams the
+				// image in; its strobes are registered here, so address and data
+				// land together one cycle later.
+				S_SAVE_CART: begin
+					seq_pa_sel  <= 1'b1;
+					seq_pa_we   <= cart_img_wr;
+					seq_pa_addr <= CART_BASE + {1'b0, cart_img_addr};
+					seq_pa_din  <= cart_img_data;
+					if (cart_save_done) begin
+						start_busy_q <= 1'b0;
+						start_ok_q   <= 1'b1;
+						state        <= S_DONE;
+					end
+				end
+
+				// Flash is restored before the machine: the copier drains the
+				// section, stages it and runs the boot apply while the engine is
+				// still parked. Only then does the machine state go back.
+				S_LOAD_CART: begin
+					seq_pa_sel  <= 1'b1;
+					seq_pa_addr <= CART_BASE + {1'b0, cart_img_rd_addr};
+					if (cart_load_done) begin
+						ss_load <= 1'b1;
+						state   <= S_LOAD_RUN;
 					end
 				end
 
