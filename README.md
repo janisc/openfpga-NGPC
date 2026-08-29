@@ -35,7 +35,7 @@ both BIOSes and both cartridge families run.
 ## BIOS
 
 Not included, never will be. Place your own dumps at
-`Assets/ngpc/Kitrinx.NGPC/` on the SD card:
+`Assets/ngpc/janisc.NGPC/` on the SD card:
 
 | file | contents |
 |---|---|

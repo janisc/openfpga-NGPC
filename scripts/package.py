@@ -23,7 +23,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 RBF = ROOT / "projects" / "output_files" / "ngpc_pocket.rbf"
 PKG = ROOT / "pkg" / "pocket"
 DIST = ROOT / "dist"
-CORE_DIR_NAME = "Kitrinx.NGPC"
+CORE_DIR_NAME = "janisc.NGPC"
 
 # Bit-reversal of every possible byte, built once.
 REVERSE = bytes(int(f"{b:08b}"[::-1], 2) for b in range(256))

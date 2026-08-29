@@ -7,10 +7,10 @@
       ],
       "shortname": "NGPC",
       "description": "Neo Geo Pocket and Neo Geo Pocket Color. SNK's 1998-1999 handhelds.",
-      "author": "Kitrinx",
-      "url": "https://github.com/MiSTer-devel/NGPC_MiSTer",
-      "version": "0.1.0-wip",
-      "date_release": "2026-08-25"
+      "author": "janisc",
+      "url": "https://github.com/janisc/openfpga-NGPC",
+      "version": "1.0.0-rc1",
+      "date_release": "2026-08-29"
     },
     "framework": {
       "target_product": "Analogue Pocket",
