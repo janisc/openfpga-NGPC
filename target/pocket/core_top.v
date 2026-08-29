@@ -340,6 +340,11 @@ module core_top (
   // Cartridge saves. The two actions are toggles rather than levels: APF
   // writes a value on every menu selection, and the machine wants an edge.
 
+  // Reset to BIOS: the same reset, with the cartridge re-strap suppressed
+  // so the machine boots to the BIOS menu (clock, horoscope). Plain Reset
+  // clears the mode and brings the game back; a mid-session Load Cartridge
+  // straps via the loader path regardless of the mode.
+  reg        bios_reset_mode = 0;
   reg [31:0] reset_delay = 0;
   wire       external_reset = reset_delay > 0;
 
@@ -348,7 +353,8 @@ module core_top (
 
     if (bridge_wr) begin
       case (bridge_addr)
-        32'h050: reset_delay      <= 32'h100000;
+        32'h050: begin reset_delay <= 32'h100000; bios_reset_mode <= 1'b0; end
+        32'h054: begin reset_delay <= 32'h100000; bios_reset_mode <= 1'b1; end
         32'h100: opt_system       <= bridge_wr_data[1:0];
         32'h104: opt_language_jp  <= bridge_wr_data[0];
         32'h108: opt_palette      <= bridge_wr_data[2:0];
@@ -360,13 +366,14 @@ module core_top (
   // consumed as level inputs, so two flops each is the whole crossing.
   wire [1:0] opt_system_s;
   wire       opt_language_jp_s;
+  wire       bios_reset_mode_s;
   wire [2:0] opt_palette_s;
 
   synch_3 #(
-      .WIDTH(6)
+      .WIDTH(7)
   ) settings_sync (
-      {opt_system, opt_language_jp, opt_palette},
-      {opt_system_s, opt_language_jp_s, opt_palette_s},
+      {opt_system, opt_language_jp, opt_palette, bios_reset_mode},
+      {opt_system_s, opt_language_jp_s, opt_palette_s, bios_reset_mode_s},
       clk_sys
   );
 
@@ -1057,6 +1064,7 @@ module core_top (
       .host_busy  (host_busy || sc_draining),
       .state_apply     (mc_state_apply),
       .capture_hold    (mc_capture_hold),
+      .suppress_cart_strap(bios_reset_mode_s),
       .stage_current   (mc_stage_current),
       .save_busy_state (mc_save_busy),
       .slots_settled(slots_settled),

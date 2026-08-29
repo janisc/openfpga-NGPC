@@ -88,6 +88,7 @@ module ngpc_machine
 	input  wire        host_busy,        // APF is moving the slot
 	input  wire        state_apply,      // savestate restore: apply staged image
 	input  wire        capture_hold,     // savestate capture: hold the pause
+	input  wire        suppress_cart_strap, // reset boots cartless: BIOS menu
 	output wire        stage_current,    // stager parked, image current
 	output wire        save_busy_state,  // cart-save engine busy (apply observer)
 	input  wire        slots_settled,    // no loader region written for ~500 ms
@@ -513,7 +514,11 @@ module ngpc_machine
 	reg [3:0] cart_reconfig_q;
 
 	always @(posedge clk_sys) begin
-		if (reset || eng_core_reset) cart_reconfig_q <= 4'd8;
+		// A suppressed strap is the savestate war's cartridge-less-wake bug,
+		// promoted to a feature: the machine boots believing no cart is
+		// present and the BIOS drops to its menu. Engine restores always
+		// re-strap -- a loaded state must wake with its cartridge.
+		if ((reset && !suppress_cart_strap) || eng_core_reset) cart_reconfig_q <= 4'd8;
 		else if (cart_reconfig_q != 4'd0) cart_reconfig_q <= cart_reconfig_q - 4'd1;
 	end
 
