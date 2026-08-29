@@ -275,20 +275,7 @@ module core_top (
   // there is no pin for it. ngpc_machine's header explains why that is safe
   // with this controller.
 
-  // Both PSRAMs are unused. ngpc_ddr_psram exists in the tree and presents
-  // ddram.v's channel interface over cram0, for whenever the savestate path
-  // needs a DDR-shaped memory; the save path here does not.
-  assign cram0_a                 = 'h0;
-  assign cram0_dq                = {16{1'bZ}};
-  assign cram0_clk               = 0;
-  assign cram0_adv_n             = 1;
-  assign cram0_cre               = 0;
-  assign cram0_ce0_n             = 1;
-  assign cram0_ce1_n             = 1;
-  assign cram0_oe_n              = 1;
-  assign cram0_we_n              = 1;
-  assign cram0_ub_n              = 1;
-  assign cram0_lb_n              = 1;
+  // cram0 is the save staging region -- see ngpc_stage_mem. cram1 stays free.
 
   assign cram1_a                 = 'h0;
   assign cram1_dq                = {16{1'bZ}};
@@ -330,7 +317,10 @@ module core_top (
 
     // The save block buffer, which APF drains during a target write.
     if (bridge_addr[31:28] == 4'h5) begin
-      bridge_rd_data <= sd_bridge_rd_data;
+      bridge_rd_data <= stage_bridge_rd_data;
+    end else if (bridge_addr[31:28] == 4'h4) begin
+      // The savestate blob, which APF drains after asking for a state.
+      bridge_rd_data <= savestate_rd_data;
     end
   end
 
@@ -350,21 +340,6 @@ module core_top (
   reg       opt_auto_power = 1;     // status[18]
   reg       opt_lcd_response = 0;   // status[20]    accepted, presenter ignores
 
-  // Which of the two legal ways to present a pixel-per-N-clocks raster to APF
-  // this build uses. Analogue documents `video_skip` as "may be optionally
-  // asserted while DE is high to prevent latching the pixel for that cycle",
-  // which says DE stays high across the window and skip does the gating (0).
-  // The community notes instead warn that DE must be high "exclusively during
-  // pixels you've specified in video.json", which reads as DE high exactly 160
-  // times per line (1).
-  //
-  // ANSWERED on hardware, 2026-08-25: mode 0 is correct. A Pocket running
-  // firmware 2.6 displays the native 515 x 199 raster correctly with DE held
-  // across the whole active window and `video_skip` suppressing the seven
-  // cycles in eight that carry no new pixel -- picture, geometry and frame rate
-  // all right. Analogue's reading is the operative one. The setting stays
-  // because it costs one flop and it is the only evidence either way.
-  reg       opt_de_gated = 0;
 
   // Cartridge saves. The two actions are toggles rather than levels: APF
   // writes a value on every menu selection, and the machine wants an edge.
@@ -388,7 +363,6 @@ module core_top (
         32'h110: opt_auto_power   <= bridge_wr_data[0];
         32'h114: opt_lcd_response <= bridge_wr_data[0];
         32'h118: opt_use_host_rtc <= bridge_wr_data[0];
-        32'h11C: opt_de_gated     <= bridge_wr_data[0];
         32'h120: opt_autosave_off <= bridge_wr_data[0];
         32'h124: save_pulse_74    <= ~save_pulse_74;
         32'h128: load_pulse_74    <= ~load_pulse_74;
@@ -405,19 +379,18 @@ module core_top (
   wire       opt_use_host_rtc_s;
   wire       opt_auto_power_s;
   wire       opt_lcd_response_s;
-  wire       opt_de_gated_s;
   wire       opt_autosave_off_s;
   wire       save_pulse_s;
   wire       load_pulse_s;
 
   synch_3 #(
-      .WIDTH(14)
+      .WIDTH(13)
   ) settings_sync (
       {opt_system, opt_language_jp, opt_palette, opt_skip_anim,
-       opt_use_host_rtc, opt_auto_power, opt_lcd_response, opt_de_gated,
+       opt_use_host_rtc, opt_auto_power, opt_lcd_response,
        opt_autosave_off, save_pulse_74, load_pulse_74},
       {opt_system_s, opt_language_jp_s, opt_palette_s, opt_skip_anim_s,
-       opt_use_host_rtc_s, opt_auto_power_s, opt_lcd_response_s, opt_de_gated_s,
+       opt_use_host_rtc_s, opt_auto_power_s, opt_lcd_response_s,
        opt_autosave_off_s, save_pulse_s, load_pulse_s},
       clk_sys
   );
@@ -455,26 +428,43 @@ module core_top (
 
   wire        dataslot_allcomplete;
 
-  // PHASE 4. The machine already carries the whole savestate engine; what is
-  // missing is the controller that streams it over the bridge instead of into
-  // MiSTer's DDR3. Until that exists, tell APF the core cannot make states --
-  // and therefore cannot sleep -- rather than letting it try.
-  wire        savestate_supported = 0;
+  // 8,416 words of internals at 8 bytes each, plus the three memory regions.
+  // Cartridge flash is deliberately NOT in the blob; ngpc_savestate_bridge
+  // explains where it goes instead and why the ordering works.
+  wire        savestate_supported = 1;
   wire [31:0] savestate_addr = 32'h40000000;
-  wire [31:0] savestate_size = 32'd0;
-  wire [31:0] savestate_maxloadsize = savestate_size;
+  // What the engine actually emits, counted the way savestates.sv counts it.
+  // bus_out_Adr is in 32-bit words:
+  //
+  //   header      HEADERCOUNT             = 2 words
+  //   internals   INTERNALSCOUNT * 2      = 224 words   (112 64-bit words)
+  //   memories    (12288+4096+16384) / 4  = 8192 words  (savetype 0,1,2)
+  //                                       ---------
+  //                                         8418 words = 33,672 bytes
+  //
+  // This was previously state_size_i * 8 plus the memory sizes, which confused
+  // state_size_i -- a validation field stamped into the header -- with the
+  // internal register count that actually governs the transfer. It declared
+  // 100,096 bytes for a 33,672 byte state, so APF read three times the blob and
+  // the tail was whatever the store happened to hold.
+  // 33,672 is the engine's state. The extra 24 bytes are two pad words plus
+  // the identity block ngpc_savestate_bridge stamps at words 8420-8423: magic,
+  // cartridge CRC32, layout version, inverted CRC. A load checks it before the
+  // engine starts, so a state from a different cartridge is rejected cleanly.
+  wire [31:0] savestate_size = 32'd33696;   // 8424 words: 8418 state + pad + identity
+  wire [31:0] savestate_maxloadsize = savestate_size + 32'h1000;
 
   wire        savestate_start;
-  wire        savestate_start_ack = 0;
-  wire        savestate_start_busy = 0;
-  wire        savestate_start_ok = 0;
-  wire        savestate_start_err = 0;
+  wire        savestate_start_ack;
+  wire        savestate_start_busy;
+  wire        savestate_start_ok;
+  wire        savestate_start_err;
 
   wire        savestate_load;
-  wire        savestate_load_ack = 0;
-  wire        savestate_load_busy = 0;
-  wire        savestate_load_ok = 0;
-  wire        savestate_load_err = 0;
+  wire        savestate_load_ack;
+  wire        savestate_load_busy;
+  wire        savestate_load_ok;
+  wire        savestate_load_err;
 
   core_bridge_cmd icb (
       .clk    (clk_74a),
@@ -531,17 +521,19 @@ module core_top (
 
       .osnotify_inmenu(osnotify_inmenu),
 
-      .target_dataslot_read      (target_dataslot_read),
-      .target_dataslot_write     (target_dataslot_write),
+      // A nonvolatile slot needs no target commands: APF moves it in and out
+      // on its own schedule.
+      .target_dataslot_read      (1'b0),
+      .target_dataslot_write     (1'b0),
       .target_dataslot_getfile   (1'b0),
       .target_dataslot_openfile  (1'b0),
-      .target_dataslot_ack       (target_dataslot_ack),
-      .target_dataslot_done      (target_dataslot_done),
-      .target_dataslot_err       (target_dataslot_err),
-      .target_dataslot_id        (target_dataslot_id),
-      .target_dataslot_slotoffset(target_dataslot_slotoffset),
-      .target_dataslot_bridgeaddr(target_dataslot_bridgeaddr),
-      .target_dataslot_length    (target_dataslot_length),
+      .target_dataslot_ack       (),
+      .target_dataslot_done      (),
+      .target_dataslot_err       (),
+      .target_dataslot_id        (16'd0),
+      .target_dataslot_slotoffset(32'd0),
+      .target_dataslot_bridgeaddr(32'd0),
+      .target_dataslot_length    (32'd0),
       .target_buffer_param_struct(32'h60000000),
       .target_buffer_resp_struct (32'h60000400)
   );
@@ -553,15 +545,6 @@ module core_top (
   wire [15:0] dataslot_update_id;
   wire [31:0] dataslot_update_size;
 
-  wire        target_dataslot_read;
-  wire        target_dataslot_write;
-  wire        target_dataslot_ack;
-  wire        target_dataslot_done;
-  wire  [2:0] target_dataslot_err;
-  wire [15:0] target_dataslot_id;
-  wire [31:0] target_dataslot_slotoffset;
-  wire [31:0] target_dataslot_bridgeaddr;
-  wire [31:0] target_dataslot_length;
 
   localparam [15:0] SAVE_SLOT_ID = 16'd10;
 
@@ -593,51 +576,103 @@ module core_top (
       clk_sys
   );
 
-  wire [22:0] sd_lba;
-  wire        sd_rd;
-  wire        sd_wr;
-  wire        sd_busy;
-  wire        sd_err;
-  wire  [7:0] sd_buf_addr;
-  wire [15:0] sd_buf_wdata;
-  wire        sd_buf_we;
-  wire [15:0] sd_buf_rdata;
-  wire [31:0] sd_bridge_rd_data;
+  // ---- Save staging: a nonvolatile slot, served from PSRAM ---------------
+  //
+  // APF writes the slot into this region at core start and reads it back at
+  // exit. Neither direction involves a command from us: the core owns the
+  // memory, the host owns the file. That is the whole mechanism.
 
-  ngpc_sd_bridge #(
-      .SAVE_SLOT_ID(SAVE_SLOT_ID),
-      .BUFFER_BRIDGE_ADDR(32'h5000_0000)
-  ) sd_bridge (
-      .clk_sys(clk_sys),
-      .clk_74a(clk_74a),
-      .reset  (reset_in),
+  wire        stage_req;
+  wire        stage_we;
+  wire [24:0] stage_addr;
+  wire [15:0] stage_wdata;
+  wire        stage_ready;
+  wire        stage_done;
+  wire [15:0] stage_rdata;
+  wire        host_busy;
+
+  wire        stage_host_wr;
+  wire [27:0] stage_host_wr_addr;
+  wire [15:0] stage_host_wr_data;
+
+  data_loader #(
+      .ADDRESS_MASK_UPPER_4(4'h5),
+      .OUTPUT_WORD_SIZE(2)
+  ) stage_fill (
+      .clk_74a   (clk_74a),
+      .clk_memory(clk_sys),
 
       .bridge_wr           (bridge_wr),
-      .bridge_rd           (bridge_rd),
       .bridge_endian_little(bridge_endian_little),
       .bridge_addr         (bridge_addr),
       .bridge_wr_data      (bridge_wr_data),
-      .bridge_rd_data      (sd_bridge_rd_data),
 
-      .target_dataslot_read      (target_dataslot_read),
-      .target_dataslot_write     (target_dataslot_write),
-      .target_dataslot_ack       (target_dataslot_ack),
-      .target_dataslot_done      (target_dataslot_done),
-      .target_dataslot_err       (target_dataslot_err),
-      .target_dataslot_id        (target_dataslot_id),
-      .target_dataslot_slotoffset(target_dataslot_slotoffset),
-      .target_dataslot_bridgeaddr(target_dataslot_bridgeaddr),
-      .target_dataslot_length    (target_dataslot_length),
+      .write_en  (stage_host_wr),
+      .write_addr(stage_host_wr_addr),
+      .write_data(stage_host_wr_data)
+  );
 
-      .lba_i      (sd_lba),
-      .rd_i       (sd_rd),
-      .wr_i       (sd_wr),
-      .busy_o     (sd_busy),
-      .err_o      (sd_err),
-      .buf_addr_i (sd_buf_addr),
-      .buf_wdata_i(sd_buf_wdata),
-      .buf_we_i   (sd_buf_we),
-      .buf_rdata_o(sd_buf_rdata)
+  wire        stage_host_rd;
+  wire [27:0] stage_host_rd_addr;
+  wire [15:0] stage_host_rd_data;
+  wire [31:0] stage_bridge_rd_data;
+
+  // PSRAM answers in a bounded ~70 ns with no refresh, so the unloader's fixed
+  // read latency is honest here. Against cartridge SDRAM it would not be --
+  // a refresh or a burst of CPU fetches would stretch the access and this
+  // would latch whatever happened to be on the bus.
+  data_unloader #(
+      .ADDRESS_MASK_UPPER_4(4'h5),
+      .INPUT_WORD_SIZE(2),
+      .READ_MEM_CLOCK_DELAY(32)
+  ) stage_drain (
+      .clk_74a   (clk_74a),
+      .clk_memory(clk_sys),
+
+      .bridge_rd           (bridge_rd),
+      .bridge_endian_little(bridge_endian_little),
+      .bridge_addr         (bridge_addr),
+      .bridge_rd_data      (stage_bridge_rd_data),
+
+      .read_en  (stage_host_rd),
+      .read_addr(stage_host_rd_addr),
+      .read_data(stage_host_rd_data)
+  );
+
+  ngpc_stage_mem stage_mem (
+      .clk  (clk_sys),
+      .reset(reset_in),
+
+      .host_wr_i     (stage_host_wr),
+      .host_wr_addr_i(stage_host_wr_addr[24:0]),
+      .host_wr_data_i(stage_host_wr_data),
+
+      .host_rd_i     (stage_host_rd),
+      .host_rd_addr_i(stage_host_rd_addr[24:0]),
+      .host_rd_data_o(stage_host_rd_data),
+
+      .host_busy_o(host_busy),
+
+      .eng_req_i  (stage_req),
+      .eng_we_i   (stage_we),
+      .eng_addr_i (stage_addr),
+      .eng_wdata_i(stage_wdata),
+      .eng_ready_o(stage_ready),
+      .eng_done_o (stage_done),
+      .eng_rdata_o(stage_rdata),
+
+      .cram_a    (cram0_a),
+      .cram_dq   (cram0_dq),
+      .cram_wait (cram0_wait),
+      .cram_clk  (cram0_clk),
+      .cram_adv_n(cram0_adv_n),
+      .cram_cre  (cram0_cre),
+      .cram_ce0_n(cram0_ce0_n),
+      .cram_ce1_n(cram0_ce1_n),
+      .cram_oe_n (cram0_oe_n),
+      .cram_we_n (cram0_we_n),
+      .cram_ub_n (cram0_ub_n),
+      .cram_lb_n (cram0_lb_n)
   );
 
   // ----------------------------------------------------------------------
@@ -657,7 +692,7 @@ module core_top (
 
   always @(posedge clk_74a) begin
     if (dataslot_requestwrite) begin
-      if (dataslot_requestwrite_id == 16'd2) is_downloading_cart <= 1;
+      if (dataslot_requestwrite_id == 16'd0) is_downloading_cart <= 1;
       else                                   is_downloading_bios <= 1;
     end else if (dataslot_allcomplete) begin
       is_downloading_bios <= 0;
@@ -676,27 +711,39 @@ module core_top (
       clk_sys
   );
 
-  // The two images get their own bridge addresses and their own loader rather
-  // than sharing one and switching on the slot id. Sharing would work almost
-  // always: APF finishes streaming a slot before it announces the next one. But
-  // the loader crosses into clk_sys through a FIFO, so the last words of the
-  // colour image can still be draining when the id for the mono image arrives,
-  // and those words would land in the wrong ROM. Two addresses make the
-  // destination a property of the data itself, and the race cannot exist.
+  // Both BIOS images arrive through ONE loader, at two offsets inside the same
+  // bridge nibble: the colour image at 0x10000000 and the mono image at
+  // 0x10010000.
+  //
+  // They used to have a loader each, and the reason was real: the loader
+  // crosses into clk_sys through a FIFO, so the last words of one image can
+  // still be draining when APF announces the next slot, and switching the
+  // destination on a slot id would land those words in the wrong ROM. The
+  // destination has to be a property of the data, not of what the host is
+  // currently pointing at.
+  //
+  // A single loader keeps that property. The write address travels through the
+  // FIFO beside the data, so bit 16 of the address that comes OUT is the image
+  // that word belongs to, whatever the host has moved on to. One FIFO also
+  // removes the two-loader race entirely rather than dodging it -- there is now
+  // one queue, and it drains in order.
+  //
+  // This is worth about 150 ALMs, which is the difference between fitting with
+  // register retiming and not. See the retiming note in ngpc_pocket.qsf.
   //
   // OUTPUT_WORD_SIZE 2 reproduces hps_io's WIDE(1) behaviour exactly: with
   // bridge_endian_little low the loader byte-swaps, so write_data is
   // {file_byte1, file_byte0} and write_addr counts bytes -- the same little
   // endian 16-bit word and the same addr[15:1] the MiSTer top level feeds the
   // BIOS BRAM.
-  wire        bios0_wr_raw, bios1_wr_raw;
-  wire [27:0] bios0_addr_raw, bios1_addr_raw;
-  wire [15:0] bios0_data_raw, bios1_data_raw;
+  wire        bios_wr_raw;
+  wire [27:0] bios_addr_raw;
+  wire [15:0] bios_data_raw;
 
   data_loader #(
       .ADDRESS_MASK_UPPER_4(4'h1),
       .OUTPUT_WORD_SIZE(2)
-  ) bios0_loader (
+  ) bios_loader (
       .clk_74a   (clk_74a),
       .clk_memory(clk_sys),
 
@@ -705,60 +752,39 @@ module core_top (
       .bridge_addr        (bridge_addr),
       .bridge_wr_data     (bridge_wr_data),
 
-      .write_en  (bios0_wr_raw),
-      .write_addr(bios0_addr_raw),
-      .write_data(bios0_data_raw)
+      .write_en  (bios_wr_raw),
+      .write_addr(bios_addr_raw),
+      .write_data(bios_data_raw)
   );
 
-  data_loader #(
-      .ADDRESS_MASK_UPPER_4(4'h2),
-      .OUTPUT_WORD_SIZE(2)
-  ) bios1_loader (
-      .clk_74a   (clk_74a),
-      .clk_memory(clk_sys),
+  // The cartridge shares this loader too, at a 16 MB offset inside the same
+  // nibble (0x11000000). Three slots, one FIFO: they are loaded one at a time
+  // and each was costing about 170 ALMs, most of it dcfifo. The destination is
+  // still carried by the address rather than by a slot id, which is the
+  // property that makes one loader safe -- see the note above.
+  //
+  //   0x0000000 - 0x000FFFF   colour BIOS
+  //   0x0010000 - 0x001FFFF   mono BIOS
+  //   0x1000000 - 0x13FFFFF   cartridge (4 MB maximum)
+  //
+  // So bit 24 says cartridge, and below it bit 16 says which BIOS image.
+  wire        ld_is_cart = bios_addr_raw[24];
 
-      .bridge_wr          (bridge_wr),
-      .bridge_endian_little(bridge_endian_little),
-      .bridge_addr        (bridge_addr),
-      .bridge_wr_data     (bridge_wr_data),
+  // A BIOS image is 64 KiB, so bit 16 selects the image and bits 15:1 address
+  // within it. The guard rejects anything past the mono image's end, which is
+  // what the MiSTer top level's address guard does for a single image: a file
+  // longer than its slot cannot wrap onto the start of either ROM.
+  wire        bios_sel     = bios_addr_raw[16];
+  wire        bios_wr      = bios_wr_raw && !ld_is_cart && (bios_addr_raw < 28'h20000);
+  wire [14:0] bios_addr    = bios_addr_raw[15:1];
+  wire [15:0] bios_ld_data = bios_data_raw;
 
-      .write_en  (bios1_wr_raw),
-      .write_addr(bios1_addr_raw),
-      .write_data(bios1_data_raw)
-  );
-
-  // A BIOS image is 64 KiB. Guard the write so a longer file cannot wrap onto
-  // the start of the ROM, which is what the MiSTer top level's address guard
-  // does.
-  wire [27:0] bios_ld_addr = bios1_wr_raw ? bios1_addr_raw : bios0_addr_raw;
-
-  wire        bios_sel   = bios1_wr_raw;
-  wire        bios_wr    = (bios0_wr_raw || bios1_wr_raw) && (bios_ld_addr < 28'h10000);
-  wire [14:0] bios_addr  = bios_ld_addr[15:1];
-  wire [15:0] bios_ld_data = bios1_wr_raw ? bios1_data_raw : bios0_data_raw;
-
-  // The cartridge stream. Same 16-bit word shape as the BIOS loaders; the
-  // machine buffers it before ngp_cart_rom, which back-pressures.
-  wire        cart_wr;
-  wire [27:0] cart_wr_addr;
-  wire [15:0] cart_wr_data;
-
-  data_loader #(
-      .ADDRESS_MASK_UPPER_4(4'h3),
-      .OUTPUT_WORD_SIZE(2)
-  ) cart_loader (
-      .clk_74a   (clk_74a),
-      .clk_memory(clk_sys),
-
-      .bridge_wr          (bridge_wr),
-      .bridge_endian_little(bridge_endian_little),
-      .bridge_addr        (bridge_addr),
-      .bridge_wr_data     (bridge_wr_data),
-
-      .write_en  (cart_wr),
-      .write_addr(cart_wr_addr),
-      .write_data(cart_wr_data)
-  );
+  // The cartridge stream. Same 16-bit word shape; the machine buffers it before
+  // ngp_cart_rom, which back-pressures. Bit 24 comes off to give the loader's
+  // byte address within the image.
+  wire        cart_wr      = bios_wr_raw && ld_is_cart;
+  wire [27:0] cart_wr_addr = {4'd0, bios_addr_raw[23:0]};
+  wire [15:0] cart_wr_data = bios_data_raw;
 
   // ----------------------------------------------------------------------
   //  Controls
@@ -824,6 +850,61 @@ module core_top (
 
   wire cart_fifo_overflow;
 
+  // ---- Savestates, and therefore sleep ----------------------------------
+
+  wire [31:0] savestate_rd_data;
+  wire        ss_save;
+  wire        ss_load;
+  wire        ss_busy;
+  wire        ss_loading;
+  wire [31:0] ss_cart_crc32;
+
+  wire [63:0] bus_out_Din;
+  wire [63:0] bus_out_Dout;
+  wire [25:0] bus_out_Adr;
+  wire        bus_out_rnw;
+  wire        bus_out_ena;
+  wire  [7:0] bus_out_be;
+  wire        bus_out_done;
+
+  ngpc_savestate_bridge savestate_bridge (
+      .clk_sys(clk_sys),
+      .clk_74a(clk_74a),
+      .reset  (reset_in),
+
+      .savestate_start     (savestate_start),
+      .savestate_start_ack (savestate_start_ack),
+      .savestate_start_busy(savestate_start_busy),
+      .savestate_start_ok  (savestate_start_ok),
+      .savestate_start_err (savestate_start_err),
+
+      .savestate_load     (savestate_load),
+      .savestate_load_ack (savestate_load_ack),
+      .savestate_load_busy(savestate_load_busy),
+      .savestate_load_ok  (savestate_load_ok),
+      .savestate_load_err (savestate_load_err),
+
+      .bridge_wr     (bridge_wr),
+      .bridge_rd     (bridge_rd),
+      .bridge_addr   (bridge_addr),
+      .bridge_wr_data(bridge_wr_data),
+      .bridge_rd_data(savestate_rd_data),
+
+      .ss_save(ss_save),
+      .ss_load(ss_load),
+      .ss_busy(ss_busy),
+      .ss_loading(ss_loading),
+      .cart_crc32(ss_cart_crc32),
+
+      .bus_out_Din (bus_out_Din),
+      .bus_out_Dout(bus_out_Dout),
+      .bus_out_Adr (bus_out_Adr),
+      .bus_out_rnw (bus_out_rnw),
+      .bus_out_ena (bus_out_ena),
+      .bus_out_be  (bus_out_be),
+      .bus_out_done(bus_out_done)
+  );
+
   ngpc_machine machine (
       .clk_sys (clk_sys),
       .clk_ram (clk_ram),
@@ -869,21 +950,28 @@ module core_top (
       .audio_l(audio_l),
       .audio_r(audio_r),
 
-      .sd_lba      (sd_lba),
-      .sd_rd       (sd_rd),
-      .sd_wr       (sd_wr),
-      .sd_busy     (sd_busy),
-      .sd_err      (sd_err),
-      .sd_buf_addr (sd_buf_addr),
-      .sd_buf_wdata(sd_buf_wdata),
-      .sd_buf_we   (sd_buf_we),
-      .sd_buf_rdata(sd_buf_rdata),
+      .stage_req  (stage_req),
+      .stage_we   (stage_we),
+      .stage_addr (stage_addr),
+      .stage_wdata(stage_wdata),
+      .stage_ready(stage_ready),
+      .stage_done (stage_done),
+      .stage_rdata(stage_rdata),
+      .host_busy  (host_busy),
 
-      .save_present    (save_present_s),
-      .save_request    (save_request),
-      .load_request    (load_request),
-      .opt_autosave_off(opt_autosave_off_s),
-      .host_in_menu    (host_in_menu_s),
+      .ss_save_i       (ss_save),
+      .ss_load_i       (ss_load),
+      .ss_busy_o       (ss_busy),
+      .ss_loading_o(ss_loading),
+      .cart_crc32_o(ss_cart_crc32),
+
+      .bus_out_Din (bus_out_Din),
+      .bus_out_Dout(bus_out_Dout),
+      .bus_out_Adr (bus_out_Adr),
+      .bus_out_rnw (bus_out_rnw),
+      .bus_out_ena (bus_out_ena),
+      .bus_out_be  (bus_out_be),
+      .bus_out_done(bus_out_done),
 
       .SDRAM_A   (dram_a),
       .SDRAM_BA  (dram_ba),
@@ -935,9 +1023,12 @@ module core_top (
     video_skip_reg <= 0;
     video_rgb_reg  <= 24'h0;
 
-    if (vga_de && (ce_pix || ~opt_de_gated_s)) begin
+    // DE is held across the active window and video_skip suppresses the
+    // cycles that carry no new pixel. Confirmed correct on hardware
+    // 2026-08-25; the runtime alternative it used to offer is gone.
+    if (vga_de) begin
       video_de_reg   <= 1;
-      video_skip_reg <= ~ce_pix && ~opt_de_gated_s;
+      video_skip_reg <= ~ce_pix;
       video_rgb_reg  <= {vga_r, vga_g, vga_b};
     end
 
@@ -998,7 +1089,7 @@ module core_top (
   // the moment there is somewhere to report it.
   wire unused_ok = &{1'b0, cart_fifo_overflow,
                      dataslot_requestread, dataslot_requestread_id,
-                     savestate_start, savestate_load, clk_dot,
+                     clk_dot,
                      led_user, vga_hbl, vga_vbl, audio_adc, dbg_rx, user2,
                      cont1_joy, cont2_joy, cont3_joy, cont4_joy,
                      cont1_trig, cont2_trig, cont3_trig, cont4_trig,

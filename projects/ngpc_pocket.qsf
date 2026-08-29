@@ -16,7 +16,7 @@ set_global_assignment -name SEED 1
 # ---- Analysis & Synthesis ----------------------------------------------------
 set_global_assignment -name ADV_NETLIST_OPT_SYNTH_WYSIWYG_REMAP ON
 set_global_assignment -name MUX_RESTRUCTURE OFF
-set_global_assignment -name OPTIMIZATION_TECHNIQUE SPEED
+set_global_assignment -name OPTIMIZATION_TECHNIQUE BALANCED
 set_global_assignment -name PRE_MAPPING_RESYNTHESIS ON
 set_global_assignment -name SAFE_STATE_MACHINE ON
 set_global_assignment -name SYNTH_PROTECT_SDC_CONSTRAINT ON
@@ -29,12 +29,12 @@ set_global_assignment -name FITTER_EFFORT "STANDARD FIT"
 set_global_assignment -name PERIPHERY_TO_CORE_PLACEMENT_AND_ROUTING_OPTIMIZATION ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_ASYNCHRONOUS_SIGNAL_PIPELINING ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON
-set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION OFF
 set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON
 set_global_assignment -name ROUTER_CLOCKING_TOPOLOGY_ANALYSIS ON
-set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION ON
+set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION OFF
 set_global_assignment -name FITTER_AGGRESSIVE_ROUTABILITY_OPTIMIZATION ALWAYS
-set_global_assignment -name ALM_REGISTER_PACKING_EFFORT LOW
+set_global_assignment -name ALM_REGISTER_PACKING_EFFORT HIGH
 set_global_assignment -name NUM_PARALLEL_PROCESSORS 6
 
 # ---- Core defines ------------------------------------------------------------
@@ -47,6 +47,10 @@ set_global_assignment -name VERILOG_MACRO "NGPC_POCKET=1"
 #                  and this core has no way to deliver one, but the engine's
 #                  comparators still sit on the CPU read path -- which is also
 #                  where the timing critical path lives.
+# NGPC_NO_LINK     compiles out the serial link port. The Pocket has no wiring
+#                  to it today, though its cartridge slot carries GBA-style link
+#                  pins, so this is reversible by removing one line.
+set_global_assignment -name VERILOG_MACRO "NGPC_NO_LINK=1"
 set_global_assignment -name VERILOG_MACRO "NGPC_NO_CHEATS=1"
 set_global_assignment -name VERILOG_MACRO "SYNTHESIS=1"
 set_global_assignment -name VERILOG_MACRO "TV80_REFRESH=1"
@@ -744,3 +748,17 @@ set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_1wire
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_spiclk
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_spimiso
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_spimosi
+# Retiming buys ~3 ns but costs ~1,700 registers. FAST does less of both,
+# which is the only middle ground between "fits" and "meets timing".
+set_global_assignment -name PHYSICAL_SYNTHESIS_EFFORT FAST
+
+# Register retiming: OFF, and this is a measured decision, not a default.
+#
+# Global retiming closes timing (-1.801 ns against -2.852) but costs about 600
+# ALMs and overflows the device at 18,517 of 18,480. Scoping the assignment to
+# t900_cpu, where the entire critical path lives, does not help -- 18,542, very
+# slightly worse -- because that is where the retiming registers were being
+# spent anyway. Seeds do not rescue it either: 18,512 / 18,555 / 18,573.
+#
+# So retiming and fitting are mutually exclusive on this design. OFF is what
+# fits, with saves and sleep both present and roughly 580 ALMs to spare.

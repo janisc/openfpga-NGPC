@@ -15,3 +15,7 @@ utils/
 upstream/
 projects/build_seed*.log
 builds/
+
+# Quartus build transcripts
+projects/*.log
+sim/*.vvp

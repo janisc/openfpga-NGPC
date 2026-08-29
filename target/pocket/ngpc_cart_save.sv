@@ -1,53 +1,63 @@
 // NGPC for Analogue Pocket -- cartridge flash persistence.
 //
-// WHY THIS EXISTS INSTEAD OF UPSTREAM'S OVERLAY
+// HOW SAVING WORKS HERE, AND WHY IT LOOKS NOTHING LIKE MiSTer'S
 //
-// Saves on this machine are cartridge flash: a game writes its progress into
-// the cartridge, so persistence means remembering which physical erase blocks
-// the game changed. Upstream implements that with ngp_cart_overlay and nine
-// supporting modules -- ledgers, a directory, a transactional saver, an
-// immutable pristine shadow to diff against. It is careful work and it produces
-// a .sav the MiSTer core can read.
+// Saves on this machine are cartridge flash: a game writes progress into the
+// cartridge, so persistence means remembering which physical erase blocks it
+// changed and putting those bytes somewhere that survives a power cycle.
 //
-// It also does not fit. Wired up on this device the design came out at 21,599
-// ALMs against 18,480 available, and area-optimising it made that worse rather
-// than better. MiSTer has 110k logic elements; the Pocket has 49k, and the
-// console alone already uses three quarters of them.
+// MiSTer's core drives the SD card itself, so it needs a moment to decide when
+// to write -- hence its manual and menu-triggered saves. The Pocket does not
+// work that way. A data slot marked `nonvolatile` is loaded into the core by
+// APF at start and read back out at exit or power-off. The core simply owns a
+// region of memory; the host owns the file.
 //
-// So this is the same idea at a size that fits, with MiSTer file compatibility
-// deliberately given up:
+// Two earlier designs here failed for exactly the reasons that model removes.
+// The first ported upstream's ngp_cart_overlay and did not fit: 21,599 ALMs
+// against 18,480. The second wrote sectors itself through APF target commands,
+// which meant a state machine that could stall (it did, holding the machine
+// paused and freezing the console) and a file that had to be created before it
+// could be written (it never was, so nothing reached the card). Neither failure
+// is possible now, because neither mechanism exists.
 //
-//   * ngp_cart reports every completed physical block mutation on event0/1.
-//     A 128-bit dirty bitmap is enough to know what to write -- no pristine
-//     shadow, and therefore no second memory subsystem.
-//   * A save is a header sector plus the dirty blocks, in a fixed order both
-//     directions walk identically, so no directory is needed to find them.
-//   * The header carries the cartridge's CRC32 and byte count. A save is
-//     applied only if both match, which is what stops one game's save landing
-//     in another's flash.
+// THE LAYOUT
 //
-// WHAT IS GIVEN UP, stated plainly. Upstream's saver is transactional: an
-// interrupted save cannot leave a half-written file that looks valid, because
-// the new state is staged and then committed. This one is not, and on a
-// battery-powered handheld an interrupted save is a real event rather than a
-// theoretical one.
+//   staging[0]                 header: magic, cartridge CRC32 and size, and
+//                              the dirty-block bitmap
+//   staging[512 ...]           the dirty blocks themselves, in the fixed order
+//                              both directions walk, so no directory is needed
 //
-// What it does instead is order the writes so that the cheap failure mode is
-// the one you get: the payload blocks are written FIRST and the header LAST.
-// A save cut short therefore leaves a file whose header is still the previous
-// save's -- or absent entirely on the first ever save -- so the torn payload is
-// never read. You lose the save you were making; you do not lose the one you
-// had, and you cannot half-apply a block into the cartridge.
+// The header's CRC32 and byte count are what stop one game's save reaching
+// another's flash: a staged image is applied only if both match the cartridge
+// actually loaded.
 //
-// The remaining hole is a cut during the header sector itself, which is one
-// 512-byte write out of a whole save. Closing that needs two header slots
-// written alternately with a sequence number, which is a real transaction and
-// costs more than it is worth here.
+// WHEN THE COPY HAPPENS
+//
+// APF reads our memory at exit without announcing it, so staging has to be
+// current by then. It cannot wait for a trigger and it must not pause the
+// machine -- a visible stutter every time a game saves would be worse than the
+// problem it solves.
+//
+// So blocks are staged in the background, on flash quiescence. Games write
+// flash in bursts; once the dies have been idle for QUIET_CLOCKS the pending
+// blocks are copied one at a time. If the game writes a block while it is being
+// staged, that block is simply marked pending again and re-copied later, so a
+// torn copy corrects itself rather than persisting. No pause, no handshake with
+// the machine at all.
+//
+// Restoring is the one place the machine is held: at cartridge-ready the staged
+// blocks are applied while reset is still asserted, so the BIOS and the game
+// only ever observe restored flash.
 
 `default_nettype none
 
-module ngpc_cart_save
-(
+module ngpc_cart_save #(
+	// Payload capacity of the staging region. A die's four top blocks come to
+	// 64 KB, so this holds those plus three 64 KB blocks -- far beyond what NGP
+	// saves use. It costs no FPGA resource, only slot transfer time at core
+	// start and exit.
+	parameter [24:0] STAGE_BYTES = 25'h0040000
+) (
 	input  wire        clk,
 	input  wire        reset,
 
@@ -66,16 +76,12 @@ module ngpc_cart_save
 	input  wire  [5:0] block1_i,
 	input  wire  [1:0] die_busy_i,
 
-	// ---- Requests ----------------------------------------------------------
-	input  wire        save_req_i,         // one-cycle pulse
-	input  wire        load_req_i,
-	input  wire        autosave_off_i,
-	input  wire        host_in_menu_i,     // APF osnotify_inmenu, level
-	input  wire        save_present_i,     // the slot has a file
+	// ---- Host activity -----------------------------------------------------
+	// While APF is moving the slot in or out it owns the staging region, and
+	// background staging stands aside.
+	input  wire        host_busy_i,
 
 	// ---- Machine control ---------------------------------------------------
-	output reg         pause_req_o,
-	input  wire        pause_ready_i,
 	output reg         boot_hold_o,        // holds reset while a save is applied
 	output reg         busy_o,
 
@@ -89,16 +95,14 @@ module ngpc_cart_save
 	input  wire        p2_done_i,
 	input  wire [15:0] p2_rdata_i,
 
-	// ---- Sector device ------------------------------------------------------
-	output reg  [22:0] lba_o,
-	output reg         rd_o,
-	output reg         wr_o,
-	input  wire        sd_busy_i,
-	input  wire        sd_err_i,
-	output reg   [7:0] buf_addr_o,
-	output reg  [15:0] buf_wdata_o,
-	output reg         buf_we_o,
-	input  wire [15:0] buf_rdata_i
+	// ---- Staging region, in PSRAM ------------------------------------------
+	output reg         stage_req_o,
+	output reg         stage_we_o,
+	output reg  [24:0] stage_addr_o,
+	output reg  [15:0] stage_wdata_o,
+	input  wire        stage_ready_i,
+	input  wire        stage_done_i,
+	input  wire [15:0] stage_rdata_i
 );
 
 	assign p2_be_o = 2'b11;
@@ -106,24 +110,23 @@ module ngpc_cart_save
 	localparam [15:0] MAGIC0 = 16'h4E47;  // "NG"
 	localparam [15:0] MAGIC1 = 16'h5043;  // "PC"
 	localparam [15:0] MAGIC2 = 16'h5341;  // "SA"
-	localparam [15:0] MAGIC3 = 16'h5631;  // "V1"
+	localparam [15:0] MAGIC3 = 16'h5632;  // "V2" -- layout differs from the
+	                                      // sector-based version that preceded it
 
-	// ---- Dirty bitmap -------------------------------------------------------
+	// Flash idle time before staging starts. ~20 ms at 49.152 MHz: long enough
+	// that a burst of block writes is over, short enough that a save is staged
+	// well before anyone reaches for the power switch.
+	localparam [19:0] QUIET_CLOCKS = 20'd1_000_000;
+
+	// ---- Dirty and pending bitmaps -----------------------------------------
 	//
-	// One bit per physical erase block per die. ngp_cart raises event0/1 only
-	// after the flash FSM has accepted a mutation, so this counts completed
-	// changes rather than attempted ones.
+	// `dirty` is what the save contains. `pending` is what still needs copying
+	// into staging. A write sets both; a completed copy clears only pending.
 
-	reg [63:0] dirty0;
-	reg [63:0] dirty1;
+	reg [63:0] dirty0,   dirty1;
+	reg [63:0] pending0, pending1;
 
-	// The set being written, frozen when the save starts. The machine is paused
-	// by then so nothing should move, but the header and the payload must
-	// describe the same set even if that assumption is ever wrong.
-	reg [63:0] save_dirty0;
-	reg [63:0] save_dirty1;
-
-	wire dirty_any = |dirty0 || |dirty1;
+	wire pending_any = |pending0 || |pending1;
 
 	// ---- Block geometry -----------------------------------------------------
 
@@ -144,164 +147,136 @@ module ngpc_cart_save
 		.words_o     (geo_words)
 	);
 
-	// Saving walks the frozen set; loading walks the set read from the header,
-	// which is placed into save_dirty* before the walk begins.
-	wire block_selected = geo_valid &&
-		(geo_die ? save_dirty1[geo_block] : save_dirty0[geo_block]);
+	wire block_dirty = geo_valid &&
+		(geo_die ? dirty1[geo_block] : dirty0[geo_block]);
+	wire block_pending = geo_valid &&
+		(geo_die ? pending1[geo_block] : pending0[geo_block]);
 
-	// Linear cartridge byte address, die1 starting at 2 MiB -- the same mapping
+	// Linear cartridge byte address, die1 starting at 2 MiB -- the mapping
 	// ngp_cart_overlay_mover uses.
 	wire [24:0] block_base_addr = {geo_die ? 4'd1 : 4'd0, geo_base};
 
+	// Where this block sits in the staging payload: blocks are laid out in walk
+	// order, so the offset is the running total of the dirty blocks before it.
+	reg [24:0] stage_offset;
+
 	// ---- State --------------------------------------------------------------
 
-	localparam S_IDLE          = 5'd0;
-	localparam S_SAVE_PAUSE    = 5'd1;
-	localparam S_SAVE_HEADER   = 5'd2;
-	localparam S_SAVE_HDR_GO   = 5'd3;
-	localparam S_SAVE_SCAN     = 5'd4;
-	localparam S_SAVE_FILL     = 5'd5;
-	localparam S_SAVE_FILL_W   = 5'd6;
-	localparam S_SAVE_SECTOR   = 5'd7;
-	localparam S_SAVE_NEXT     = 5'd8;
-	localparam S_SAVE_COMMIT   = 5'd18;
-	localparam S_LOAD_HDR      = 5'd9;
-	localparam S_LOAD_HDR_W    = 5'd10;
-	localparam S_LOAD_CHECK    = 5'd11;
-	localparam S_LOAD_SCAN     = 5'd12;
-	localparam S_LOAD_SECTOR   = 5'd13;
-	localparam S_LOAD_DRAIN    = 5'd14;
-	localparam S_LOAD_DRAIN_W  = 5'd15;
-	localparam S_LOAD_NEXT     = 5'd16;
-	localparam S_FINISH        = 5'd17;
+	localparam S_IDLE        = 4'd0;
+	localparam S_STAGE_SCAN  = 4'd1;
+	localparam S_STAGE_RD    = 4'd2;
+	localparam S_STAGE_RD_W  = 4'd3;
+	localparam S_STAGE_WR    = 4'd4;
+	localparam S_STAGE_WR_W  = 4'd5;
+	localparam S_STAGE_HDR   = 4'd6;
+	localparam S_STAGE_HDR_W = 4'd7;
+	localparam S_APPLY_HDR   = 4'd8;
+	localparam S_APPLY_HDR_W = 4'd9;
+	localparam S_APPLY_SCAN  = 4'd10;
+	localparam S_APPLY_RD    = 4'd11;
+	localparam S_APPLY_RD_W  = 4'd12;
+	localparam S_APPLY_WR    = 4'd13;
+	localparam S_APPLY_WR_W  = 4'd14;
+	localparam S_FINISH      = 4'd15;
 
-	reg  [4:0] state;
-	reg  [7:0] word_idx;        // position within the 256-word sector
-	reg [15:0] block_word;      // position within the block
-	reg [15:0] hdr [0:11];
-	reg        prev_menu;
-	reg        load_pending;    // apply a save once the cartridge is ready
+	reg  [3:0] state;
+	reg [15:0] block_word;      // position within the block being copied
+	reg [15:0] xfer_data;       // the word in flight
+	reg  [4:0] hdr_idx;         // position within the header
+	reg [19:0] quiet;
+	reg        apply_pending;   // apply the staged image once the cart is ready
+	reg        apply_ok;        // the header matched this cartridge
 
-	wire [15:0] block_words_left = geo_words - block_word;
-	wire        sector_is_last   = block_words_left <= 16'd256;
+	wire flash_quiet = (die_busy_i == 2'b00) && !event0_i && !event1_i;
 
-	integer i;
+	// The header as a function of its index, so it needs no storage of its own.
+	reg [15:0] hdr_word;
+
+	always @* begin
+		case (hdr_idx)
+			5'd0:  hdr_word = MAGIC0;
+			5'd1:  hdr_word = MAGIC1;
+			5'd2:  hdr_word = MAGIC2;
+			5'd3:  hdr_word = MAGIC3;
+			5'd4:  hdr_word = cart_crc32_i[15:0];
+			5'd5:  hdr_word = cart_crc32_i[31:16];
+			5'd6:  hdr_word = {7'd0, cart_bytes_i[24:16]};
+			5'd7:  hdr_word = cart_bytes_i[15:0];
+			5'd8:  hdr_word = dirty0[15:0];
+			5'd9:  hdr_word = dirty0[31:16];
+			5'd10: hdr_word = dirty0[47:32];
+			5'd11: hdr_word = dirty0[63:48];
+			5'd12: hdr_word = dirty1[15:0];
+			5'd13: hdr_word = dirty1[31:16];
+			5'd14: hdr_word = dirty1[47:32];
+			5'd15: hdr_word = dirty1[63:48];
+			default: hdr_word = 16'd0;
+		endcase
+	end
 
 	always @(posedge clk) begin
-		rd_o     <= 1'b0;
-		wr_o     <= 1'b0;
-		buf_we_o <= 1'b0;
-		p2_req_o <= 1'b0;
+		p2_req_o    <= 1'b0;
+		stage_req_o <= 1'b0;
 
-		prev_menu <= host_in_menu_i;
+		// Flash reports are taken at all times, including mid-copy: a block
+		// written while it is being staged is marked pending again, so the torn
+		// copy is replaced rather than kept.
+		if (event0_i) begin dirty0[block0_i] <= 1'b1; pending0[block0_i] <= 1'b1; end
+		if (event1_i) begin dirty1[block1_i] <= 1'b1; pending1[block1_i] <= 1'b1; end
 
-		// Dirty tracking runs at all times, including during a transfer: a
-		// block written while a save is in flight must still be remembered.
-		if (event0_i) dirty0[block0_i] <= 1'b1;
-		if (event1_i) dirty1[block1_i] <= 1'b1;
+		if (flash_quiet && quiet != QUIET_CLOCKS) quiet <= quiet + 20'd1;
+		else if (!flash_quiet)                    quiet <= 20'd0;
 
 		if (reset || cart_replace_i) begin
-			state        <= S_IDLE;
-			pause_req_o  <= 1'b0;
-			boot_hold_o  <= 1'b0;
-			busy_o       <= 1'b0;
-			dirty0       <= 64'd0;
-			dirty1       <= 64'd0;
-			load_pending <= 1'b1;
+			state         <= S_IDLE;
+			boot_hold_o   <= 1'b0;
+			busy_o        <= 1'b0;
+			dirty0        <= 64'd0;
+			dirty1        <= 64'd0;
+			pending0      <= 64'd0;
+			pending1      <= 64'd0;
+			quiet         <= 20'd0;
+			apply_pending <= 1'b1;
+			apply_ok      <= 1'b0;
 		end else begin
 			case (state)
 				S_IDLE: begin
-					pause_req_o <= 1'b0;
 					boot_hold_o <= 1'b0;
 					busy_o      <= 1'b0;
 
-					if (cart_ready_i && load_pending && save_present_i) begin
-						// Apply a save before the machine runs, so the BIOS and
-						// the game only ever see the restored flash.
-						load_pending <= 1'b0;
-						boot_hold_o  <= 1'b1;
+					if (cart_ready_i && apply_pending) begin
+						// Apply before the machine runs, so the BIOS and the
+						// game only ever see restored flash.
+						apply_pending <= 1'b0;
+						boot_hold_o   <= 1'b1;
+						busy_o        <= 1'b1;
+						hdr_idx       <= 5'd0;
+						apply_ok      <= 1'b1;
+						state         <= S_APPLY_HDR;
+					end else if (cart_ready_i && pending_any && !host_busy_i &&
+					             quiet == QUIET_CLOCKS) begin
 						busy_o       <= 1'b1;
-						lba_o        <= 23'd0;
-						state        <= S_LOAD_HDR;
-					end else if (cart_ready_i && load_pending) begin
-						load_pending <= 1'b0;
-					end else if (load_req_i && cart_ready_i) begin
-						boot_hold_o <= 1'b1;
-						busy_o      <= 1'b1;
-						lba_o       <= 23'd0;
-						state       <= S_LOAD_HDR;
-					end else if (cart_ready_i && dirty_any &&
-					             (save_req_i ||
-					              (!autosave_off_i && host_in_menu_i && !prev_menu))) begin
-						busy_o      <= 1'b1;
-						pause_req_o <= 1'b1;
-						state       <= S_SAVE_PAUSE;
+						geo_die      <= 1'b0;
+						geo_block    <= 6'd0;
+						stage_offset <= 25'd0;
+						state        <= S_STAGE_SCAN;
 					end
 				end
 
-				// ---------------- save ----------------------------------------
-				S_SAVE_PAUSE: begin
-					// The flash FSM must be idle or a block could change under
-					// the read.
-					if (pause_ready_i && die_busy_i == 2'b00) begin
-						save_dirty0 <= dirty0;
-						save_dirty1 <= dirty1;
-						lba_o       <= 23'd1;   // sector 0 is the header, written last
-						geo_die     <= 1'b0;
-						geo_block   <= 6'd0;
-						state       <= S_SAVE_SCAN;
-					end
-				end
-
-				S_SAVE_HEADER: begin
-					// Reached only after every payload block is on the card.
-					hdr[0]  <= MAGIC0;
-					hdr[1]  <= MAGIC1;
-					hdr[2]  <= MAGIC2;
-					hdr[3]  <= MAGIC3;
-					hdr[4]  <= cart_crc32_i[15:0];
-					hdr[5]  <= cart_crc32_i[31:16];
-					hdr[6]  <= {7'd0, cart_bytes_i[24:16]};
-					hdr[7]  <= cart_bytes_i[15:0];
-					hdr[8]  <= {12'd0, size_code1_i, size_code0_i};
-					hdr[9]  <= 16'd0;
-					hdr[10] <= 16'd0;
-					hdr[11] <= 16'd0;
-					word_idx <= 8'd0;
-					state    <= S_SAVE_HDR_GO;
-				end
-
-				S_SAVE_HDR_GO: begin
-					buf_addr_o  <= word_idx;
-					buf_we_o    <= 1'b1;
-					buf_wdata_o <= (word_idx < 8'd12)  ? hdr[word_idx[3:0]] :
-					               (word_idx == 8'd16) ? save_dirty0[15:0]  :
-					               (word_idx == 8'd17) ? save_dirty0[31:16] :
-					               (word_idx == 8'd18) ? save_dirty0[47:32] :
-					               (word_idx == 8'd19) ? save_dirty0[63:48] :
-					               (word_idx == 8'd20) ? save_dirty1[15:0]  :
-					               (word_idx == 8'd21) ? save_dirty1[31:16] :
-					               (word_idx == 8'd22) ? save_dirty1[47:32] :
-					               (word_idx == 8'd23) ? save_dirty1[63:48] : 16'd0;
-
-					if (word_idx == 8'd255) begin
-						lba_o <= 23'd0;
-						wr_o  <= 1'b1;
-						state <= S_SAVE_COMMIT;
+				// ---------------- stage: cartridge -> staging ----------------
+				S_STAGE_SCAN: begin
+					if (block_pending) begin
+						block_word <= 16'd0;
+						state      <= S_STAGE_RD;
 					end else begin
-						word_idx <= word_idx + 8'd1;
-					end
-				end
+						// Dirty-but-not-pending blocks still occupy their slot
+						// in the payload, so the offset advances for them too.
+						if (block_dirty) stage_offset <= stage_offset + {9'd0, geo_words, 1'b0};
 
-				S_SAVE_SCAN: begin
-					if (!sd_busy_i && !wr_o) begin
-						if (block_selected) begin
-							block_word <= 16'd0;
-							word_idx   <= 8'd0;
-							state      <= S_SAVE_FILL;
-						end else if (geo_block == 6'd63) begin
+						if (geo_block == 6'd63) begin
 							if (geo_die) begin
-								state <= S_SAVE_HEADER;
+								hdr_idx <= 5'd0;
+								state   <= S_STAGE_HDR;
 							end else begin
 								geo_die   <= 1'b1;
 								geo_block <= 6'd0;
@@ -312,123 +287,136 @@ module ngpc_cart_save
 					end
 				end
 
-				S_SAVE_FILL: begin
-					p2_req_o   <= 1'b1;
-					p2_we_o    <= 1'b0;
-					p2_addr_o  <= block_base_addr + {8'd0, block_word, 1'b0};
-					state      <= S_SAVE_FILL_W;
+				S_STAGE_RD: begin
+					if (p2_ready_i) begin
+						p2_req_o  <= 1'b1;
+						p2_we_o   <= 1'b0;
+						p2_addr_o <= block_base_addr + {8'd0, block_word, 1'b0};
+						state     <= S_STAGE_RD_W;
+					end
 				end
 
-				S_SAVE_FILL_W: begin
+				S_STAGE_RD_W: begin
 					if (p2_done_i) begin
-						buf_addr_o  <= word_idx;
-						buf_wdata_o <= p2_rdata_i;
-						buf_we_o    <= 1'b1;
-
-						if (word_idx == 8'd255 || block_word + 16'd1 >= geo_words) begin
-							wr_o  <= 1'b1;
-							state <= S_SAVE_SECTOR;
-						end else begin
-							word_idx   <= word_idx + 8'd1;
-							block_word <= block_word + 16'd1;
-							state      <= S_SAVE_FILL;
-						end
+						xfer_data <= p2_rdata_i;
+						state     <= S_STAGE_WR;
 					end
 				end
 
-				S_SAVE_SECTOR: begin
-					if (!sd_busy_i && !wr_o) begin
-						lba_o <= lba_o + 23'd1;
+				S_STAGE_WR: begin
+					if (stage_ready_i) begin
+						stage_req_o   <= 1'b1;
+						stage_we_o    <= 1'b1;
+						stage_addr_o  <= 25'd512 + stage_offset +
+						                 {8'd0, block_word, 1'b0};
+						stage_wdata_o <= xfer_data;
+						state         <= S_STAGE_WR_W;
+					end
+				end
 
+				S_STAGE_WR_W: begin
+					if (stage_done_i) begin
 						if (block_word + 16'd1 >= geo_words) begin
-							state <= S_SAVE_NEXT;
+							// The block is staged. Clear pending, but only if
+							// the game has not rewritten it in the meantime --
+							// the event handler above will have set it again.
+							if (geo_die) pending1[geo_block] <= 1'b0;
+							else         pending0[geo_block] <= 1'b0;
+
+							stage_offset <= stage_offset + {9'd0, geo_words, 1'b0};
+
+							if (geo_block == 6'd63) begin
+								if (geo_die) begin
+									hdr_idx <= 5'd0;
+									state   <= S_STAGE_HDR;
+								end else begin
+									geo_die   <= 1'b1;
+									geo_block <= 6'd0;
+									state     <= S_STAGE_SCAN;
+								end
+							end else begin
+								geo_block <= geo_block + 6'd1;
+								state     <= S_STAGE_SCAN;
+							end
 						end else begin
 							block_word <= block_word + 16'd1;
-							word_idx   <= 8'd0;
-							state      <= S_SAVE_FILL;
+							state      <= S_STAGE_RD;
 						end
 					end
 				end
 
-				S_SAVE_NEXT: begin
-					if (geo_block == 6'd63) begin
-						if (geo_die) begin
-							state <= S_SAVE_HEADER;
+				// The header goes last, so a staging pass interrupted by a
+				// power cut leaves the previous header describing the previous
+				// payload rather than a half-written one.
+				S_STAGE_HDR: begin
+					if (stage_ready_i) begin
+						stage_req_o   <= 1'b1;
+						stage_we_o    <= 1'b1;
+						stage_addr_o  <= {19'd0, hdr_idx, 1'b0};
+						stage_wdata_o <= hdr_word;
+						state         <= S_STAGE_HDR_W;
+					end
+				end
+
+				S_STAGE_HDR_W: begin
+					if (stage_done_i) begin
+						if (hdr_idx == 5'd15) state   <= S_FINISH;
+						else begin
+							hdr_idx <= hdr_idx + 5'd1;
+							state   <= S_STAGE_HDR;
+						end
+					end
+				end
+
+				// ---------------- apply: staging -> cartridge ----------------
+				S_APPLY_HDR: begin
+					if (stage_ready_i) begin
+						stage_req_o  <= 1'b1;
+						stage_we_o   <= 1'b0;
+						stage_addr_o <= {19'd0, hdr_idx, 1'b0};
+						state        <= S_APPLY_HDR_W;
+					end
+				end
+
+				S_APPLY_HDR_W: begin
+					if (stage_done_i) begin
+						case (hdr_idx)
+							5'd0:  if (stage_rdata_i != MAGIC0) apply_ok <= 1'b0;
+							5'd1:  if (stage_rdata_i != MAGIC1) apply_ok <= 1'b0;
+							5'd2:  if (stage_rdata_i != MAGIC2) apply_ok <= 1'b0;
+							5'd3:  if (stage_rdata_i != MAGIC3) apply_ok <= 1'b0;
+							5'd4:  if (stage_rdata_i != cart_crc32_i[15:0])  apply_ok <= 1'b0;
+							5'd5:  if (stage_rdata_i != cart_crc32_i[31:16]) apply_ok <= 1'b0;
+							5'd8:  dirty0[15:0]  <= stage_rdata_i;
+							5'd9:  dirty0[31:16] <= stage_rdata_i;
+							5'd10: dirty0[47:32] <= stage_rdata_i;
+							5'd11: dirty0[63:48] <= stage_rdata_i;
+							5'd12: dirty1[15:0]  <= stage_rdata_i;
+							5'd13: dirty1[31:16] <= stage_rdata_i;
+							5'd14: dirty1[47:32] <= stage_rdata_i;
+							5'd15: dirty1[63:48] <= stage_rdata_i;
+							default: ;
+						endcase
+
+						if (hdr_idx == 5'd15) begin
+							geo_die      <= 1'b0;
+							geo_block    <= 6'd0;
+							stage_offset <= 25'd0;
+							state        <= apply_ok ? S_APPLY_SCAN : S_FINISH;
 						end else begin
-							geo_die   <= 1'b1;
-							geo_block <= 6'd0;
-							state     <= S_SAVE_SCAN;
+							hdr_idx <= hdr_idx + 5'd1;
+							state   <= apply_ok ? S_APPLY_HDR : S_FINISH;
 						end
-					end else begin
-						geo_block <= geo_block + 6'd1;
-						state     <= S_SAVE_SCAN;
 					end
 				end
 
-				S_SAVE_COMMIT: begin
-					// The header is the commit point: until this sector lands,
-					// the file on the card still describes the previous save.
-					if (!sd_busy_i && !wr_o) state <= S_FINISH;
-				end
-
-				// ---------------- load ----------------------------------------
-				S_LOAD_HDR: begin
-					rd_o  <= 1'b1;
-					state <= S_LOAD_HDR_W;
-				end
-
-				S_LOAD_HDR_W: begin
-					if (!sd_busy_i && !rd_o) begin
-						buf_addr_o <= 8'd0;
-						word_idx   <= 8'd0;
-						state      <= S_LOAD_CHECK;
-					end
-				end
-
-				S_LOAD_CHECK: begin
-					// Walk the header words out of the buffer, one per cycle,
-					// checking as they arrive. buf_rdata_i lags buf_addr_o by a
-					// cycle, so word_idx-1 is what is being examined.
-					buf_addr_o <= word_idx + 8'd1;
-					word_idx   <= word_idx + 8'd1;
-
-					case (word_idx)
-						8'd1: if (buf_rdata_i != MAGIC0) state <= S_FINISH;
-						8'd2: if (buf_rdata_i != MAGIC1) state <= S_FINISH;
-						8'd3: if (buf_rdata_i != MAGIC2) state <= S_FINISH;
-						8'd4: if (buf_rdata_i != MAGIC3) state <= S_FINISH;
-						8'd5: if (buf_rdata_i != cart_crc32_i[15:0])  state <= S_FINISH;
-						8'd6: if (buf_rdata_i != cart_crc32_i[31:16]) state <= S_FINISH;
-						// The set goes into BOTH: save_dirty* drives the walk
-						// below, dirty* makes a later save rewrite these blocks
-						// even if the game does not touch them again.
-						8'd17: begin dirty0[15:0]  <= buf_rdata_i; save_dirty0[15:0]  <= buf_rdata_i; end
-						8'd18: begin dirty0[31:16] <= buf_rdata_i; save_dirty0[31:16] <= buf_rdata_i; end
-						8'd19: begin dirty0[47:32] <= buf_rdata_i; save_dirty0[47:32] <= buf_rdata_i; end
-						8'd20: begin dirty0[63:48] <= buf_rdata_i; save_dirty0[63:48] <= buf_rdata_i; end
-						8'd21: begin dirty1[15:0]  <= buf_rdata_i; save_dirty1[15:0]  <= buf_rdata_i; end
-						8'd22: begin dirty1[31:16] <= buf_rdata_i; save_dirty1[31:16] <= buf_rdata_i; end
-						8'd23: begin dirty1[47:32] <= buf_rdata_i; save_dirty1[47:32] <= buf_rdata_i; end
-						8'd24: begin
-							dirty1[63:48]      <= buf_rdata_i;
-							save_dirty1[63:48] <= buf_rdata_i;
-							lba_o     <= 23'd1;
-							geo_die   <= 1'b0;
-							geo_block <= 6'd0;
-							state     <= S_LOAD_SCAN;
-						end
-						default: ;
-					endcase
-				end
-
-				S_LOAD_SCAN: begin
-					if (block_selected) begin
+				S_APPLY_SCAN: begin
+					if (block_dirty) begin
 						block_word <= 16'd0;
-						state      <= S_LOAD_SECTOR;
+						state      <= S_APPLY_RD;
 					end else if (geo_block == 6'd63) begin
-						if (geo_die) begin
-							state <= S_FINISH;
-						end else begin
+						if (geo_die) state <= S_FINISH;
+						else begin
 							geo_die   <= 1'b1;
 							geo_block <= 6'd0;
 						end
@@ -437,62 +425,60 @@ module ngpc_cart_save
 					end
 				end
 
-				S_LOAD_SECTOR: begin
-					rd_o     <= 1'b1;
-					word_idx <= 8'd0;
-					state    <= S_LOAD_DRAIN;
+				S_APPLY_RD: begin
+					if (stage_ready_i) begin
+						stage_req_o  <= 1'b1;
+						stage_we_o   <= 1'b0;
+						stage_addr_o <= 25'd512 + stage_offset +
+						                {8'd0, block_word, 1'b0};
+						state        <= S_APPLY_RD_W;
+					end
 				end
 
-				S_LOAD_DRAIN: begin
-					if (!sd_busy_i && !rd_o) begin
-						buf_addr_o <= word_idx;
+				S_APPLY_RD_W: begin
+					if (stage_done_i) begin
+						xfer_data <= stage_rdata_i;
+						state     <= S_APPLY_WR;
+					end
+				end
+
+				S_APPLY_WR: begin
+					if (p2_ready_i) begin
 						p2_req_o   <= 1'b1;
 						p2_we_o    <= 1'b1;
 						p2_addr_o  <= block_base_addr + {8'd0, block_word, 1'b0};
-						p2_wdata_o <= buf_rdata_i;
-						state      <= S_LOAD_DRAIN_W;
+						p2_wdata_o <= xfer_data;
+						state      <= S_APPLY_WR_W;
 					end
 				end
 
-				S_LOAD_DRAIN_W: begin
+				S_APPLY_WR_W: begin
 					if (p2_done_i) begin
-						if (word_idx == 8'd255 || block_word + 16'd1 >= geo_words) begin
-							state <= S_LOAD_NEXT;
-						end else begin
-							word_idx   <= word_idx + 8'd1;
-							block_word <= block_word + 16'd1;
-							buf_addr_o <= word_idx + 8'd1;
-							state      <= S_LOAD_DRAIN;
-						end
-					end
-				end
+						if (block_word + 16'd1 >= geo_words) begin
+							stage_offset <= stage_offset + {9'd0, geo_words, 1'b0};
 
-				S_LOAD_NEXT: begin
-					lba_o <= lba_o + 23'd1;
-
-					if (block_word + 16'd1 >= geo_words) begin
-						if (geo_block == 6'd63) begin
-							if (geo_die) begin
-								state <= S_FINISH;
+							if (geo_block == 6'd63) begin
+								if (geo_die) state <= S_FINISH;
+								else begin
+									geo_die   <= 1'b1;
+									geo_block <= 6'd0;
+									state     <= S_APPLY_SCAN;
+								end
 							end else begin
-								geo_die   <= 1'b1;
-								geo_block <= 6'd0;
-								state     <= S_LOAD_SCAN;
+								geo_block <= geo_block + 6'd1;
+								state     <= S_APPLY_SCAN;
 							end
 						end else begin
-							geo_block <= geo_block + 6'd1;
-							state     <= S_LOAD_SCAN;
+							block_word <= block_word + 16'd1;
+							state      <= S_APPLY_RD;
 						end
-					end else begin
-						block_word <= block_word + 16'd1;
-						state      <= S_LOAD_SECTOR;
 					end
 				end
 
 				S_FINISH: begin
-					pause_req_o <= 1'b0;
 					boot_hold_o <= 1'b0;
 					busy_o      <= 1'b0;
+					quiet       <= 20'd0;
 					state       <= S_IDLE;
 				end
 
@@ -501,7 +487,7 @@ module ngpc_cart_save
 		end
 	end
 
-	wire unused_ok = &{1'b0, sd_err_i, cart_bytes_i, 1'b0};
+	wire unused_ok = &{1'b0, STAGE_BYTES, 1'b0};
 
 endmodule
 
