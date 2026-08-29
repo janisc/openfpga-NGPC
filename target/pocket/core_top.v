@@ -396,9 +396,9 @@ module core_top (
 
   wire        dataslot_allcomplete;
 
-  // 8,416 words of internals at 8 bytes each, plus the three memory regions.
-  // Cartridge flash is deliberately NOT in the blob; ngpc_savestate_bridge
-  // explains where it goes instead and why the ordering works.
+  // 8,416 words of internals at 8 bytes each, plus the three memory regions,
+  // plus (since blob layout 2) the embedded cart image: one .sav exactly,
+  // at word 8424, so a savestate alone reconstructs machine AND flash.
   wire        savestate_supported = 1;
   wire [31:0] savestate_addr = 32'h40000000;
   // What the engine actually emits, counted the way savestates.sv counts it.
@@ -419,7 +419,9 @@ module core_top (
   // the identity block ngpc_savestate_bridge stamps at words 8420-8423: magic,
   // cartridge CRC32, layout version, inverted CRC. A load checks it before the
   // engine starts, so a state from a different cartridge is rejected cleanly.
-  wire [31:0] savestate_size = 32'd33696;   // 8424 words: 8418 state + pad + identity
+  // 8424 words of engine state + identity, then 16,256 words of cart image
+  // (0xFE00 bytes -- the .sav slot size, header and payload).
+  wire [31:0] savestate_size = 32'd98720;   // 24,680 words
   wire [31:0] savestate_maxloadsize = savestate_size + 32'h1000;
 
   wire        savestate_start;
@@ -656,9 +658,9 @@ module core_top (
       .diag_beats_o(stage_diag_beats),
       .diag_drops_o(stage_diag_drops),
 
-      .eng_req_i  (stage_req),
-      .eng_we_i   (stage_we),
-      .eng_addr_i (stage_addr),
+      .eng_req_i  (sc_rd_active ? sc_rd_req : stage_req),
+      .eng_we_i   (sc_rd_active ? 1'b0 : stage_we),
+      .eng_addr_i (sc_rd_active ? sc_rd_addr : stage_addr),
       .eng_wdata_i(stage_wdata),
       .eng_ready_o(stage_ready),
       .eng_done_o (stage_done),
@@ -802,9 +804,10 @@ module core_top (
 
   // The save slot's writes, demuxed off the same stream. The [24:0] slice is
   // the byte offset within the slot, since bit 25 is the region select.
-  assign stage_host_wr      = bios_wr_raw && ld_is_save;
-  assign stage_host_wr_addr = {3'd0, bios_addr_raw[24:0]};
-  assign stage_host_wr_data = bios_data_raw;
+  assign stage_host_wr      = (bios_wr_raw && ld_is_save) || sc_host_wr;
+  assign stage_host_wr_addr = sc_host_wr ? {3'd0, sc_host_addr}
+                                         : {3'd0, bios_addr_raw[24:0]};
+  assign stage_host_wr_data = sc_host_wr ? sc_host_data : bios_data_raw;
 
   // ----------------------------------------------------------------------
   //  Controls
@@ -888,6 +891,54 @@ module core_top (
   wire  [7:0] bus_out_be;
   wire        bus_out_done;
 
+  // The state-cart copier: staging <-> the blob's cart section. Capture
+  // borrows the cart-save engine's staging read port (sc_rd_active muxes
+  // it, only ever while the stager is parked); restore rides the delivery
+  // skid and then re-arms the boot apply.
+  wire        cs_save_req, cs_save_done, cs_load_req, cs_load_done;
+  wire        cs_img_wr;
+  wire [13:0] cs_img_addr, cs_img_rd_addr;
+  wire [31:0] cs_img_data, cs_img_rd_data;
+  wire        sc_rd_req, sc_rd_active, sc_draining;
+  wire [24:0] sc_rd_addr;
+  wire        sc_host_wr;
+  wire [24:0] sc_host_addr;
+  wire [15:0] sc_host_data;
+  wire        mc_stage_current, mc_save_busy;
+  wire        mc_state_apply, mc_capture_hold;
+
+  ngpc_state_cart state_cart (
+      .clk  (clk_sys),
+      .reset(reset_in),
+
+      .cart_save_req   (cs_save_req),
+      .cart_save_done  (cs_save_done),
+      .cart_img_wr     (cs_img_wr),
+      .cart_img_addr   (cs_img_addr),
+      .cart_img_data   (cs_img_data),
+      .cart_load_req   (cs_load_req),
+      .cart_load_done  (cs_load_done),
+      .cart_img_rd_addr(cs_img_rd_addr),
+      .cart_img_rd_data(cs_img_rd_data),
+
+      .sc_rd_req   (sc_rd_req),
+      .sc_rd_addr  (sc_rd_addr),
+      .sc_rd_ready (stage_ready),
+      .sc_rd_done  (stage_done),
+      .sc_rd_data  (stage_rdata),
+      .sc_rd_active(sc_rd_active),
+      .draining_o  (sc_draining),
+
+      .sc_host_wr  (sc_host_wr),
+      .sc_host_addr(sc_host_addr),
+      .sc_host_data(sc_host_data),
+
+      .stage_current_i(mc_stage_current),
+      .state_apply_o  (mc_state_apply),
+      .apply_busy_i   (mc_save_busy),
+      .hold_o         (mc_capture_hold)
+  );
+
   ngpc_savestate_bridge savestate_bridge (
       .clk_sys(clk_sys),
       .clk_74a(clk_74a),
@@ -916,6 +967,16 @@ module core_top (
       .ss_busy(ss_busy),
       .ss_loading(ss_loading),
       .cart_crc32(ss_cart_crc32),
+
+      .cart_save_req   (cs_save_req),
+      .cart_save_done  (cs_save_done),
+      .cart_img_wr     (cs_img_wr),
+      .cart_img_addr   (cs_img_addr),
+      .cart_img_data   (cs_img_data),
+      .cart_load_req   (cs_load_req),
+      .cart_load_done  (cs_load_done),
+      .cart_img_rd_addr(cs_img_rd_addr),
+      .cart_img_rd_data(cs_img_rd_data),
 
       .bus_out_Din (bus_out_Din),
       .bus_out_Dout(bus_out_Dout),
@@ -994,7 +1055,11 @@ module core_top (
       .stage_ready(stage_ready),
       .stage_done (stage_done),
       .stage_rdata(stage_rdata),
-      .host_busy  (host_busy),
+      .host_busy  (host_busy || sc_draining),
+      .state_apply     (mc_state_apply),
+      .capture_hold    (mc_capture_hold),
+      .stage_current   (mc_stage_current),
+      .save_busy_state (mc_save_busy),
       .slots_settled(slots_settled),
       .stage_diag_beats(stage_diag_beats),
       .stage_diag_drops(stage_diag_drops),

@@ -86,6 +86,10 @@ module ngpc_machine
 	input  wire        stage_done,
 	input  wire [15:0] stage_rdata,
 	input  wire        host_busy,        // APF is moving the slot
+	input  wire        state_apply,      // savestate restore: apply staged image
+	input  wire        capture_hold,     // savestate capture: hold the pause
+	output wire        stage_current,    // stager parked, image current
+	output wire        save_busy_state,  // cart-save engine busy (apply observer)
 	input  wire        slots_settled,    // no loader region written for ~500 ms
 	input  wire [15:0] stage_diag_beats,
 	input  wire [15:0] stage_diag_drops,
@@ -629,6 +633,8 @@ module ngpc_machine
 		.die_busy_i      (cart_die_busy),
 
 		.host_busy_i     (host_busy),
+		.state_apply_i   (state_apply),
+		.stage_current_o (stage_current),
 		.slots_settled_i (slots_settled),
 		.diag_beats_i    (stage_diag_beats),
 		.diag_drops_i    (stage_diag_drops),
@@ -654,6 +660,8 @@ module ngpc_machine
 		.stage_done_i    (stage_done),
 		.stage_rdata_i   (stage_rdata)
 	);
+
+	assign save_busy_state = save_busy;
 
 	//////////////////////////// Savestates //////////////////////////////////
 	//
@@ -880,7 +888,7 @@ module ngpc_machine
 		.ss_mem_rdata         (ss_mem_rdata),
 		.loading_savestate    (eng_loading),
 
-		.pause_req            (seed_pause_req | eng_pause_req),
+		.pause_req            (seed_pause_req | eng_pause_req | capture_hold),
 		.pause_ready          (pause_ready)
 	);
 
