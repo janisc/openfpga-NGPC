@@ -335,7 +335,6 @@ module core_top (
   reg [1:0] opt_system = 2'd0;      // status[2:1]  0 NGPC, 1 Auto, 2 NGP
   reg       opt_language_jp = 0;    // status[3]
   reg [2:0] opt_palette = 3'd0;     // status[16:14]
-  reg       opt_auto_power = 1;     // status[18]
 
 
   // Cartridge saves. The two actions are toggles rather than levels: APF
@@ -353,7 +352,6 @@ module core_top (
         32'h100: opt_system       <= bridge_wr_data[1:0];
         32'h104: opt_language_jp  <= bridge_wr_data[0];
         32'h108: opt_palette      <= bridge_wr_data[2:0];
-        32'h110: opt_auto_power   <= bridge_wr_data[0];
       endcase
     end
   end
@@ -363,13 +361,12 @@ module core_top (
   wire [1:0] opt_system_s;
   wire       opt_language_jp_s;
   wire [2:0] opt_palette_s;
-  wire       opt_auto_power_s;
 
   synch_3 #(
-      .WIDTH(7)
+      .WIDTH(6)
   ) settings_sync (
-      {opt_system, opt_language_jp, opt_palette, opt_auto_power},
-      {opt_system_s, opt_language_jp_s, opt_palette_s, opt_auto_power_s},
+      {opt_system, opt_language_jp, opt_palette},
+      {opt_system_s, opt_language_jp_s, opt_palette_s},
       clk_sys
   );
 
@@ -1016,7 +1013,9 @@ module core_top (
       .opt_palette     (opt_palette_s),
       .opt_skip_anim   (1'b0),
       .opt_use_host_rtc(apf_rtc_ready),
-      .opt_auto_power  (opt_auto_power_s),
+      // Always on: with it off the machine sits in standby waiting for a
+      // power button the Pocket does not meaningfully have.
+      .opt_auto_power  (1'b1),
       .opt_lcd_response(1'b0),
 
       .bios_downloading(bios_downloading),

@@ -85,17 +85,6 @@
             "name": "Classic"
           }
         ]
-      },
-      {
-        "name": "Automatic Power On",
-        "id": 24,
-        "type": "check",
-        "enabled": true,
-        "persist": true,
-        "writeonly": true,
-        "address": "0x110",
-        "defaultval": 1,
-        "value": 1
       }
     ]
   }
