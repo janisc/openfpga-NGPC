@@ -114,6 +114,8 @@ module tb_cart_save;
 		.block1_i       (6'd0),
 		.die_busy_i     (die_busy),
 		.host_busy_i    (host_busy),
+		.state_apply_i   (1'b0),
+		.stage_current_o (),
 		.slots_settled_i(slots_settled),
 		.boot_hold_o    (boot_hold),
 		.busy_o         (busy),

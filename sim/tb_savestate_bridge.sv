@@ -8,39 +8,41 @@
 // bench in seconds. From now on the transport does not change unless this
 // bench passes.
 //
+// LAYOUT 2: the blob carries an embedded cart image (a full .sav, header and
+// payload) at CART_BASE, so a savestate alone reconstructs both machine and
+// cartridge flash. The bridge hands the section to a copier over a small
+// port; here the copier is MODELED (like the APF bus is) -- the real
+// ngpc_state_cart gets its own bench. The model also polices ordering: on a
+// load the cart section must be drained (and by implication applied) BEFORE
+// the engine is allowed to restore the machine.
+//
 // WHAT IS REAL AND WHAT IS MODELED.
 //   Real: ngpc_savestate_bridge.sv (the DUT) and upstream savestates.sv (the
 //   engine), compiled unmodified.
 //   Modeled: the machine behind the engine (internals bus + three byte
-//   memories with known patterns), and APF's bridge bus.
+//   memories with known patterns), APF's bridge bus, and the cart copier.
 //
 // THE APF BUS MODEL is scripted from measurements, not from documentation:
 //   - one bridge_wr strobe per 32-bit word, gaps between words
 //   - THE ADDRESS LAGS THE DATA BY ONE STROBE on write bursts ("uniform lag"):
 //     strobe k carries data word k with the ADDRESS of word k-1, and the
-//     first strobe carries the pre-burst address. Measured twice on hardware:
-//     a probe capturing "data seen while address==0" recorded file word 1,
-//     and arrival pointers recorded file words 1,2 at slots 0,1.
-//   - mid-burst stalls of milliseconds (SD streaming), measured via a
-//     pointer-restart corruption they triggered
-//   - reads: address presented, data sampled a few cycles later (the DUT's
-//     registered RAM read needs >=2 clk_74a; APF is far slower than that)
-//   The bench can also drive a NO-LAG bus (addr+data aligned) so a fix can be
-//   judged against both readings of the world.
+//     first strobe carries the pre-burst address. Measured twice on hardware.
+//   - mid-burst stalls of milliseconds (SD streaming)
+//   - reads: address presented, data sampled a few cycles later
 //
 // SCENARIOS
-//   S1  save -> readout -> corrupt machine -> write back (lagged bus) -> load
-//       -> machine must equal the original, byte for byte.  Before the
-//       header-recognition fix this reproduced the hardware "Loading failed"
-//       (first word rejected by the nibble gate, blob[0]=file[1]); it now
-//       passes, and stays here as the regression for exactly that bug.
+//   S1  save -> readout -> corrupt -> write back (lagged bus) -> load ->
+//       machine AND cart image byte-exact.
 //   S2  same with a foreign-region write immediately before the burst.
 //   S3  same with a ~2 ms stall in the middle of the write burst.
-//   S4  same on a NO-LAG bus (documents behavior if the lag model is wrong).
-//   S5  save readout with duplicate and repeated reads (APF re-reads words).
+//   S4  same on a NO-LAG bus.
+//   S5  save readout with duplicate reads (APF re-reads words).
+//   S6  cross-cartridge load rejected before the engine or copier touch
+//       anything.
+//   S7  old-layout state (ID_LAYOUT=1) rejected cleanly: no engine start,
+//       no cart handoff, machine untouched. The format-break honesty test.
 //
-// PASS = every scenario's verdict matches EXPECT_* below -- currently all
-// five expect a working, byte-exact load.
+// PASS = every scenario's verdict matches EXPECT_* below.
 
 `timescale 1ns / 1ps
 `default_nettype none
@@ -60,7 +62,9 @@ module tb;
 	localparam integer SZ0     = 12288;
 	localparam integer SZ1     = 4096;
 	localparam integer SZ2     = 16384;
-	localparam integer WORDS   = 8424;    // 8418 state + 2 pad + 4 probe words
+	localparam integer CARTB   = 8424;    // cart section base, words
+	localparam integer CARTW   = 16256;   // 0xFE00 bytes: the .sav slot size
+	localparam integer WORDS   = CARTB + CARTW;   // 24,680 words = 98,720 B
 	localparam [31:0]  BLOBBASE = 32'h40000000;
 
 	// ---- the machine model -------------------------------------------------
@@ -69,6 +73,11 @@ module tb;
 	reg [7:0]  mem0 [0:SZ0-1];  reg [7:0] mem0_gold [0:SZ0-1];
 	reg [7:0]  mem1 [0:SZ1-1];  reg [7:0] mem1_gold [0:SZ1-1];
 	reg [7:0]  mem2 [0:SZ2-1];  reg [7:0] mem2_gold [0:SZ2-1];
+
+	// ---- the cart image model ----------------------------------------------
+	reg [31:0] sav_img  [0:CARTW-1];     // what the copier would capture
+	reg [31:0] sav_gold [0:CARTW-1];
+	reg [31:0] sav_rd   [0:CARTW-1];     // what the copier drained on load
 
 	// ---- engine <-> machine wiring ----------------------------------------
 	wire [63:0] eng_bus_din;
@@ -184,6 +193,15 @@ module tb;
 	wire start_ack, start_busy, start_ok, start_err;
 	wire load_ack,  load_busy,  load_ok,  load_err;
 
+	// ---- copier port -------------------------------------------------------
+	wire        cart_save_req, cart_load_req;
+	reg         cart_save_done = 0, cart_load_done = 0;
+	reg         cart_img_wr = 0;
+	reg  [13:0] cart_img_addr = 0;
+	reg  [31:0] cart_img_data = 0;
+	reg  [13:0] cart_img_rd_addr = 0;
+	wire [31:0] cart_img_rd_data;
+
 	ngpc_savestate_bridge dut (
 		.clk_sys(clk_sys), .clk_74a(clk_74a), .reset(reset),
 
@@ -207,11 +225,74 @@ module tb;
 		.ss_busy(ss_busy), .ss_loading(ss_loading),
 		.cart_crc32(tb_cart_crc),
 
+		.cart_save_req   (cart_save_req),
+		.cart_save_done  (cart_save_done),
+		.cart_img_wr     (cart_img_wr),
+		.cart_img_addr   (cart_img_addr),
+		.cart_img_data   (cart_img_data),
+		.cart_load_req   (cart_load_req),
+		.cart_load_done  (cart_load_done),
+		.cart_img_rd_addr(cart_img_rd_addr),
+		.cart_img_rd_data(cart_img_rd_data),
+
 		.bus_out_Din(bus_out_Din), .bus_out_Dout(bus_out_Dout),
 		.bus_out_Adr(bus_out_Adr), .bus_out_rnw(bus_out_rnw),
 		.bus_out_ena(bus_out_ena), .bus_out_be(bus_out_be),
 		.bus_out_done(bus_out_done)
 	);
+
+	// ---- the copier model --------------------------------------------------
+	// Responds to the DUT's pulses the way ngpc_state_cart will: on save it
+	// streams sav_img[] in with gaps; on load it drains the section into
+	// sav_rd[] before signalling done. Also the ordering monitor: the engine
+	// must not start restoring while the drain (and by implication the flash
+	// apply) is still running.
+	reg        copier_draining = 0;
+	reg        order_violation = 0;
+	reg        saw_load_req = 0;
+	integer    ci;
+
+	always @(posedge clk_sys) begin
+		if (ss_load && copier_draining) begin
+			order_violation <= 1;
+		end
+		if (cart_load_req) begin
+			saw_load_req <= 1;
+		end
+	end
+
+	always @(posedge clk_sys) begin : copier
+		cart_save_done <= 0;
+		cart_load_done <= 0;
+		cart_img_wr    <= 0;
+		if (cart_save_req) begin
+			// stream the image in, one word per 3 cycles
+			for (ci = 0; ci < CARTW; ci = ci + 1) begin
+				@(posedge clk_sys);
+				cart_img_wr   <= 1;
+				cart_img_addr <= ci[13:0];
+				cart_img_data <= sav_img[ci];
+				@(posedge clk_sys);
+				cart_img_wr <= 0;
+				@(posedge clk_sys);
+			end
+			@(posedge clk_sys);
+			cart_img_wr    <= 0;
+			cart_save_done <= 1;
+		end
+		if (cart_load_req) begin
+			copier_draining <= 1;
+			for (ci = 0; ci < CARTW; ci = ci + 1) begin
+				@(posedge clk_sys);
+				cart_img_rd_addr <= ci[13:0];
+				repeat (3) @(posedge clk_sys);
+				sav_rd[ci] = cart_img_rd_data;
+			end
+			@(posedge clk_sys);
+			copier_draining <= 0;
+			cart_load_done  <= 1;
+		end
+	end
 
 	// ---- helpers -----------------------------------------------------------
 	reg [31:0] image [0:WORDS-1];
@@ -227,6 +308,16 @@ module tb;
 			for (i = 0; i < SZ0; i = i + 1) begin mem0[i] = i[7:0] ^ 8'hC3; mem0_gold[i] = mem0[i]; end
 			for (i = 0; i < SZ1; i = i + 1) begin mem1[i] = (i[7:0] * 7) + 8'h11; mem1_gold[i] = mem1[i]; end
 			for (i = 0; i < SZ2; i = i + 1) begin mem2[i] = i[7:0] + i[11:4]; mem2_gold[i] = mem2[i]; end
+			// a recognizable "sav": magic-ish first words, hashy payload
+			sav_img[0] = 32'h4E475043;   // NGPC
+			sav_img[1] = 32'h53415632;   // SAV2
+			for (i = 2; i < CARTW; i = i + 1) begin
+				sav_img[i] = {i[15:0], ~i[15:0]} ^ 32'h5A5A00FF;
+			end
+			for (i = 0; i < CARTW; i = i + 1) begin
+				sav_gold[i] = sav_img[i];
+				sav_rd[i]   = 32'hCCCCCCCC;
+			end
 		end
 	endtask
 
@@ -237,6 +328,10 @@ module tb;
 			for (i = 0; i < SZ0; i = i + 1) mem0[i] = 8'hFF;
 			for (i = 0; i < SZ1; i = i + 1) mem1[i] = 8'hFF;
 			for (i = 0; i < SZ2; i = i + 1) mem2[i] = 8'hFF;
+			for (i = 0; i < CARTW; i = i + 1) begin
+				sav_img[i] = 32'hFFFFFFFF;   // capture source gone too
+				sav_rd[i]  = 32'hCCCCCCCC;
+			end
 		end
 	endtask
 
@@ -255,6 +350,18 @@ module tb;
 		end
 	endtask
 
+	task cart_check(output integer errs);
+		integer i;
+		begin
+			errs = 0;
+			for (i = 0; i < CARTW; i = i + 1)
+				if (sav_rd[i] !== sav_gold[i]) begin
+					if (errs < 4) $display("    sav_rd[%0d] %h != %h", i, sav_rd[i], sav_gold[i]);
+					errs = errs + 1;
+				end
+		end
+	endtask
+
 	// APF host command: request a save, wait for ok, read the region out.
 	task apf_save(input integer read_quirks);
 		integer k, r;
@@ -269,7 +376,7 @@ module tb;
 				repeat (3) @(posedge clk_74a);
 				image[k] = bridge_rd_data;
 				bridge_rd <= 0;
-				if (read_quirks && (k % 97 == 0)) begin
+				if (read_quirks && (k % 997 == 0)) begin
 					// APF re-reads a word it already took
 					repeat (2) @(posedge clk_74a);
 					r = bridge_rd_data;
@@ -295,9 +402,6 @@ module tb;
 				@(posedge clk_74a); bridge_wr <= 0;
 				repeat (6) @(posedge clk_74a);
 			end
-			// settle: the stale address a lagged first strobe carries is whatever
-			// the bus held before the burst -- model it explicitly rather than
-			// racing the previous task's trailing assignment
 			@(posedge clk_74a);
 			for (k = 0; k < WORDS; k = k + 1) begin
 				if (k == stall_at && stall_len > 0) repeat (stall_len) @(posedge clk_74a);
@@ -329,26 +433,41 @@ module tb;
 	              input integer stall_at, input integer stall_len,
 	              input integer foreign_first, input integer read_quirks,
 	              input integer expect_ok);
-		integer ok, errs;
+		integer ok, errs, cerrs, k;
 		begin
 			$display("== %0s", name);
 			machine_init;
+			order_violation = 0;
 			apf_save(read_quirks);
 			if (image[1] !== 32'hE0200000)
 				$display("    !! image word1 = %h, expected E0200000 (bswapped 8416)", image[1]);
 			if (image[8420] !== 32'h4E475053 || image[8421] !== tb_cart_crc
-			    || image[8423] !== ~tb_cart_crc)
+			    || image[8422] !== 32'd2 || image[8423] !== ~tb_cart_crc)
 				$display("    !! identity tail wrong: %h %h %h %h",
 				         image[8420], image[8421], image[8422], image[8423]);
+			errs = 0;
+			for (k = 0; k < CARTW; k = k + 1)
+				if (image[CARTB+k] !== sav_gold[k]) errs = errs + 1;
+			if (errs != 0) begin
+				$display("    !! cart section in readout: %0d words wrong (e.g. [%0d]=%h want %h)",
+				         errs, CARTB, image[CARTB], sav_gold[0]);
+				errors = errors + 1;
+			end
 			machine_corrupt;
 			apf_write_burst(lag, gap, stall_at, stall_len, foreign_first);
 			apf_load(ok);
 			if (ok) begin
 				machine_check(errs);
-				if (errs == 0 && expect_ok) $display("   PASS (loaded, machine byte-exact)");
-				else if (errs == 0)         $display("   UNEXPECTED PASS (expected failure)");
+				cart_check(cerrs);
+				if (order_violation) begin
+					$display("   FAIL: engine restored before the cart drain finished");
+					errors = errors + 1;
+				end else if (errs == 0 && cerrs == 0 && expect_ok)
+					$display("   PASS (machine and cart image byte-exact, cart first)");
+				else if (errs == 0 && cerrs == 0)
+					$display("   UNEXPECTED PASS (expected failure)");
 				else begin
-					$display("   FAIL: load ok but %0d bytes wrong", errs);
+					$display("   FAIL: load ok but machine %0d / cart %0d wrong", errs, cerrs);
 					errors = errors + 1;
 				end
 			end else begin
@@ -374,16 +493,17 @@ module tb;
 		//        name                                  lag gap stall@  len   foreign quirks expect_ok
 		scenario("S1 lagged bus (measured APF model)  ", 1,  8,  -1,     0,     0,      0,     1);
 		scenario("S2 lagged + foreign pre-burst write ", 1,  8,  -1,     0,     1,      0,     1);
-		scenario("S3 lagged + 2ms mid-burst SD stall  ", 1,  8,  4211, 150000,  0,      0,     1);
+		scenario("S3 lagged + 2ms mid-burst SD stall  ", 1,  8,  9211, 150000,  0,      0,     1);
 		scenario("S4 clean bus (no lag)               ", 0,  8,  -1,     0,     0,      0,     1);
 		scenario("S5 clean + read quirks              ", 0,  4,  -1,     0,     0,      1,     1);
 
 		// S6: the state was taken on one cartridge, the load happens on another.
-		// The check must reject BEFORE the engine touches the machine.
+		// The check must reject BEFORE the engine or the copier touch anything.
 		begin : s6
 			integer ok, i, still;
 			$display("== S6 cross-cartridge load rejected      ");
 			machine_init;
+			saw_load_req = 0;
 			apf_save(0);
 			machine_corrupt;
 			apf_write_burst(1, 8, -1, 0, 0);
@@ -398,7 +518,41 @@ module tb;
 				for (i = 0; i < 64; i = i + 1)
 					if (mem0[i] !== 8'hFF) still = 0;
 				if (internals[0] !== 64'hDEADBEEF_DEADBEEF) still = 0;
-				if (still) $display("   PASS (rejected, machine untouched)");
+				if (saw_load_req) begin
+					$display("   FAIL: rejected but the cart copier was started");
+					errors = errors + 1;
+				end else if (still) $display("   PASS (rejected, machine untouched)");
+				else begin
+					$display("   FAIL: rejected but machine was modified");
+					errors = errors + 1;
+				end
+			end
+		end
+
+		// S7: a state from the old layout (ID_LAYOUT=1, machine-only) must be
+		// rejected cleanly -- no engine start, no cart handoff.
+		begin : s7
+			integer ok, i, still;
+			$display("== S7 old-layout state rejected          ");
+			machine_init;
+			saw_load_req = 0;
+			apf_save(0);
+			image[8422] = 32'd1;                // forge the previous layout id
+			machine_corrupt;
+			apf_write_burst(1, 8, -1, 0, 0);
+			apf_load(ok);
+			if (ok) begin
+				$display("   FAIL: old-layout state was accepted");
+				errors = errors + 1;
+			end else begin
+				still = 1;
+				for (i = 0; i < 64; i = i + 1)
+					if (mem0[i] !== 8'hFF) still = 0;
+				if (internals[0] !== 64'hDEADBEEF_DEADBEEF) still = 0;
+				if (saw_load_req) begin
+					$display("   FAIL: rejected but the cart copier was started");
+					errors = errors + 1;
+				end else if (still) $display("   PASS (rejected, machine untouched, copier idle)");
 				else begin
 					$display("   FAIL: rejected but machine was modified");
 					errors = errors + 1;
@@ -413,7 +567,7 @@ module tb;
 
 	// global watchdog
 	initial begin
-		#200_000_000;   // 200 ms of sim time -- six scenarios at ~15 ms each
+		#900_000_000;   // 900 ms of sim time -- seven scenarios on a 3x blob
 		$display("== WATCHDOG TIMEOUT");
 		$finish;
 	end

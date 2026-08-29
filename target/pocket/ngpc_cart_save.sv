@@ -86,6 +86,11 @@ module ngpc_cart_save #(
 	// background staging stands aside.
 	input  wire        host_busy_i,
 
+	// Savestate restore: the copier has rewritten staging with the state's
+	// embedded image; re-arm the boot apply for it. Same validation, same
+	// hold, same bitmap restore as at power-on.
+	input  wire        state_apply_i,
+
 	// APF has delivered every data slot: no loader region has seen a bridge
 	// write for a long settle window. The apply MUST wait for this. Slots
 	// stream in id order, so at cartridge-ready the save slot has not even
@@ -110,6 +115,7 @@ module ngpc_cart_save #(
 	// present -> the slot flushes 0x40200 bytes at shutdown, absent -> zero
 	// bytes and no file is created for games that never save.
 	output wire        save_present_o,
+	output wire        stage_current_o,   // idle with nothing left to stage
 
 	// ---- Cartridge SDRAM, background port ----------------------------------
 	output reg         p2_req_o,
@@ -148,6 +154,11 @@ module ngpc_cart_save #(
 	reg [63:0] pending0, pending1;
 
 	wire pending_any = |pending0 || |pending1;
+
+	// The staged image is complete and current: nothing pending and the
+	// walker parked. The savestate capture waits on this with the machine
+	// paused, so it converges instead of chasing.
+	assign stage_current_o = (state == S_IDLE) && !pending_any && cart_ready_i;
 
 	assign save_present_o = |dirty0 || |dirty1;
 
@@ -297,6 +308,10 @@ module ngpc_cart_save #(
 			apply_pending <= 1'b1;
 			apply_ok      <= 1'b0;
 		end else begin
+			if (state_apply_i) begin
+				apply_pending <= 1'b1;
+			end
+
 			case (state)
 				S_IDLE: begin
 					if (cart_ready_i && apply_pending) begin
