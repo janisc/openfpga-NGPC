@@ -1,0 +1,10 @@
+Warning (10273): Verilog HDL warning at psram.sv(241): extended using "x" or "z" File: C:/FPGA/openfpga-NGPC/target/pocket/psram.sv Line: 241
+Info (10281): Verilog HDL Declaration information at tv80_alu.v(75): object "AddSub1" differs only in case from object "addsub1" in the same scope File: C:/FPGA/openfpga-NGPC/upstream/rtl/snd/z80/tv80/tv80_alu.v Line: 75
+Info (10281): Verilog HDL Declaration information at tv80_alu.v(65): object "AddSub3" differs only in case from object "addsub3" in the same scope File: C:/FPGA/openfpga-NGPC/upstream/rtl/snd/z80/tv80/tv80_alu.v Line: 65
+Info (10281): Verilog HDL Declaration information at tv80_alu.v(55): object "AddSub4" differs only in case from object "addsub4" in the same scope File: C:/FPGA/openfpga-NGPC/upstream/rtl/snd/z80/tv80/tv80_alu.v Line: 55
+Warning (10273): Verilog HDL warning at tv80_core.v(326): extended using "x" or "z" File: C:/FPGA/openfpga-NGPC/upstream/rtl/snd/z80/tv80/tv80_core.v Line: 326
+Info (10281): Verilog HDL Declaration information at ngp_sio.sv(375): object "RX_DATA" differs only in case from object "rx_data" in the same scope File: C:/FPGA/openfpga-NGPC/upstream/rtl/soc/ngp_sio.sv Line: 375
+Info (10281): Verilog HDL Declaration information at t900_seq.sv(258): object "CLS_REG" differs only in case from object "cls_reg" in the same scope File: C:/FPGA/openfpga-NGPC/upstream/rtl/t900/t900_seq.sv Line: 258
+Info (10281): Verilog HDL Declaration information at sdram.sv(433): object "REFRESH_BLOCK_P0" differs only in case from object "refresh_block_p0" in the same scope File: C:/FPGA/openfpga-NGPC/upstream/rtl/mem/sdram.sv Line: 433
+Info (10281): Verilog HDL Declaration information at sdram.sv(432): object "REFRESH_BLOCK_P1" differs only in case from object "refresh_block_p1" in the same scope File: C:/FPGA/openfpga-NGPC/upstream/rtl/mem/sdram.sv Line: 432
+Info (10281): Verilog HDL Declaration information at sdram.sv(431): object "REFRESH_BLOCK_P2" differs only in case from object "refresh_block_p2" in the same scope File: C:/FPGA/openfpga-NGPC/upstream/rtl/mem/sdram.sv Line: 431

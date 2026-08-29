@@ -22,3 +22,12 @@ sim/*.vvp
 
 # Timing investigation reports
 projects/*.rpt
+
+# Quartus 25.1 A/B workspace
+projects25/
+
+# Source photo (6.5 MB, public domain, canonical at Wikimedia)
+assets/ngpc_photo_pd_evanamos.jpg
+
+# Artwork intermediates stay local; the platform image ships from pkg/
+assets/

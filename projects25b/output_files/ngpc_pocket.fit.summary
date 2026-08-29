@@ -1,0 +1,20 @@
+Fitter Status : Successful - Sat Aug 29 17:29:43 2026
+Quartus Prime Version : 25.1std.0 Build 1129 10/21/2025 SC Lite Edition
+Revision Name : ngpc_pocket
+Top-level Entity Name : apf_top
+Family : Cyclone V
+Device : 5CEBA4F23C8
+Timing Models : Final
+Logic utilization (in ALMs) : 18,104 / 18,480 ( 98 % )
+Total registers : 11210
+Total pins : 224 / 224 ( 100 % )
+Total virtual pins : 0
+Total block memory bits : 2,419,900 / 3,153,920 ( 77 % )
+Total RAM Blocks : 301 / 308 ( 98 % )
+Total DSP Blocks : 0 / 66 ( 0 % )
+Total HSSI RX PCSs : 0
+Total HSSI PMA RX Deserializers : 0
+Total HSSI TX PCSs : 0
+Total HSSI PMA TX Serializers : 0
+Total PLLs : 1 / 4 ( 25 % )
+Total DLLs : 0 / 4 ( 0 % )

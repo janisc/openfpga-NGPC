@@ -1,21 +1,25 @@
 # NGPC for Analogue Pocket
 
-A port of [MiSTer-devel/NGPC_MiSTer](https://github.com/MiSTer-devel/NGPC_MiSTer)
-(Kitrinx / Jamie Blanks) to Analogue Pocket openFPGA.
+**This port was created by AI.** It is a port of [MiSTer-devel/NGPC_MiSTer](https://github.com/MiSTer-devel/NGPC_MiSTer) (Kitrinx / Jamie Blanks).
 
-**Status: feature-complete, pre-release polish.** Running on hardware:
+Running on hardware:
 
 - Color and mono BIOS, auto-selected from the cartridge (System: Auto/Color/Mono)
 - Cartridge flash saves — the real thing: NGP cartridges have no save RAM,
   the game rewrites its own flash, and this core persists exactly the blocks
   a game dirties into a Pocket nonvolatile save slot. It just works; there is
   no save menu.
-- Save states, and with them the Pocket's sleep/wake — a natural fit for a
-  console that was itself designed to be always on. States are named after
-  the game and refuse to load into a different cartridge.
+- Save states that carry the cartridge: a state embeds the game's flash
+  save data, so loading one restores machine AND cartridge together —
+  including rewinding your in-game saves to that moment, which is the
+  point. With them the Pocket's sleep/wake, a natural fit for a console
+  that was itself designed to be always on. States are named after the
+  game and refuse to load into a different cartridge.
 - Display modes, including Analogue's own Neo Geo Pocket screen simulations
-- Real-time clock fed from the Pocket's system clock, plus a birthday setting
-  so the BIOS horoscope reads your actual chart *(in the current fit battle)*
+- Real-time clock fed from the Pocket's system clock: the BIOS calendar,
+  alarm and horoscope run on the actual date and time
+- Reset to BIOS — one menu action to visit the BIOS menu (clock, horoscope)
+  without a cartridge trick; plain Reset returns to the game
 
 The mono Neo Geo Pocket is the same machine with the color video path unused;
 both BIOSes and both cartridge families run.
@@ -23,7 +27,7 @@ both BIOSes and both cartridge families run.
 ## BIOS
 
 Not included, never will be. Place your own dumps at
-`Assets/ngpc/Kitrinx.NGPC/` on the SD card:
+`Assets/ngpc/janisc.NGPC/` on the SD card:
 
 | file | contents |
 |---|---|
@@ -70,9 +74,10 @@ trades away, knowingly:
   honest version of what those buttons did.
 - **A save set is capped at 63 KB of dirty blocks** — no licensed game comes
   anywhere near it (the hungriest known dirties ~32 KB).
-- **Savestates deliberately exclude cartridge flash** — a state restores the
-  machine, the `.sav` restores the cartridge, and the two are independent.
-  MiSTer's 8 MB states capture both at once; ours are 33 KB and instant.
+- **Savestates carry the cartridge delta** — a state embeds the same .sav
+  image the save slot holds, so machine and flash restore as one atomic
+  pair, and loading a state rewinds your in-game saves with it. MiSTer
+  stores 8 MB per state for the same idea; ours are 96 KB.
 
 And a word of expectation management: the design fills 99% of the Pocket's
 FPGA and does not formally close timing at this speed grade — every feature
@@ -109,9 +114,16 @@ quartus_sh --flow compile projects/ngpc_pocket.qpf
 python scripts/package.py --zip
 ```
 
-The design targets a Cyclone V 5CEBA4F23C8 at 99% logic occupancy and does
-not formally close timing at this speed grade; see the commit history on
-`dev` for the measured reality and the disciplines that keep it honest.
+Open `projects/ngpc_pocket.qpf` in Quartus and hit Compile, exactly as on
+MiSTer. Verified with **Quartus Prime Lite 17.1** and **Quartus Prime Lite
+25.1** (free, no license; install with Cyclone V device support). On newer
+Quartus expect a batch of benign warnings about ignored legacy assignments
+-- the modern fitter absorbed those knobs. `package.py` then stages the
+SD-card layout from the bitstream and the JSON.
+
+The design targets a Cyclone V 5CEBA4F23C8 at ~98% logic occupancy and
+does not formally close timing at this speed grade; see the commit history
+on `dev` for the measured reality and the disciplines that keep it honest.
 
 ## Credits
 
@@ -139,5 +151,7 @@ Three layers, each carried where it applies:
   their [EULA](https://www.analogue.link/pocket-eula); this is how all
   published openFPGA cores ship these files.
 
+The platform image derives from a public-domain photograph by Evan-Amos
+([Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Neo-Geo-Pocket-Color-Blue-Left.jpg)).
 BIOS images and game ROMs are copyrighted by their owners and are not part
 of this repository or any release.
