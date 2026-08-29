@@ -144,5 +144,7 @@ Three layers, each carried where it applies:
   their [EULA](https://www.analogue.link/pocket-eula); this is how all
   published openFPGA cores ship these files.
 
+The platform image derives from a public-domain photograph by Evan-Amos
+([Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Neo-Geo-Pocket-Color-Blue-Left.jpg)).
 BIOS images and game ROMs are copyrighted by their owners and are not part
 of this repository or any release.
