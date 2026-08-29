@@ -92,12 +92,22 @@ module data_loader #(
       // .wrfull(),
       // .wrusedw()
   );
+  // Depth raised from the library's 4 to 512. The Pocket's nonvolatile slot
+  // restore arrives in bursts faster than the mem-side drain (~200 ns/entry),
+  // and with overflow checking off a 4-deep FIFO silently discards the
+  // overrun -- measured on hardware as a loaded save with only its first
+  // words intact, and reproduced in sim/tb_stage_host.sv. 512 entries ride
+  // out SD-chunk-sized bursts for three M10K.
   defparam dcfifo_component.clocks_are_synchronized = "FALSE",
-      dcfifo_component.intended_device_family = "Cyclone V", dcfifo_component.lpm_numwords = 4,
+      dcfifo_component.intended_device_family = "Cyclone V", dcfifo_component.lpm_numwords = 512,
       dcfifo_component.lpm_showahead = "OFF", dcfifo_component.lpm_type = "dcfifo",
-      dcfifo_component.lpm_width = FIFO_SIZE, dcfifo_component.lpm_widthu = 2,
+      dcfifo_component.lpm_width = FIFO_SIZE, dcfifo_component.lpm_widthu = 9,
       dcfifo_component.overflow_checking = "OFF", dcfifo_component.rdsync_delaypipe = 5,
-      dcfifo_component.underflow_checking = "OFF", dcfifo_component.use_eab = "OFF",
+      dcfifo_component.underflow_checking = "OFF",
+      // use_eab ON with the 512-entry depth: OFF builds the FIFO from logic
+      // cells, which at 512 x 44 bits is ~22k register bits -- measured as a
+      // 9,000-ALM, 147%-of-device explosion. ON puts it in three M10K.
+      dcfifo_component.use_eab = "ON",
       dcfifo_component.wrsync_delaypipe = 5;
 
   /// APF to Mem clock

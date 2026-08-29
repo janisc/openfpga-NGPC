@@ -43,13 +43,13 @@
         "name": "Save",
         "id": 10,
         "required": false,
-        "parameters": "0x84",
+        "parameters": "0x104",
         "nonvolatile": true,
         "extensions": [
           "sav"
         ],
-        "address": "0x50000000",
-        "size_maximum": "0x40200"
+        "address": "0x12000000",
+        "size_maximum": "0xFE00"
       }
     ]
   }

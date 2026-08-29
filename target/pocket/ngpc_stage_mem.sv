@@ -41,6 +41,16 @@ module ngpc_stage_mem
 
 	output wire        host_busy_o,      // a slot transfer is in progress
 
+	// Ingestion diagnostics, stamped into the staged save's header so every
+	// flushed .sav carries them off the device: how many host write beats
+	// arrived since reset, how many the skid FIFO had to drop, and the
+	// deepest the FIFO ever got. Hardware showed a loaded slot arriving with
+	// only its first words intact -- the burst-overrun signature -- while
+	// simulation is clean at APF's documented pacing; these counters measure
+	// the real bus so the two can be reconciled.
+	output reg  [15:0] diag_beats_o,
+	output reg  [15:0] diag_drops_o,
+
 	// ---- Client B: the save engine ----------------------------------------
 	input  wire        eng_req_i,
 	input  wire        eng_we_i,
@@ -127,6 +137,42 @@ module ngpc_stage_mem
 
 	assign eng_ready_o = !ps_busy && !ps_write_en && !ps_read_en && !host_pending;
 
+	// ---- Host write skid FIFO ----------------------------------------------
+	//
+	// The PSRAM serves a beat in ~360 ns; APF's slot streaming is documented
+	// at ~1 us per 32-bit word, which the single pending register handled --
+	// and the nonvolatile restore measured FASTER than that on hardware,
+	// overrunning it. 512 beats of skid (one M10K) rides out a 1 KB burst;
+	// anything that still will not fit is counted, not silently lost.
+	// no_rw_check for the same reason as the savestate blob: the two ports
+	// never touch one entry at the same time (fill >= 1 guards the read), and
+	// without the attribute Quartus builds 512x38 bits out of registers --
+	// measured as a 9,000-ALM, 147%-of-device explosion.
+	(* ramstyle = "no_rw_check, M10K" *)
+	reg  [37:0] skid [0:511];
+	reg  [9:0]  skid_wp, skid_rp;
+	wire [9:0]  skid_fill = skid_wp - skid_rp;
+	wire        skid_empty = (skid_wp == skid_rp);
+	wire        skid_full  = (skid_fill == 10'd511);
+
+	always @(posedge clk) begin
+		if (reset) begin
+			skid_wp <= 10'd0;
+			diag_beats_o <= 16'd0;
+			diag_drops_o <= 16'd0;
+		end else begin
+			if (host_wr_i) begin
+				diag_beats_o <= diag_beats_o + 16'd1;
+				if (skid_full) begin
+					diag_drops_o <= diag_drops_o + 16'd1;
+				end else begin
+					skid[skid_wp[8:0]] <= {host_wr_addr_i[22:1], host_wr_data_i};
+					skid_wp <= skid_wp + 10'd1;
+				end
+			end
+		end
+	end
+
 	reg        host_pending;
 	reg        host_pending_rd;
 	reg [21:0] host_pending_addr;
@@ -143,13 +189,15 @@ module ngpc_stage_mem
 		if (reset) begin
 			host_pending <= 1'b0;
 			eng_active   <= 1'b0;
+			skid_rp      <= 10'd0;
 		end else begin
-			// Latch a host access; it is served ahead of the engine.
-			if (host_wr_i) begin
+			// Drain the write skid into the pending slot; reads keep their
+			// direct path (the flush is sedately paced and proven on hardware).
+			if (!host_pending && !skid_empty) begin
 				host_pending      <= 1'b1;
 				host_pending_rd   <= 1'b0;
-				host_pending_addr <= host_wr_word;
-				host_pending_data <= host_wr_data_i;
+				{host_pending_addr, host_pending_data} <= skid[skid_rp[8:0]];
+				skid_rp           <= skid_rp + 10'd1;
 			end else if (host_rd_i) begin
 				host_pending      <= 1'b1;
 				host_pending_rd   <= 1'b1;
