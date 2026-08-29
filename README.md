@@ -1,7 +1,14 @@
 # NGPC for Analogue Pocket
 
-A port of [MiSTer-devel/NGPC_MiSTer](https://github.com/MiSTer-devel/NGPC_MiSTer)
-(Kitrinx / Jamie Blanks) to Analogue Pocket openFPGA.
+**This port was created by AI.** The porting work -- the savestate
+transport, the cart save engine, the RTC, the fit battles -- was written
+by Claude (Anthropic), with project direction, hardware testing and
+every judgment call by janisc, who is happy to say none of it would
+exist otherwise. It is a port of
+[MiSTer-devel/NGPC_MiSTer](https://github.com/MiSTer-devel/NGPC_MiSTer)
+(Kitrinx / Jamie Blanks), whose core -- the machine itself, the
+TLCS-900/H, the K2GE -- is entirely her work and the reason any of
+this runs.
 
 **Status: feature-complete, pre-release polish.** Running on hardware:
 
