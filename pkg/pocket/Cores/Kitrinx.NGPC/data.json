@@ -1,0 +1,56 @@
+{
+  "data": {
+    "magic": "APF_VER_1",
+    "data_slots": [
+      {
+        "name": "Color BIOS",
+        "id": 0,
+        "required": false,
+        "parameters": "0x3",
+        "filename": "boot0.rom",
+        "extensions": [
+          "rom"
+        ],
+        "size_maximum": "0x10000",
+        "address": "0x10000000"
+      },
+      {
+        "name": "Mono BIOS",
+        "id": 1,
+        "required": false,
+        "parameters": "0x3",
+        "filename": "boot1.rom",
+        "extensions": [
+          "rom"
+        ],
+        "size_maximum": "0x10000",
+        "address": "0x20000000"
+      },
+      {
+        "name": "Cartridge",
+        "id": 2,
+        "required": false,
+        "parameters": "0x109",
+        "extensions": [
+          "ngp",
+          "ngc",
+          "npc"
+        ],
+        "address": "0x30000000",
+        "size_maximum": "0x400000"
+      },
+      {
+        "name": "Save",
+        "id": 10,
+        "required": false,
+        "parameters": "0x86",
+        "nonvolatile": true,
+        "extensions": [
+          "sav"
+        ],
+        "address": "0x50000000",
+        "size_maximum": "0x400000"
+      }
+    ]
+  }
+}

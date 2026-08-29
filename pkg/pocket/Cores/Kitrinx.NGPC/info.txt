@@ -1,0 +1,9 @@
+Neo Geo Pocket / Neo Geo Pocket Color
+
+Port of the MiSTer core by Kitrinx (Jamie Blanks) to openFPGA.
+
+Place the BIOS images in Assets/ngpc/Kitrinx.NGPC/:
+  boot0.rom   Color BIOS (64 KiB)
+  boot1.rom   Mono BIOS (64 KiB)
+
+Work in progress: cartridge loading, saves and sleep are not implemented yet.
