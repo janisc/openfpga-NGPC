@@ -1,9 +1,13 @@
 Neo Geo Pocket / Neo Geo Pocket Color
 
-Port of the MiSTer core by Kitrinx (Jamie Blanks) to openFPGA.
+AI-created port of the MiSTer core by Kitrinx (Jamie Blanks) --
+code by Claude (Anthropic), directed and tested by janisc.
 
 Place the BIOS images in Assets/ngpc/janisc.NGPC/:
   boot0.rom   Color BIOS (64 KiB)
   boot1.rom   Mono BIOS (64 KiB)
 
-Work in progress: cartridge loading, saves and sleep are not implemented yet.
+Flash saves are automatic -- there is no save menu. Savestates
+and sleep carry the cartridge: loading a state also rewinds
+your in-game saves to that moment. Reset to BIOS visits the
+BIOS menu (clock, horoscope); plain Reset returns to the game.
