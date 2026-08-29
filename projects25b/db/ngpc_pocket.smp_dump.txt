@@ -1,0 +1,303 @@
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_mainboard:mainboard|ngp_cart:cart|grant_q
+Name grant_q.GR_NONE grant_q.GR_DIE1 grant_q.GR_DIE0 
+grant_q.GR_NONE 0 0 0 
+grant_q.GR_DIE0 1 0 1 
+grant_q.GR_DIE1 1 1 0 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_mainboard:mainboard|ngp_cart:cart|flash_die:die1|mem_owner
+Name mem_owner.OWN_NONE mem_owner.OWN_OP mem_owner.OWN_ARRAY 
+mem_owner.OWN_NONE 0 0 0 
+mem_owner.OWN_ARRAY 1 0 1 
+mem_owner.OWN_OP 1 1 0 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_mainboard:mainboard|ngp_cart:cart|flash_die:die1|op_state
+Name op_state.OP_ERASE_PACE op_state.OP_PROG_WR op_state.OP_PROG_RD op_state.OP_IDLE op_state.OP_ERASE_WR 
+op_state.OP_IDLE 0 0 0 0 0 
+op_state.OP_PROG_RD 0 0 1 1 0 
+op_state.OP_PROG_WR 0 1 0 1 0 
+op_state.OP_ERASE_PACE 1 0 0 1 0 
+op_state.OP_ERASE_WR 0 0 0 1 1 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_mainboard:mainboard|ngp_cart:cart|flash_die:die0|mem_owner
+Name mem_owner.OWN_NONE mem_owner.OWN_OP mem_owner.OWN_ARRAY 
+mem_owner.OWN_NONE 0 0 0 
+mem_owner.OWN_ARRAY 1 0 1 
+mem_owner.OWN_OP 1 1 0 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_mainboard:mainboard|ngp_cart:cart|flash_die:die0|op_state
+Name op_state.OP_ERASE_PACE op_state.OP_PROG_WR op_state.OP_PROG_RD op_state.OP_IDLE op_state.OP_ERASE_WR 
+op_state.OP_IDLE 0 0 0 0 0 
+op_state.OP_PROG_RD 0 0 1 1 0 
+op_state.OP_PROG_WR 0 1 0 1 0 
+op_state.OP_ERASE_PACE 1 0 0 1 0 
+op_state.OP_ERASE_WR 0 0 0 1 1 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_mainboard:mainboard|k2_soc:soc|k2ge:gfx|k2ge_linebuf:u_lbuf|rr_q
+Name rr_q.P_NONE rr_q.P_S1 rr_q.P_S2 rr_q.P_OB 
+rr_q.P_OB 0 0 0 0 
+rr_q.P_S2 0 0 1 1 
+rr_q.P_S1 0 1 0 1 
+rr_q.P_NONE 1 0 0 1 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_mainboard:mainboard|k2_soc:soc|t900_cpu:cpu|t900_seq:u_seq|pause_refill
+Name pause_refill.00 pause_refill.10 pause_refill.01 
+pause_refill.00 0 0 0 
+pause_refill.01 1 0 1 
+pause_refill.10 1 1 0 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_mainboard:mainboard|k2_soc:soc|t900_cpu:cpu|t900_seq:u_seq|ea_step
+Name ea_step.00 ea_step.10 ea_step.01 
+ea_step.00 0 0 0 
+ea_step.01 1 0 1 
+ea_step.10 1 1 0 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_mainboard:mainboard|k2_soc:soc|t900_cpu:cpu|t900_seq:u_seq|ev_kind
+Name ev_kind.EV_SWI ev_kind.EV_RETI ev_kind.EV_INT 
+ev_kind.EV_SWI 0 0 0 
+ev_kind.EV_INT 1 0 1 
+ev_kind.EV_RETI 1 1 0 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_mainboard:mainboard|k2_soc:soc|t900_cpu:cpu|t900_seq:u_seq|st
+Name st.S_PAUSE st.S_STR st.S_DMA st.S_INT st.S_HALT st.S_NEXT st.S_EXEC st.S_RD st.S_OPF st.S_FETCH1 st.S_EA st.S_FETCH0 st.S_RESET 
+st.S_RESET 0 0 0 0 0 0 0 0 0 0 0 0 0 
+st.S_FETCH0 0 0 0 0 0 0 0 0 0 0 0 1 1 
+st.S_EA 0 0 0 0 0 0 0 0 0 0 1 0 1 
+st.S_FETCH1 0 0 0 0 0 0 0 0 0 1 0 0 1 
+st.S_OPF 0 0 0 0 0 0 0 0 1 0 0 0 1 
+st.S_RD 0 0 0 0 0 0 0 1 0 0 0 0 1 
+st.S_EXEC 0 0 0 0 0 0 1 0 0 0 0 0 1 
+st.S_NEXT 0 0 0 0 0 1 0 0 0 0 0 0 1 
+st.S_HALT 0 0 0 0 1 0 0 0 0 0 0 0 1 
+st.S_INT 0 0 0 1 0 0 0 0 0 0 0 0 1 
+st.S_DMA 0 0 1 0 0 0 0 0 0 0 0 0 1 
+st.S_STR 0 1 0 0 0 0 0 0 0 0 0 0 1 
+st.S_PAUSE 1 0 0 0 0 0 0 0 0 0 0 0 1 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_mainboard:mainboard|k2_soc:soc|t900_cpu:cpu|t900_muldiv:u_muldiv|state
+Name state.ST_IDLE state.ST_FIN state.ST_RUN 
+state.ST_IDLE 0 0 0 
+state.ST_RUN 1 0 1 
+state.ST_FIN 1 1 0 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|savestates:savestate_engine|state_q
+Name state_q.ST_LOAD_MEMORY_WRITE state_q.ST_LOAD_MEMORY_READ state_q.ST_LOAD_MEMORY_NEXT state_q.ST_LOAD_MEMORY_RESET state_q.ST_LOAD_INTERNAL_WRITE state_q.ST_LOAD_INTERNAL_READ state_q.ST_LOAD_HEADER state_q.ST_LOAD_WAIT_SETTLE state_q.ST_SAVE_HEADER state_q.ST_SAVE_MEMORY_WRITE state_q.ST_SAVE_MEMORY_READ state_q.ST_SAVE_MEMORY_NEXT state_q.ST_SAVE_INTERNAL_WRITE state_q.ST_SAVE_INTERNAL_WAIT state_q.ST_SAVE_WAIT_SETTLE state_q.ST_IDLE 
+state_q.ST_IDLE 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 
+state_q.ST_SAVE_WAIT_SETTLE 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 1 
+state_q.ST_SAVE_INTERNAL_WAIT 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 1 
+state_q.ST_SAVE_INTERNAL_WRITE 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 1 
+state_q.ST_SAVE_MEMORY_NEXT 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 1 
+state_q.ST_SAVE_MEMORY_READ 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 1 
+state_q.ST_SAVE_MEMORY_WRITE 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 1 
+state_q.ST_SAVE_HEADER 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 1 
+state_q.ST_LOAD_WAIT_SETTLE 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 1 
+state_q.ST_LOAD_HEADER 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 1 
+state_q.ST_LOAD_INTERNAL_READ 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 1 
+state_q.ST_LOAD_INTERNAL_WRITE 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 1 
+state_q.ST_LOAD_MEMORY_RESET 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1 
+state_q.ST_LOAD_MEMORY_NEXT 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1 
+state_q.ST_LOAD_MEMORY_READ 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1 
+state_q.ST_LOAD_MEMORY_WRITE 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_cart_rom:cart_loader|state_q
+Name state_q.ST_READY state_q.ST_FILL state_q.ST_SETTLE state_q.ST_CONFIG state_q.ST_DRAIN state_q.ST_LOAD state_q.ST_INVAL state_q.ST_IDLE 
+state_q.ST_IDLE 0 0 0 0 0 0 0 0 
+state_q.ST_INVAL 0 0 0 0 0 0 1 1 
+state_q.ST_LOAD 0 0 0 0 0 1 0 1 
+state_q.ST_DRAIN 0 0 0 0 1 0 0 1 
+state_q.ST_CONFIG 0 0 0 1 0 0 0 1 
+state_q.ST_SETTLE 0 0 1 0 0 0 0 1 
+state_q.ST_FILL 0 1 0 0 0 0 0 1 
+state_q.ST_READY 1 0 0 0 0 0 0 1 
+
+State Machine - |apf_top|core_top:ic|ngpc_savestate_bridge:savestate_bridge|state
+Name state.S_SAVE_CART state.S_DONE state.S_LOAD_RUN state.S_LOAD_CHECK state.S_LOAD_WAIT state.S_SAVE_STAMP state.S_SAVE_RUN state.S_IDLE state.S_LOAD_CART 
+state.S_IDLE 0 0 0 0 0 0 0 0 0 
+state.S_SAVE_RUN 0 0 0 0 0 0 1 1 0 
+state.S_SAVE_STAMP 0 0 0 0 0 1 0 1 0 
+state.S_LOAD_WAIT 0 0 0 0 1 0 0 1 0 
+state.S_LOAD_CHECK 0 0 0 1 0 0 0 1 0 
+state.S_LOAD_RUN 0 0 1 0 0 0 0 1 0 
+state.S_DONE 0 1 0 0 0 0 0 1 0 
+state.S_SAVE_CART 1 0 0 0 0 0 0 1 0 
+state.S_LOAD_CART 0 0 0 0 0 0 0 1 1 
+
+State Machine - |apf_top|core_top:ic|ngpc_savestate_bridge:savestate_bridge|e_state
+Name e_state.E_DONE e_state.E_HI e_state.E_LO e_state.E_IDLE 
+e_state.E_IDLE 0 0 0 0 
+e_state.E_LO 0 0 1 1 
+e_state.E_HI 0 1 0 1 
+e_state.E_DONE 1 0 0 1 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_setup_seed:setup_seed|state
+Name state.ST_RTC_ALARM state.ST_RTC_WDAY state.ST_RTC_TIME state.ST_RTC_DATE state.ST_MEM state.ST_WAIT state.ST_IDLE 
+state.ST_IDLE 0 0 0 0 0 0 0 
+state.ST_WAIT 0 0 0 0 0 1 1 
+state.ST_MEM 0 0 0 0 1 0 1 
+state.ST_RTC_DATE 0 0 0 1 0 0 1 
+state.ST_RTC_TIME 0 0 1 0 0 0 1 
+state.ST_RTC_WDAY 0 1 0 0 0 0 1 
+state.ST_RTC_ALARM 1 0 0 0 0 0 1 
+
+State Machine - |apf_top|core_top:ic|ngpc_apf_rtc:apf_rtc|state
+Name state.S_DONE state.S_PACK state.S_MOD state.S_ACC state.S_ADJUST state.S_BIN state.S_SAMPLE state.S_IDLE 
+state.S_IDLE 0 0 0 0 0 0 0 0 
+state.S_SAMPLE 0 0 0 0 0 0 1 1 
+state.S_BIN 0 0 0 0 0 1 0 1 
+state.S_ADJUST 0 0 0 0 1 0 0 1 
+state.S_ACC 0 0 0 1 0 0 0 1 
+state.S_MOD 0 0 1 0 0 0 0 1 
+state.S_PACK 0 1 0 0 0 0 0 1 
+state.S_DONE 1 0 0 0 0 0 0 1 
+
+State Machine - |apf_top|core_top:ic|sound_i2s:sound|sync_fifo:sync_fifo|read_state
+Name read_state.00 read_state.READ_WRITE read_state.READ_DELAY 
+read_state.00 0 0 0 
+read_state.READ_DELAY 1 0 1 
+read_state.READ_WRITE 1 1 0 
+
+State Machine - |apf_top|io_bridge_peripheral:ibs|rx_latch_idx
+Name rx_latch_idx.11 rx_latch_idx.10 rx_latch_idx.01 rx_latch_idx.00 
+rx_latch_idx.00 0 0 0 0 
+rx_latch_idx.01 0 0 1 1 
+rx_latch_idx.10 0 1 0 1 
+rx_latch_idx.11 1 0 0 1 
+
+State Machine - |apf_top|io_pad_controller:ipm|tr_state
+Name tr_state.TR_RX_DONE tr_state.TR_RX_WAITEDGE tr_state.TR_RX_START tr_state.TR_TX_DONE tr_state.TR_TX_CONTINUE tr_state.TR_TX_START tr_state.TR_IDLE 
+tr_state.TR_IDLE 0 0 0 0 0 0 0 
+tr_state.TR_TX_START 0 0 0 0 0 1 1 
+tr_state.TR_TX_CONTINUE 0 0 0 0 1 0 1 
+tr_state.TR_TX_DONE 0 0 0 1 0 0 1 
+tr_state.TR_RX_START 0 0 1 0 0 0 1 
+tr_state.TR_RX_WAITEDGE 0 1 0 0 0 0 1 
+tr_state.TR_RX_DONE 1 0 0 0 0 0 1 
+
+State Machine - |apf_top|io_pad_controller:ipm|state
+Name state.ST_RX_BUTTON_2 state.ST_RX_BUTTON_1 state.ST_IDLE state.ST_RESET state.ST_END_TX 
+state.ST_RESET 0 0 0 0 0 
+state.ST_IDLE 0 0 1 1 0 
+state.ST_RX_BUTTON_1 0 1 0 1 0 
+state.ST_RX_BUTTON_2 1 0 0 1 0 
+state.ST_END_TX 0 0 0 1 1 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_cart_sdram:cart_sdram|cart_sdram:u_sdram|p2_owner_q
+Name p2_owner_q.P2_OWNER_NONE p2_owner_q.P2_OWNER_SRAM p2_owner_q.P2_OWNER_LOADER 
+p2_owner_q.P2_OWNER_NONE 0 0 0 
+p2_owner_q.P2_OWNER_LOADER 1 0 1 
+p2_owner_q.P2_OWNER_SRAM 1 1 0 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_cart_sdram:cart_sdram|cart_sdram:u_sdram|sdram:u_core|state_q
+Name state_q.ST_REFRESH_WAIT state_q.ST_RAS_WAIT state_q.ST_WRITE_BEATS state_q.ST_READ_DRAIN state_q.ST_READ_BEATS state_q.ST_READ_LATENCY state_q.ST_RCD state_q.ST_IDLE state_q.ST_INIT_MRD state_q.ST_INIT_RFC2 state_q.ST_INIT_RFC1 state_q.ST_INIT_TRP state_q.ST_NOP_WAIT state_q.ST_POWER_WAIT 
+state_q.ST_POWER_WAIT 0 0 0 0 0 0 0 0 0 0 0 0 0 0 
+state_q.ST_NOP_WAIT 0 0 0 0 0 0 0 0 0 0 0 0 1 1 
+state_q.ST_INIT_TRP 0 0 0 0 0 0 0 0 0 0 0 1 0 1 
+state_q.ST_INIT_RFC1 0 0 0 0 0 0 0 0 0 0 1 0 0 1 
+state_q.ST_INIT_RFC2 0 0 0 0 0 0 0 0 0 1 0 0 0 1 
+state_q.ST_INIT_MRD 0 0 0 0 0 0 0 0 1 0 0 0 0 1 
+state_q.ST_IDLE 0 0 0 0 0 0 0 1 0 0 0 0 0 1 
+state_q.ST_RCD 0 0 0 0 0 0 1 0 0 0 0 0 0 1 
+state_q.ST_READ_LATENCY 0 0 0 0 0 1 0 0 0 0 0 0 0 1 
+state_q.ST_READ_BEATS 0 0 0 0 1 0 0 0 0 0 0 0 0 1 
+state_q.ST_READ_DRAIN 0 0 0 1 0 0 0 0 0 0 0 0 0 1 
+state_q.ST_WRITE_BEATS 0 0 1 0 0 0 0 0 0 0 0 0 0 1 
+state_q.ST_RAS_WAIT 0 1 0 0 0 0 0 0 0 0 0 0 0 1 
+state_q.ST_REFRESH_WAIT 1 0 0 0 0 0 0 0 0 0 0 0 0 1 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_cart_sdram:cart_sdram|cart_sdram:u_sdram|sdram:u_core|active_port_q
+Name active_port_q.00 active_port_q.10 active_port_q.01 
+active_port_q.00 0 0 0 
+active_port_q.01 1 0 1 
+active_port_q.10 1 1 0 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngp_cart_sdram:cart_sdram|cart_sdram:u_sdram|sdram:u_core|pending_port_q
+Name pending_port_q.00 pending_port_q.10 pending_port_q.01 
+pending_port_q.00 0 0 0 
+pending_port_q.01 1 0 1 
+pending_port_q.10 1 1 0 
+
+State Machine - |apf_top|core_top:ic|data_loader:bios_loader|write_state
+Name write_state.000 write_state.WRITE_REQ_SHIFT write_state.WRITE_START 
+write_state.000 0 0 0 
+write_state.WRITE_START 1 0 1 
+write_state.WRITE_REQ_SHIFT 1 1 0 
+
+State Machine - |apf_top|core_top:ic|data_unloader:stage_drain|addr_state
+Name addr_state.000 addr_state.ADDR_REQ addr_state.ADDR_START 
+addr_state.000 0 0 0 
+addr_state.ADDR_START 1 0 1 
+addr_state.ADDR_REQ 1 1 0 
+
+State Machine - |apf_top|core_top:ic|core_bridge_cmd:icb|tstate
+Name tstate.TARG_ST_WAITRESULT_DSO tstate.TARG_ST_WAITRESULT_RTR tstate.TARG_ST_DATASLOTOP tstate.TARG_ST_READYTORUN tstate.TARG_ST_IDLE 
+tstate.TARG_ST_IDLE 0 0 0 0 0 
+tstate.TARG_ST_READYTORUN 0 0 0 1 1 
+tstate.TARG_ST_DATASLOTOP 0 0 1 0 1 
+tstate.TARG_ST_WAITRESULT_RTR 0 1 0 0 1 
+tstate.TARG_ST_WAITRESULT_DSO 1 0 0 0 1 
+
+State Machine - |apf_top|core_top:ic|core_bridge_cmd:icb|hstate
+Name hstate.ST_DONE_ERR hstate.ST_DONE_CODE hstate.ST_DONE_OK hstate.ST_WORK hstate.ST_PARSE hstate.ST_IDLE 
+hstate.ST_IDLE 0 0 0 0 0 0 
+hstate.ST_PARSE 0 0 0 0 1 1 
+hstate.ST_WORK 0 0 0 1 0 1 
+hstate.ST_DONE_OK 0 0 1 0 0 1 
+hstate.ST_DONE_CODE 0 1 0 0 0 1 
+hstate.ST_DONE_ERR 1 0 0 0 0 1 
+
+State Machine - |apf_top|io_bridge_peripheral:ibs|spis
+Name spis.ST_SEND_N spis.ST_SEND_3 spis.ST_SEND_2 spis.ST_SEND_1 spis.ST_SEND_0 spis.ST_SIDLE 
+spis.ST_SIDLE 0 0 0 0 0 0 
+spis.ST_SEND_0 0 0 0 0 1 1 
+spis.ST_SEND_1 0 0 0 1 0 1 
+spis.ST_SEND_2 0 0 1 0 0 1 
+spis.ST_SEND_3 0 1 0 0 0 1 
+spis.ST_SEND_N 1 0 0 0 0 1 
+
+State Machine - |apf_top|io_bridge_peripheral:ibs|state
+Name state.ST_ADDR_0 state.ST_WRITE_2 state.ST_WRITE_1 state.ST_WRITE_0 state.ST_READ_3 state.ST_READ_2 state.ST_READ_1 state.ST_READ_0 state.ST_RESET 
+state.ST_RESET 0 0 0 0 0 0 0 0 0 
+state.ST_READ_0 0 0 0 0 0 0 0 1 1 
+state.ST_READ_1 0 0 0 0 0 0 1 0 1 
+state.ST_READ_2 0 0 0 0 0 1 0 0 1 
+state.ST_READ_3 0 0 0 0 1 0 0 0 1 
+state.ST_WRITE_0 0 0 0 1 0 0 0 0 1 
+state.ST_WRITE_1 0 0 1 0 0 0 0 0 1 
+state.ST_WRITE_2 0 1 0 0 0 0 0 0 1 
+state.ST_ADDR_0 1 0 0 0 0 0 0 0 1 
+
+State Machine - |apf_top|core_top:ic|ngpc_state_cart:state_cart|st
+Name st.I_DR_WAIT st.I_APPLY_RUN st.I_APPLY_REQ st.I_DR_WR_HI st.I_DR_WR_LO st.I_DR_SAMPLE st.I_DR_ADDR st.I_EMIT st.I_RD_HI_W st.I_RD_HI st.I_RD_LO_W st.I_RD_LO st.I_CUR_WAIT st.I_IDLE 
+st.I_IDLE 0 0 0 0 0 0 0 0 0 0 0 0 0 0 
+st.I_CUR_WAIT 0 0 0 0 0 0 0 0 0 0 0 0 1 1 
+st.I_RD_LO 0 0 0 0 0 0 0 0 0 0 0 1 0 1 
+st.I_RD_LO_W 0 0 0 0 0 0 0 0 0 0 1 0 0 1 
+st.I_RD_HI 0 0 0 0 0 0 0 0 0 1 0 0 0 1 
+st.I_RD_HI_W 0 0 0 0 0 0 0 0 1 0 0 0 0 1 
+st.I_EMIT 0 0 0 0 0 0 0 1 0 0 0 0 0 1 
+st.I_DR_ADDR 0 0 0 0 0 0 1 0 0 0 0 0 0 1 
+st.I_DR_SAMPLE 0 0 0 0 0 1 0 0 0 0 0 0 0 1 
+st.I_DR_WR_LO 0 0 0 0 1 0 0 0 0 0 0 0 0 1 
+st.I_DR_WR_HI 0 0 0 1 0 0 0 0 0 0 0 0 0 1 
+st.I_APPLY_REQ 0 0 1 0 0 0 0 0 0 0 0 0 0 1 
+st.I_APPLY_RUN 0 1 0 0 0 0 0 0 0 0 0 0 0 1 
+st.I_DR_WAIT 1 0 0 0 0 0 0 0 0 0 0 0 0 1 
+
+State Machine - |apf_top|core_top:ic|ngpc_machine:machine|ngpc_cart_save:cart_save|state
+Name state.S_FINISH state.S_APPLY_WR_W state.S_APPLY_WR state.S_APPLY_RD_W state.S_APPLY_RD state.S_APPLY_SCAN state.S_APPLY_HDR_W state.S_APPLY_HDR state.S_STAGE_HDR_W state.S_STAGE_HDR state.S_STAGE_WR_W state.S_STAGE_WR state.S_STAGE_RD_W state.S_STAGE_RD state.S_STAGE_SCAN state.S_IDLE 
+state.S_IDLE 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 
+state.S_STAGE_SCAN 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 1 
+state.S_STAGE_RD 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 1 
+state.S_STAGE_RD_W 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 1 
+state.S_STAGE_WR 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 1 
+state.S_STAGE_WR_W 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 1 
+state.S_STAGE_HDR 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 1 
+state.S_STAGE_HDR_W 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 1 
+state.S_APPLY_HDR 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 1 
+state.S_APPLY_HDR_W 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 1 
+state.S_APPLY_SCAN 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 1 
+state.S_APPLY_RD 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 1 
+state.S_APPLY_RD_W 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 1 
+state.S_APPLY_WR 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 1 
+state.S_APPLY_WR_W 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 1 
+state.S_FINISH 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 
