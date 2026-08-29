@@ -114,9 +114,16 @@ quartus_sh --flow compile projects/ngpc_pocket.qpf
 python scripts/package.py --zip
 ```
 
-The design targets a Cyclone V 5CEBA4F23C8 at 99% logic occupancy and does
-not formally close timing at this speed grade; see the commit history on
-`dev` for the measured reality and the disciplines that keep it honest.
+Open `projects/ngpc_pocket.qpf` in Quartus and hit Compile, exactly as on
+MiSTer. Verified with **Quartus Prime Lite 17.1** and **Quartus Prime Lite
+25.1** (free, no license; install with Cyclone V device support). On newer
+Quartus expect a batch of benign warnings about ignored legacy assignments
+-- the modern fitter absorbed those knobs. `package.py` then stages the
+SD-card layout from the bitstream and the JSON.
+
+The design targets a Cyclone V 5CEBA4F23C8 at ~98% logic occupancy and
+does not formally close timing at this speed grade; see the commit history
+on `dev` for the measured reality and the disciplines that keep it honest.
 
 ## Credits
 
