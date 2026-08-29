@@ -19,3 +19,6 @@ builds/
 # Quartus build transcripts
 projects/*.log
 sim/*.vvp
+
+# Timing investigation reports
+projects/*.rpt

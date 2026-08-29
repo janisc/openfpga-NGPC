@@ -312,9 +312,11 @@ module ngpc_cart_save #(
 							apply_pending <= 1'b0;
 							hdr_idx       <= 4'd0;
 							apply_ok      <= 1'b1;
+`ifdef NGPC_SAVE_DIAG
 							diag_applies  <= diag_applies + 16'd1;
 							diag_verdict  <= 16'd0;
 							diag_p2wr     <= 16'd0;
+`endif
 							state         <= S_APPLY_HDR;
 						end
 					end else if (cart_ready_i && pending_any && !host_busy_i &&
@@ -476,7 +478,9 @@ module ngpc_cart_save #(
 							geo_die      <= 1'b0;
 							geo_block    <= 6'd0;
 							stage_offset <= 25'd0;
+`ifdef NGPC_SAVE_DIAG
 							diag_verdict <= apply_ok ? 16'd1 : 16'd2;
+`endif
 							state        <= apply_ok ? S_APPLY_SCAN : S_FINISH;
 						end else begin
 							hdr_idx <= hdr_idx + 5'd1;
@@ -529,7 +533,9 @@ module ngpc_cart_save #(
 
 				S_APPLY_WR_W: begin
 					if (p2_done_i) begin
+`ifdef NGPC_SAVE_DIAG
 						diag_p2wr <= diag_p2wr + 16'd1;
+`endif
 						if (block_word + 16'd1 >= geo_words) begin
 							stage_offset <= stage_offset + {9'd0, geo_words, 1'b0};
 

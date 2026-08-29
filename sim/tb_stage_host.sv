@@ -71,7 +71,6 @@ module tb_stage_host;
 		.host_busy_o   (),
 		.diag_beats_o  (),
 		.diag_drops_o  (),
-		.diag_depth_o  (),
 		.eng_req_i  (1'b0),
 		.eng_we_i   (1'b0),
 		.eng_addr_i (25'd0),

@@ -21,12 +21,12 @@
         "defaultval": 0,
         "options": [
           {
-            "value": 0,
-            "name": "Color"
-          },
-          {
             "value": 1,
             "name": "Auto"
+          },
+          {
+            "value": 0,
+            "name": "Color"
           },
           {
             "value": 2,
@@ -85,17 +85,6 @@
             "name": "Classic"
           }
         ]
-      },
-      {
-        "name": "Skip BIOS Animation",
-        "id": 23,
-        "type": "check",
-        "enabled": true,
-        "persist": true,
-        "writeonly": true,
-        "address": "0x10C",
-        "defaultval": 0,
-        "value": 1
       },
       {
         "name": "Automatic Power On",

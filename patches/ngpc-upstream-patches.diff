@@ -105,6 +105,52 @@ index 77efed5..e0ad2bd 100644
  
  	// On silicon the PSG's analog outputs and the two R-2R DACs are summed by an
  	// amplifier on this board. We mix digitally instead, inside `ngp_snd` with
+diff --git a/rtl/soc/ngp_setup_seed.sv b/rtl/soc/ngp_setup_seed.sv
+index fbeaa25..b06ce9f 100644
+--- a/rtl/soc/ngp_setup_seed.sv
++++ b/rtl/soc/ngp_setup_seed.sv
+@@ -52,7 +52,15 @@ module ngp_setup_seed
+ 	// 1 = allow the BIOS resume request to be seeded on a cold boot. See the
+ 	// header: this is only honest once work RAM 0x4000-0x5FFF survives a power
+ 	// cycle, which nothing in this design provides yet.
+-	parameter P_ALLOW_RESUME_SEED = 1'b0
++	parameter P_ALLOW_RESUME_SEED = 1'b0,
++
++	// Work-RAM address of the BIOS birthday record, confirmed empirically
++	// on hardware (savestate diff of two wizard entries, 2026-08-28):
++	// 0x6F8B = year - 1900, 0x6F8C = month, 0x6F8D = day, all BINARY --
++	// unlike the BCD RTC. 14'h0 disables the writes.
++	// (Removed from the build for area; the confirmed address stays on
++	// record: 0x6F8B=year-1900, 0x6F8C=month, 0x6F8D=day, binary.)
++	parameter P_BIRTH_ADDR = 14'h0
+ )
+ (
+ 	input  wire        clk,
+@@ -78,6 +86,7 @@ module ngp_setup_seed
+ 	input  wire [7:0]  cart_subcatalog,
+ 	input  wire [95:0] cart_title,
+ 
++
+ 	// Existing pause tree and savestate memory/register paths. The seed engine
+ 	// adds no RAM port and owns these only while seed_busy is asserted.
+ 	output wire        pause_req,
+@@ -413,9 +422,13 @@ module ngp_setup_seed
+ 						checksum_q    <= bios_initial_checksum(mono, live_language, live_palette);
+ 						use_rtc_q     <= use_hps_rtc;
+ 						resume_q      <= live_resume;
+-						catalog_q     <= cart_catalog;
+-						subcatalog_q  <= cart_subcatalog;
+-						title_q       <= cart_title;
++						// Folded to constants while P_ALLOW_RESUME_SEED = 0: the
++						// resume payload is dead and this lets synthesis sweep the
++						// 120-bit identity latches, their applied_* echoes and the
++						// program-step mux entries they fed.
++						catalog_q     <= P_ALLOW_RESUME_SEED ? cart_catalog : 16'd0;
++						subcatalog_q  <= P_ALLOW_RESUME_SEED ? cart_subcatalog : 8'd0;
++						title_q       <= P_ALLOW_RESUME_SEED ? cart_title : 96'd0;
+ 						rtc_year_q    <= rtc_seed_value[47:40];
+ 						rtc_month_q   <= rtc_seed_value[39:32];
+ 						rtc_day_q     <= rtc_seed_value[31:24];
 diff --git a/rtl/soc/t900_mcu.sv b/rtl/soc/t900_mcu.sv
 index cc899cf..4f66ee1 100644
 --- a/rtl/soc/t900_mcu.sv
