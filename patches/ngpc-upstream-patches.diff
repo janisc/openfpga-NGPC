@@ -106,7 +106,7 @@ index 77efed5..e0ad2bd 100644
  	// On silicon the PSG's analog outputs and the two R-2R DACs are summed by an
  	// amplifier on this board. We mix digitally instead, inside `ngp_snd` with
 diff --git a/rtl/soc/ngp_setup_seed.sv b/rtl/soc/ngp_setup_seed.sv
-index fbeaa25..b06ce9f 100644
+index fbeaa25..5f439ac 100644
 --- a/rtl/soc/ngp_setup_seed.sv
 +++ b/rtl/soc/ngp_setup_seed.sv
 @@ -52,7 +52,15 @@ module ngp_setup_seed
@@ -116,12 +116,12 @@ index fbeaa25..b06ce9f 100644
 -	parameter P_ALLOW_RESUME_SEED = 1'b0
 +	parameter P_ALLOW_RESUME_SEED = 1'b0,
 +
-+	// Work-RAM address of the BIOS birthday record, confirmed empirically
-+	// on hardware (savestate diff of two wizard entries, 2026-08-28):
-+	// 0x6F8B = year - 1900, 0x6F8C = month, 0x6F8D = day, all BINARY --
-+	// unlike the BCD RTC. 14'h0 disables the writes.
-+	// (Removed from the build for area; the confirmed address stays on
-+	// record: 0x6F8B=year-1900, 0x6F8C=month, 0x6F8D=day, binary.)
++	// Work-RAM address of the BIOS birthday record, decoded empirically
++	// (savestate diff of two wizard entries, 2026-08-28): 0x6F8B = year -
++	// 1900, 0x6F8C = month, 0x6F8D = day, all BINARY unlike the BCD RTC.
++	// 14'h0 disables the writes -- removed by choice for the release:
++	// entering the birthday in the BIOS itself suits the feature better
++	// than a menu duplicate. The address stays on record.
 +	parameter P_BIRTH_ADDR = 14'h0
  )
  (
