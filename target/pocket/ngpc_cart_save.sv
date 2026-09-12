@@ -1,62 +1,22 @@
-// NGPC for Analogue Pocket -- cartridge flash persistence.
+// Bounded cartridge persistence, format V3. The transport remains 0xFE00 bytes.
+// Complete dirty erase blocks are encoded in die/block order. A word other
+// than FFFF is literal; FFFF followed by a nonzero 16-bit count emits erased
+// words. Runs cannot cross a block boundary. Header words 16/17 give total
+// image words / die geometry; 18/19 carry payload CRC32, 20/21 header CRC32.
+// CRC32 is reflected IEEE, low byte first, initial FFFFFFFF (no final XOR).
 //
-// HOW SAVING WORKS HERE, AND WHY IT LOOKS NOTHING LIKE MiSTer'S
-//
-// Saves on this machine are cartridge flash: a game writes progress into the
-// cartridge, so persistence means remembering which physical erase blocks it
-// changed and putting those bytes somewhere that survives a power cycle.
-//
-// MiSTer's core drives the SD card itself, so it needs a moment to decide when
-// to write -- hence its manual and menu-triggered saves. The Pocket does not
-// work that way. A data slot marked `nonvolatile` is loaded into the core by
-// APF at start and read back out at exit or power-off. The core simply owns a
-// region of memory; the host owns the file.
-//
-// Two earlier designs here failed for exactly the reasons that model removes.
-// The first ported upstream's ngp_cart_overlay and did not fit: 21,599 ALMs
-// against 18,480. The second wrote sectors itself through APF target commands,
-// which meant a state machine that could stall (it did, holding the machine
-// paused and freezing the console) and a file that had to be created before it
-// could be written (it never was, so nothing reached the card). Neither failure
-// is possible now, because neither mechanism exists.
-//
-// THE LAYOUT
-//
-//   staging[0]                 header: magic, cartridge CRC32 and size, and
-//                              the dirty-block bitmap
-//   staging[512 ...]           the dirty blocks themselves, in the fixed order
-//                              both directions walk, so no directory is needed
-//
-// The header's CRC32 and byte count are what stop one game's save reaching
-// another's flash: a staged image is applied only if both match the cartridge
-// actually loaded.
-//
-// WHEN THE COPY HAPPENS
-//
-// APF reads our memory at exit without announcing it, so staging has to be
-// current by then. It cannot wait for a trigger and it must not pause the
-// machine -- a visible stutter every time a game saves would be worse than the
-// problem it solves.
-//
-// So blocks are staged in the background, on flash quiescence. Games write
-// flash in bursts; once the dies have been idle for QUIET_CLOCKS the pending
-// blocks are copied one at a time. If the game writes a block while it is being
-// staged, that block is simply marked pending again and re-copied later, so a
-// torn copy corrects itself rather than persisting. No pause, no handshake with
-// the machine at all.
-//
-// Restoring is the one place the machine is held: at cartridge-ready the staged
-// blocks are applied while reset is still asserted, so the BIOS and the game
-// only ever observe restored flash.
-
+// A candidate is written to the other 64 KiB PSRAM bank. Overflow, a flash
+// event or host activity discards it. Publishing is a single bank swap.
+// This preserves the previous complete image during background work.
+// Restore performs a complete bounds/geometry/CRC validation pass BEFORE
+// touching cartridge memory. Bounded V2 raw images remain readable.
+// A state restore arrives in the inactive bank, and publishes only on success.
+// Rewinding to a bitmap that omits currently dirty blocks is rejected: the
+// original ROM bytes for those blocks are not retained by the existing core.
 `default_nettype none
-
 module ngpc_cart_save #(
-	// Payload capacity of the staging region. A die's four top blocks come to
-	// 64 KB, so this holds those plus three 64 KB blocks -- far beyond what NGP
-	// saves use. It costs no FPGA resource, only slot transfer time at core
-	// start and exit.
-	parameter [24:0] STAGE_BYTES = 25'h0040000,
+	// Encoded payload capacity; header plus payload must stay below 64 KiB.
+	parameter [24:0] STAGE_BYTES = 25'h000FC00,
 	// Flash idle time before staging starts. ~20 ms at 49.152 MHz: long enough
 	// that a burst of block writes is over, short enough that a save is staged
 	// well before anyone reaches for the power switch. A parameter so the
@@ -86,7 +46,7 @@ module ngpc_cart_save #(
 	// background staging stands aside.
 	input  wire        host_busy_i,
 
-	// Savestate restore: the copier has rewritten staging with the state's
+	// Savestate restore: the copier has written the inactive bank with the state's
 	// embedded image; re-arm the boot apply for it. Same validation, same
 	// hold, same bitmap restore as at power-on.
 	input  wire        state_apply_i,
@@ -100,8 +60,7 @@ module ngpc_cart_save #(
 	// saves never restored in any earlier build.
 	input  wire        slots_settled_i,
 
-	// Ingestion diagnostics from ngpc_stage_mem, stamped verbatim into header
-	// words 16-18 of every staged save so the flushed file carries them out.
+	// Retained interface diagnostics; V3 uses these header words for bounds/CRC.
 	input  wire [15:0] diag_beats_i,
 	input  wire [15:0] diag_drops_i,
 
@@ -112,10 +71,13 @@ module ngpc_cart_save #(
 	// A save exists for this cartridge -- some block is dirty, either because
 	// the game wrote flash this session or because a staged image was applied
 	// at boot. This is what the core reports to APF's data-slot size table:
-	// present -> the slot flushes 0x40200 bytes at shutdown, absent -> zero
+	// present -> the slot flushes 0xFE00 bytes at shutdown, absent -> zero
 	// bytes and no file is created for games that never save.
 	output wire        save_present_o,
-	output wire        stage_current_o,   // idle with nothing left to stage
+	output wire        stage_current_o,
+	output reg         stage_bank_o,      // committed PSRAM bank; swap only after complete encoding
+	output reg         save_error_o,      // capture cannot represent current flash
+	output reg         apply_error_o,     // rejected last restore, before any flash writes
 
 	// ---- Cartridge SDRAM, background port ----------------------------------
 	output reg         p2_req_o,
@@ -137,455 +99,295 @@ module ngpc_cart_save #(
 	input  wire [15:0] stage_rdata_i
 );
 
-	assign p2_be_o = 2'b11;
+    localparam [15:0] MAGIC0=16'h4E47, MAGIC1=16'h5043,
+                      MAGIC2=16'h5341, V2=16'h5632, V3=16'h5633;
+    localparam [16:0] LIMIT_WORDS = (STAGE_BYTES + 25'd512) >> 1;
+    localparam [5:0] IDLE=0, ENC_SCAN=1, ENC_READ=2, ENC_READ_WAIT=3,
+        ENC_WORD=4, ENC_MARK=5, ENC_COUNT=6, ENC_LITERAL=7, ENC_NEXT=8,
+        PUT=9, PUT_WAIT=10, ENC_HEADER=11, ENC_HEADER_WAIT=12, COMMIT=13,
+        HDR_READ=14, HDR_WAIT=15, HDR_CHECK=16, DEC_SCAN=17,
+        DEC_READ=18, DEC_READ_WAIT=19, DEC_COUNT=20, DEC_COUNT_WAIT=21,
+        DEC_WRITE=22, DEC_WRITE_WAIT=23, DEC_NEXT=24, DEC_END=25,
+        REJECT=26, FINISH=27;
+    reg [5:0] state, after_put;
+    reg [63:0] dirty0, dirty1, image0, image1;
+    reg needs_build, candidate_changed, valid_image, apply_pending, state_restore;
+    reg validate_only, legacy;
+    reg [19:0] quiet;
+    reg geo_die;
+    reg [5:0] geo_block;
+    wire [1:0] geo_code = geo_die ? size_code1_i : size_code0_i;
+    wire geo_valid;
+    wire [20:0] geo_base;
+    wire [15:0] geo_words;
+    ngp_cart_overlay_geometry geometry (
+        .size_code_i(geo_code), .block_i(geo_block), .valid_o(geo_valid),
+        .base_o(geo_base), .bytes_o(), .words_o(geo_words));
+    wire selected = geo_die ? image1[geo_block] : image0[geo_block];
+    wire [24:0] block_addr = {3'd0, geo_die, geo_base};
+    reg [15:0] word_index, erased_count, value, run_left;
+    reg [16:0] cursor, image_words;
+    reg [4:0] hdr_index;
+    reg [31:0] crc_acc, expected_crc;
+    reg header_ok;
+    wire flash_event = event0_i || event1_i;
+    wire flash_quiet = !(|die_busy_i) && !flash_event;
+    wire [24:0] read_bank = (stage_bank_o ^ state_restore) ? 25'h10000 : 25'd0;
+    wire [24:0] write_bank = stage_bank_o ? 25'd0 : 25'h10000;
+    assign p2_be_o = 2'b11;
+    assign save_present_o = valid_image;
+    assign stage_current_o = state==IDLE && !needs_build && !apply_pending &&
+                             !save_error_o && cart_ready_i && flash_quiet;
 
-	localparam [15:0] MAGIC0 = 16'h4E47;  // "NG"
-	localparam [15:0] MAGIC1 = 16'h5043;  // "PC"
-	localparam [15:0] MAGIC2 = 16'h5341;  // "SA"
-	localparam [15:0] MAGIC3 = 16'h5632;  // "V2" -- layout differs from the
-	                                      // sector-based version that preceded it
+    function [31:0] crc_word;
+        input [31:0] crc;
+        input [15:0] data;
+        reg [31:0] c;
+        integer bit_index;
+        begin
+            c=crc;
+            for (bit_index=0;bit_index<16;bit_index=bit_index+1)
+                c=(c>>1) ^ ((c[0]^data[bit_index]) ? 32'hEDB88320 : 32'd0);
+            crc_word=c;
+        end
+    endfunction
 
-	// ---- Dirty and pending bitmaps -----------------------------------------
-	//
-	// `dirty` is what the save contains. `pending` is what still needs copying
-	// into staging. A write sets both; a completed copy clears only pending.
+    // Header and payload are processed sequentially. Share one CRC datapath
+    // and accumulator; the expected payload CRC is retained across the header.
+    wire [15:0] crc_data = stage_we_o ? stage_wdata_o : stage_rdata_i;
+    wire [31:0] crc_next = crc_word(crc_acc, crc_data);
+    reg [15:0] header_word;
+    always @* begin
+        case(hdr_index)
+            0:header_word=MAGIC0; 1:header_word=MAGIC1;
+            2:header_word=MAGIC2; 3:header_word=V3;
+            4:header_word=cart_crc32_i[15:0]; 5:header_word=cart_crc32_i[31:16];
+            6:header_word={7'd0,cart_bytes_i[24:16]}; 7:header_word=cart_bytes_i[15:0];
+            8:header_word=image0[15:0]; 9:header_word=image0[31:16];
+            10:header_word=image0[47:32]; 11:header_word=image0[63:48];
+            12:header_word=image1[15:0]; 13:header_word=image1[31:16];
+            14:header_word=image1[47:32]; 15:header_word=image1[63:48];
+            16:header_word=cursor[15:0];
+            17:header_word={12'd0,size_code1_i,size_code0_i};
+            18:header_word=expected_crc[15:0]; 19:header_word=expected_crc[31:16];
+            20:header_word=crc_acc[15:0]; 21:header_word=crc_acc[31:16];
+            default:header_word=16'd0;
+        endcase
+    end
 
-	reg [63:0] dirty0,   dirty1;
-	reg [63:0] pending0, pending1;
-
-	wire pending_any = |pending0 || |pending1;
-
-	// The staged image is complete and current: nothing pending and the
-	// walker parked. The savestate capture waits on this with the machine
-	// paused, so it converges instead of chasing.
-	assign stage_current_o = (state == S_IDLE) && !pending_any && cart_ready_i;
-
-	assign save_present_o = |dirty0 || |dirty1;
-
-	// ---- Block geometry -----------------------------------------------------
-
-	reg        geo_die;
-	reg  [5:0] geo_block;
-	wire [1:0] geo_size_code = geo_die ? size_code1_i : size_code0_i;
-	wire        geo_valid;
-	wire [20:0] geo_base;
-	wire [15:0] geo_words;
-
-	ngp_cart_overlay_geometry geometry
-	(
-		.size_code_i (geo_size_code),
-		.block_i     (geo_block),
-		.valid_o     (geo_valid),
-		.base_o      (geo_base),
-		.bytes_o     (),
-		.words_o     (geo_words)
-	);
-
-	wire block_dirty = geo_valid &&
-		(geo_die ? dirty1[geo_block] : dirty0[geo_block]);
-	wire block_pending = geo_valid &&
-		(geo_die ? pending1[geo_block] : pending0[geo_block]);
-
-	// Linear cartridge byte address, die1 starting at 2 MiB -- the mapping
-	// ngp_cart_overlay_mover uses.
-	wire [24:0] block_base_addr = {geo_die ? 4'd1 : 4'd0, geo_base};
-
-	// Where this block sits in the staging payload: blocks are laid out in walk
-	// order, so the offset is the running total of the dirty blocks before it.
-	reg [24:0] stage_offset;
-
-	// ---- State --------------------------------------------------------------
-
-	localparam S_IDLE        = 4'd0;
-	localparam S_STAGE_SCAN  = 4'd1;
-	localparam S_STAGE_RD    = 4'd2;
-	localparam S_STAGE_RD_W  = 4'd3;
-	localparam S_STAGE_WR    = 4'd4;
-	localparam S_STAGE_WR_W  = 4'd5;
-	localparam S_STAGE_HDR   = 4'd6;
-	localparam S_STAGE_HDR_W = 4'd7;
-	localparam S_APPLY_HDR   = 4'd8;
-	localparam S_APPLY_HDR_W = 4'd9;
-	localparam S_APPLY_SCAN  = 4'd10;
-	localparam S_APPLY_RD    = 4'd11;
-	localparam S_APPLY_RD_W  = 4'd12;
-	localparam S_APPLY_WR    = 4'd13;
-	localparam S_APPLY_WR_W  = 4'd14;
-	localparam S_FINISH      = 4'd15;
-
-
-	reg  [3:0] state;
-	reg        copy_dirtied;    // the block being copied was rewritten mid-copy
-
-	// Apply diagnostics, stamped into header words 22-24 of every staged save:
-	// how many applies ran since reset, the last apply's verdict (1 = header
-	// accepted, 2 = rejected), and how many p2 writes COMPLETED during the
-	// last apply. Delivery is proven complete on hardware and the header
-	// provably passes, yet the game sees unchanged flash -- these words say
-	// whether the writes themselves are being acknowledged.
-	reg [15:0] diag_applies;
-	reg [15:0] diag_verdict;
-	reg [15:0] diag_p2wr;
-
-	reg [15:0] block_word;      // position within the block being copied
-	reg [15:0] xfer_data;       // the word in flight
-	reg  [4:0] hdr_idx;         // position within the header
-	reg [19:0] quiet;
-	reg        apply_pending;   // apply the staged image once the cart is ready
-	reg        apply_ok;        // the header matched this cartridge
-
-	wire flash_quiet = (die_busy_i == 2'b00) && !event0_i && !event1_i;
-
-	// A write event aimed at the very block currently being walked.
-	wire ev_this_block = (event0_i && !geo_die && block0_i == geo_block) ||
-	                     (event1_i &&  geo_die && block1_i == geo_block);
-
-	// The header as a function of its index, so it needs no storage of its own.
-	reg [15:0] hdr_word;
-
-	always @* begin
-		case (hdr_idx)
-			5'd0:  hdr_word = MAGIC0;
-			5'd1:  hdr_word = MAGIC1;
-			5'd2:  hdr_word = MAGIC2;
-			5'd3:  hdr_word = MAGIC3;
-			5'd4:  hdr_word = cart_crc32_i[15:0];
-			5'd5:  hdr_word = cart_crc32_i[31:16];
-			5'd6:  hdr_word = {7'd0, cart_bytes_i[24:16]};
-			5'd7:  hdr_word = cart_bytes_i[15:0];
-			5'd8:  hdr_word = dirty0[15:0];
-			5'd9:  hdr_word = dirty0[31:16];
-			5'd10: hdr_word = dirty0[47:32];
-			5'd11: hdr_word = dirty0[63:48];
-			5'd12: hdr_word = dirty1[15:0];
-			5'd13: hdr_word = dirty1[31:16];
-			5'd14: hdr_word = dirty1[47:32];
-			5'd15: hdr_word = dirty1[63:48];
-			5'd16: hdr_word = diag_beats_i;
-			5'd17: hdr_word = diag_drops_i;
-			// 18 retired with 19-21: high-water read zero through every
-			// test; drops alone detect an overrun.
-			// 19-21 retired: delivery completeness and the no-verify-reads
-			// question were answered for good; the words stay zero so the
-			// header layout is stable.
-			5'd22: hdr_word = diag_applies;
-			5'd23: hdr_word = diag_verdict;
-			5'd24: hdr_word = diag_p2wr;
-			default: hdr_word = 16'd0;
-		endcase
-	end
-
-	always @(posedge clk) begin
-		p2_req_o    <= 1'b0;
-		stage_req_o <= 1'b0;
-
-		// Flash reports are taken at all times, including mid-copy: a block
-		// written while it is being staged is marked pending again, so the torn
-		// copy is replaced rather than kept.
-		if (event0_i) begin dirty0[block0_i] <= 1'b1; pending0[block0_i] <= 1'b1; end
-		if (event1_i) begin dirty1[block1_i] <= 1'b1; pending1[block1_i] <= 1'b1; end
-
-		if (ev_this_block && (state == S_STAGE_RD  || state == S_STAGE_RD_W ||
-		                      state == S_STAGE_WR  || state == S_STAGE_WR_W)) begin
-			copy_dirtied <= 1'b1;
-		end
-
-		if (flash_quiet && quiet != QUIET_CLOCKS) quiet <= quiet + 20'd1;
-		else if (!flash_quiet)                    quiet <= 20'd0;
-
-		if (reset || cart_replace_i) begin
-			diag_applies  <= 16'd0;
-			diag_verdict  <= 16'd0;
-			diag_p2wr     <= 16'd0;
-			state         <= S_IDLE;
-			boot_hold_o   <= 1'b0;
-			busy_o        <= 1'b0;
-			dirty0        <= 64'd0;
-			dirty1        <= 64'd0;
-			pending0      <= 64'd0;
-			pending1      <= 64'd0;
-			quiet         <= 20'd0;
-			apply_pending <= 1'b1;
-			apply_ok      <= 1'b0;
-		end else begin
-			if (state_apply_i) begin
-				apply_pending <= 1'b1;
-			end
-
-			case (state)
-				S_IDLE: begin
-					if (cart_ready_i && apply_pending) begin
-						// Hold the machine in reset from cartridge-ready until
-						// the apply has run, and do not run the apply until APF
-						// has finished delivering slots -- the save slot streams
-						// AFTER the cartridge, so at this moment it is still in
-						// flight. The hold covers the wait, so the BIOS and the
-						// game still only ever observe restored flash.
-						boot_hold_o <= 1'b1;
-						busy_o      <= 1'b1;
-						if (slots_settled_i) begin
-							apply_pending <= 1'b0;
-							hdr_idx       <= 4'd0;
-							apply_ok      <= 1'b1;
-`ifdef NGPC_SAVE_DIAG
-							diag_applies  <= diag_applies + 16'd1;
-							diag_verdict  <= 16'd0;
-							diag_p2wr     <= 16'd0;
-`endif
-							state         <= S_APPLY_HDR;
-						end
-					end else if (cart_ready_i && pending_any && !host_busy_i &&
-					             quiet == QUIET_CLOCKS) begin
-						boot_hold_o <= 1'b0;
-						busy_o       <= 1'b1;
-						geo_die      <= 1'b0;
-						geo_block    <= 6'd0;
-						stage_offset <= 25'd0;
-						state        <= S_STAGE_SCAN;
-					end else begin
-						boot_hold_o <= 1'b0;
-						busy_o      <= 1'b0;
-					end
-				end
-
-				// ---------------- stage: cartridge -> staging ----------------
-				S_STAGE_SCAN: begin
-					if (block_pending) begin
-						block_word   <= 16'd0;
-						copy_dirtied <= 1'b0;
-						state        <= S_STAGE_RD;
-					end else begin
-						// Dirty-but-not-pending blocks still occupy their slot
-						// in the payload, so the offset advances for them too.
-						if (block_dirty) stage_offset <= stage_offset + {9'd0, geo_words, 1'b0};
-
-						if (geo_block == 6'd63) begin
-							if (geo_die) begin
-								hdr_idx <= 4'd0;
-								state   <= S_STAGE_HDR;
-							end else begin
-								geo_die   <= 1'b1;
-								geo_block <= 6'd0;
-							end
-						end else begin
-							geo_block <= geo_block + 6'd1;
-						end
-					end
-				end
-
-				S_STAGE_RD: begin
-					if (p2_ready_i) begin
-						p2_req_o  <= 1'b1;
-						p2_we_o   <= 1'b0;
-						p2_addr_o <= block_base_addr + {8'd0, block_word, 1'b0};
-						state     <= S_STAGE_RD_W;
-					end
-				end
-
-				S_STAGE_RD_W: begin
-					if (p2_done_i) begin
-						xfer_data <= p2_rdata_i;
-						state     <= S_STAGE_WR;
-					end
-				end
-
-				S_STAGE_WR: begin
-					if (stage_ready_i) begin
-						stage_req_o   <= 1'b1;
-						stage_we_o    <= 1'b1;
-						stage_addr_o  <= 25'd512 + stage_offset +
-						                 {8'd0, block_word, 1'b0};
-						stage_wdata_o <= xfer_data;
-						state         <= S_STAGE_WR_W;
-					end
-				end
-
-				S_STAGE_WR_W: begin
-					if (stage_done_i) begin
-						if (block_word + 16'd1 >= geo_words) begin
-							// The block is staged. Clear pending -- UNLESS the
-							// game rewrote it while the copy was in flight. The
-							// event handler above re-marks the bit, but this
-							// assignment runs later in the block and would
-							// overwrite that re-mark, so the mid-copy history
-							// has to be carried explicitly: the first version
-							// of this line wiped the re-mark and a torn copy
-							// stayed torn (caught by sim/tb_cart_save.sv, D).
-							if (geo_die) pending1[geo_block] <= copy_dirtied || ev_this_block;
-							else         pending0[geo_block] <= copy_dirtied || ev_this_block;
-
-							stage_offset <= stage_offset + {9'd0, geo_words, 1'b0};
-
-							if (geo_block == 6'd63) begin
-								if (geo_die) begin
-									hdr_idx <= 4'd0;
-									state   <= S_STAGE_HDR;
-								end else begin
-									geo_die   <= 1'b1;
-									geo_block <= 6'd0;
-									state     <= S_STAGE_SCAN;
-								end
-							end else begin
-								geo_block <= geo_block + 6'd1;
-								state     <= S_STAGE_SCAN;
-							end
-						end else begin
-							block_word <= block_word + 16'd1;
-							state      <= S_STAGE_RD;
-						end
-					end
-				end
-
-				// The header goes last, so a staging pass interrupted by a
-				// power cut leaves the previous header describing the previous
-				// payload rather than a half-written one.
-				S_STAGE_HDR: begin
-					if (stage_ready_i) begin
-						stage_req_o   <= 1'b1;
-						stage_we_o    <= 1'b1;
-						stage_addr_o  <= {19'd0, hdr_idx, 1'b0};
-						stage_wdata_o <= hdr_word;
-						state         <= S_STAGE_HDR_W;
-					end
-				end
-
-				S_STAGE_HDR_W: begin
-					if (stage_done_i) begin
-						if (hdr_idx == 5'd24) state   <= S_FINISH;
-						else begin
-							hdr_idx <= hdr_idx + 5'd1;
-							state   <= S_STAGE_HDR;
-						end
-					end
-				end
-
-				// ---------------- apply: staging -> cartridge ----------------
-				S_APPLY_HDR: begin
-					if (stage_ready_i) begin
-						stage_req_o  <= 1'b1;
-						stage_we_o   <= 1'b0;
-						stage_addr_o <= {19'd0, hdr_idx, 1'b0};
-						state        <= S_APPLY_HDR_W;
-					end
-				end
-
-				S_APPLY_HDR_W: begin
-					if (stage_done_i) begin
-						case (hdr_idx)
-							5'd0:  if (stage_rdata_i != MAGIC0) apply_ok <= 1'b0;
-							5'd1:  if (stage_rdata_i != MAGIC1) apply_ok <= 1'b0;
-							5'd2:  if (stage_rdata_i != MAGIC2) apply_ok <= 1'b0;
-							5'd3:  if (stage_rdata_i != MAGIC3) apply_ok <= 1'b0;
-							5'd4:  if (stage_rdata_i != cart_crc32_i[15:0])  apply_ok <= 1'b0;
-							5'd5:  if (stage_rdata_i != cart_crc32_i[31:16]) apply_ok <= 1'b0;
-							5'd8:  dirty0[15:0]  <= stage_rdata_i;
-							5'd9:  dirty0[31:16] <= stage_rdata_i;
-							5'd10: dirty0[47:32] <= stage_rdata_i;
-							5'd11: dirty0[63:48] <= stage_rdata_i;
-							5'd12: dirty1[15:0]  <= stage_rdata_i;
-							5'd13: dirty1[31:16] <= stage_rdata_i;
-							5'd14: dirty1[47:32] <= stage_rdata_i;
-							5'd15: dirty1[63:48] <= stage_rdata_i;
-							default: ;
-						endcase
-
-						if (hdr_idx == 5'd15) begin
-							geo_die      <= 1'b0;
-							geo_block    <= 6'd0;
-							stage_offset <= 25'd0;
-`ifdef NGPC_SAVE_DIAG
-							diag_verdict <= apply_ok ? 16'd1 : 16'd2;
-`endif
-							state        <= apply_ok ? S_APPLY_SCAN : S_FINISH;
-						end else begin
-							hdr_idx <= hdr_idx + 5'd1;
-							state   <= apply_ok ? S_APPLY_HDR : S_FINISH;
-						end
-					end
-				end
-
-				S_APPLY_SCAN: begin
-					if (block_dirty) begin
-						block_word <= 16'd0;
-						state      <= S_APPLY_RD;
-					end else if (geo_block == 6'd63) begin
-						if (geo_die) state <= S_FINISH;
-						else begin
-							geo_die   <= 1'b1;
-							geo_block <= 6'd0;
-						end
-					end else begin
-						geo_block <= geo_block + 6'd1;
-					end
-				end
-
-				S_APPLY_RD: begin
-					if (stage_ready_i) begin
-						stage_req_o  <= 1'b1;
-						stage_we_o   <= 1'b0;
-						stage_addr_o <= 25'd512 + stage_offset +
-						                {8'd0, block_word, 1'b0};
-						state        <= S_APPLY_RD_W;
-					end
-				end
-
-				S_APPLY_RD_W: begin
-					if (stage_done_i) begin
-						xfer_data <= stage_rdata_i;
-						state     <= S_APPLY_WR;
-					end
-				end
-
-				S_APPLY_WR: begin
-					if (p2_ready_i) begin
-						p2_req_o   <= 1'b1;
-						p2_we_o    <= 1'b1;
-						p2_addr_o  <= block_base_addr + {8'd0, block_word, 1'b0};
-						p2_wdata_o <= xfer_data;
-						state      <= S_APPLY_WR_W;
-					end
-				end
-
-				S_APPLY_WR_W: begin
-					if (p2_done_i) begin
-`ifdef NGPC_SAVE_DIAG
-						diag_p2wr <= diag_p2wr + 16'd1;
-`endif
-						if (block_word + 16'd1 >= geo_words) begin
-							stage_offset <= stage_offset + {9'd0, geo_words, 1'b0};
-
-							if (geo_block == 6'd63) begin
-								if (geo_die) state <= S_FINISH;
-								else begin
-									geo_die   <= 1'b1;
-									geo_block <= 6'd0;
-									state     <= S_APPLY_SCAN;
-								end
-							end else begin
-								geo_block <= geo_block + 6'd1;
-								state     <= S_APPLY_SCAN;
-							end
-						end else begin
-							block_word <= block_word + 16'd1;
-							state      <= S_APPLY_RD;
-						end
-					end
-				end
-
-				S_FINISH: begin
-					boot_hold_o <= 1'b0;
-					busy_o      <= 1'b0;
-					quiet       <= 20'd0;
-					state       <= S_IDLE;
-				end
-
-				default: state <= S_IDLE;
-			endcase
-		end
-	end
-
-	wire unused_ok = &{1'b0, STAGE_BYTES, 1'b0};
-
+    always @(posedge clk) begin
+        p2_req_o<=0; stage_req_o<=0;
+        if (flash_quiet && quiet!=QUIET_CLOCKS) quiet<=quiet+1'b1;
+        else if (!flash_quiet) quiet<=0;
+        if (event0_i) dirty0[block0_i]<=1;
+        if (event1_i) dirty1[block1_i]<=1;
+        if (flash_event) begin
+            needs_build<=1; candidate_changed<=1; save_error_o<=0;
+        end
+        if (state_apply_i) begin apply_pending<=1; state_restore<=1; end
+        if (reset || cart_replace_i) begin
+            state<=IDLE; busy_o<=0; boot_hold_o<=0; stage_bank_o<=0;
+            save_error_o<=0; apply_error_o<=0;
+            dirty0<=0; dirty1<=0; image0<=0; image1<=0;
+            needs_build<=0; candidate_changed<=0; valid_image<=0;
+            apply_pending<=1; state_restore<=0; quiet<=0;
+            p2_we_o<=0; stage_we_o<=0;
+        end else case(state)
+            IDLE: begin
+                busy_o<=0; boot_hold_o<=0;
+                if(cart_ready_i && apply_pending) begin
+                    busy_o<=1; boot_hold_o<=1;
+                    if(slots_settled_i) begin
+                        apply_pending<=0; apply_error_o<=0;
+                        hdr_index<=0; header_ok<=1; legacy<=0;
+                        image0<=0; image1<=0; image_words<=0;
+                        crc_acc<=32'hFFFFFFFF;
+                        state<=HDR_READ;
+                    end
+                end else if(cart_ready_i && needs_build && !save_error_o &&
+                            !host_busy_i && flash_quiet && quiet==QUIET_CLOCKS) begin
+                    busy_o<=1; image0<=dirty0; image1<=dirty1;
+                    geo_die<=0; geo_block<=0; cursor<=17'd256;
+                    crc_acc<=32'hFFFFFFFF; candidate_changed<=0;
+                    state<=ENC_SCAN;
+                end
+            end
+            ENC_SCAN: begin
+                if(selected && !geo_valid) begin save_error_o<=1; state<=FINISH; end
+                else if(selected) begin word_index<=0; erased_count<=0; state<=ENC_READ; end
+                else state<=ENC_NEXT;
+            end
+            ENC_READ: if(p2_ready_i) begin
+                p2_req_o<=1; p2_we_o<=0;
+                p2_addr_o<=block_addr+{8'd0,word_index,1'b0}; state<=ENC_READ_WAIT;
+            end
+            ENC_READ_WAIT: if(p2_done_i) begin value<=p2_rdata_i; state<=ENC_WORD; end
+            ENC_WORD: begin
+                if(value==16'hFFFF) begin
+                    erased_count<=erased_count+1'b1;
+                    if(word_index+16'd1==geo_words) state<=ENC_MARK;
+                    else begin word_index<=word_index+1'b1; state<=ENC_READ; end
+                end else if(erased_count!=0) state<=ENC_MARK;
+                else state<=ENC_LITERAL;
+            end
+            ENC_MARK: begin stage_wdata_o<=16'hFFFF; after_put<=ENC_COUNT; state<=PUT; end
+            ENC_COUNT: begin stage_wdata_o<=erased_count;
+                after_put<= value==16'hFFFF ? ENC_NEXT : ENC_LITERAL;
+                erased_count<=0; state<=PUT;
+            end
+            ENC_LITERAL: begin stage_wdata_o<=value;
+                after_put<=word_index+16'd1==geo_words ? ENC_NEXT : ENC_READ;
+                word_index<=word_index+1'b1; state<=PUT;
+            end
+            PUT: begin
+                if(cursor>=LIMIT_WORDS) begin
+                    if(!candidate_changed && !flash_event) save_error_o<=1;
+                    state<=FINISH;
+                end
+                else if(stage_ready_i) begin
+                    stage_req_o<=1; stage_we_o<=1;
+                    stage_addr_o<=write_bank+{7'd0,cursor,1'b0}; state<=PUT_WAIT;
+                end
+            end
+            PUT_WAIT: if(stage_done_i) begin
+                crc_acc<=crc_next;
+                cursor<=cursor+1'b1; state<=after_put;
+            end
+            ENC_NEXT: begin
+                if(geo_block==63) begin
+                    if(geo_die) begin hdr_index<=0; expected_crc<=crc_acc; crc_acc<=32'hFFFFFFFF; state<=ENC_HEADER; end
+                    else begin geo_die<=1; geo_block<=0; state<=ENC_SCAN; end
+                end else begin geo_block<=geo_block+1'b1; state<=ENC_SCAN; end
+            end
+            ENC_HEADER: if(stage_ready_i) begin
+                stage_req_o<=1; stage_we_o<=1;
+                stage_addr_o<=write_bank+{19'd0,hdr_index,1'b0};
+                stage_wdata_o<=header_word; state<=ENC_HEADER_WAIT;
+            end
+            ENC_HEADER_WAIT: if(stage_done_i) begin
+                if(hdr_index<20) crc_acc<=crc_next;
+                if(hdr_index==21) state<=COMMIT;
+                else begin hdr_index<=hdr_index+1'b1; state<=ENC_HEADER; end
+            end
+            COMMIT: begin
+                // Never publish a candidate containing a concurrent flash write.
+                // Host reads retain the old bank throughout an interrupted pass.
+                if(!candidate_changed && !flash_event && flash_quiet && !host_busy_i) begin
+                    stage_bank_o<=~stage_bank_o; needs_build<=0;
+                    valid_image<=|image0 || |image1; save_error_o<=0;
+                end
+                state<=FINISH;
+            end
+            HDR_READ: if(stage_ready_i) begin
+                stage_req_o<=1; stage_we_o<=0;
+                stage_addr_o<=read_bank+{19'd0,hdr_index,1'b0}; state<=HDR_WAIT;
+            end
+            HDR_WAIT: if(stage_done_i) begin
+                if(hdr_index<20) crc_acc<=crc_next;
+                case(hdr_index)
+                    0:if(stage_rdata_i!=MAGIC0) header_ok<=0;
+                    1:if(stage_rdata_i!=MAGIC1) header_ok<=0;
+                    2:if(stage_rdata_i!=MAGIC2) header_ok<=0;
+                    3:begin legacy<=stage_rdata_i==V2;
+                        if(stage_rdata_i!=V2 && stage_rdata_i!=V3) header_ok<=0; end
+                    4:if(stage_rdata_i!=cart_crc32_i[15:0]) header_ok<=0;
+                    5:if(stage_rdata_i!=cart_crc32_i[31:16]) header_ok<=0;
+                    6:if(stage_rdata_i!={7'd0,cart_bytes_i[24:16]}) header_ok<=0;
+                    7:if(stage_rdata_i!=cart_bytes_i[15:0]) header_ok<=0;
+                    8:image0[15:0]<=stage_rdata_i; 9:image0[31:16]<=stage_rdata_i;
+                    10:image0[47:32]<=stage_rdata_i; 11:image0[63:48]<=stage_rdata_i;
+                    12:image1[15:0]<=stage_rdata_i; 13:image1[31:16]<=stage_rdata_i;
+                    14:image1[47:32]<=stage_rdata_i; 15:image1[63:48]<=stage_rdata_i;
+                    16:image_words<={1'b0,stage_rdata_i};
+                    17:if(stage_rdata_i!={12'd0,size_code1_i,size_code0_i}) header_ok<=0;
+                    18:expected_crc[15:0]<=stage_rdata_i; 19:expected_crc[31:16]<=stage_rdata_i;
+                    20:if(stage_rdata_i!=crc_acc[15:0]) header_ok<=0;
+                    21:if(stage_rdata_i!=crc_acc[31:16]) header_ok<=0;
+                    default: ;
+                endcase
+                if((legacy && hdr_index==15) || hdr_index==21) state<=HDR_CHECK;
+                else begin hdr_index<=hdr_index+1'b1; state<=HDR_READ; end
+            end
+            HDR_CHECK: begin
+                if(!header_ok || (!legacy && (image_words<256 || image_words>LIMIT_WORDS)) ||
+                   (state_restore && (((dirty0 & ~image0)!=0) || ((dirty1 & ~image1)!=0)))) state<=REJECT;
+                else begin
+                    geo_die<=0; geo_block<=0; cursor<=256; validate_only<=1;
+                    crc_acc<=32'hFFFFFFFF; state<=DEC_SCAN;
+                end
+            end
+            DEC_SCAN: begin
+                if(selected && !geo_valid) state<=REJECT;
+                else if(selected) begin word_index<=0; state<=DEC_READ; end
+                else state<=DEC_NEXT;
+            end
+            DEC_READ: begin
+                if(cursor>=LIMIT_WORDS || (!legacy && cursor>=image_words)) state<=REJECT;
+                else if(stage_ready_i) begin
+                    stage_req_o<=1; stage_we_o<=0;
+                    stage_addr_o<=read_bank+{7'd0,cursor,1'b0}; state<=DEC_READ_WAIT;
+                end
+            end
+            DEC_READ_WAIT: if(stage_done_i) begin
+                cursor<=cursor+1'b1; crc_acc<=crc_next;
+                value<=stage_rdata_i; run_left<=1;
+                state<=(!legacy && stage_rdata_i==16'hFFFF) ? DEC_COUNT : DEC_WRITE;
+            end
+            DEC_COUNT: begin
+                if(cursor>=image_words) state<=REJECT;
+                else if(stage_ready_i) begin
+                    stage_req_o<=1; stage_we_o<=0;
+                    stage_addr_o<=read_bank+{7'd0,cursor,1'b0}; state<=DEC_COUNT_WAIT;
+                end
+            end
+            DEC_COUNT_WAIT: if(stage_done_i) begin
+                cursor<=cursor+1'b1; crc_acc<=crc_next;
+                if(stage_rdata_i==0 || {1'b0,stage_rdata_i}+{1'b0,word_index}>{1'b0,geo_words}) state<=REJECT;
+                else begin run_left<=stage_rdata_i; state<=DEC_WRITE; end
+            end
+            DEC_WRITE: begin
+                if(validate_only) begin
+                    word_index<=word_index+run_left;
+                    state<=word_index+run_left==geo_words ? DEC_NEXT : DEC_READ;
+                end else if(p2_ready_i) begin
+                    p2_req_o<=1; p2_we_o<=1; p2_addr_o<=block_addr+{8'd0,word_index,1'b0};
+                    p2_wdata_o<=value; state<=DEC_WRITE_WAIT;
+                end
+            end
+            DEC_WRITE_WAIT: if(p2_done_i) begin
+                word_index<=word_index+1'b1; run_left<=run_left-1'b1;
+                if(word_index+16'd1==geo_words) state<=DEC_NEXT;
+                else state<=run_left==1 ? DEC_READ : DEC_WRITE;
+            end
+            DEC_NEXT: begin
+                if(geo_block==63) begin
+                    if(geo_die) state<=DEC_END;
+                    else begin geo_die<=1; geo_block<=0; state<=DEC_SCAN; end
+                end else begin geo_block<=geo_block+1'b1; state<=DEC_SCAN; end
+            end
+            DEC_END: begin
+                if(validate_only) begin
+                    if(!legacy && (cursor!=image_words || crc_acc!=expected_crc)) state<=REJECT;
+                    else begin
+                        validate_only<=0; geo_die<=0; geo_block<=0; cursor<=256;
+                        crc_acc<=32'hFFFFFFFF; state<=DEC_SCAN;
+                    end
+                end else begin
+                    dirty0<=image0; dirty1<=image1; needs_build<=legacy;
+                    save_error_o<=0; valid_image<=|image0 || |image1;
+                    if(state_restore) stage_bank_o<=~stage_bank_o;
+                    state_restore<=0; state<=FINISH;
+                end
+            end
+            REJECT: begin
+                apply_error_o<=1;
+                if(!state_restore) begin dirty0<=0; dirty1<=0; needs_build<=1; valid_image<=0; end
+                state_restore<=0; state<=FINISH;
+            end
+            FINISH: begin busy_o<=0; boot_hold_o<=0; quiet<=0; state<=IDLE; end
+            default: state<=IDLE;
+        endcase
+    end
+    wire unused_diag = &{1'b0,diag_beats_i,diag_drops_i,1'b0};
 endmodule
-
 `default_nettype wire

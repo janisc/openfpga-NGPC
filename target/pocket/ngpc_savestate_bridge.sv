@@ -95,12 +95,14 @@ module ngpc_savestate_bridge #(
 	// are section-relative words. Read data is registered twice: sample
 	// cart_img_rd_data three clk_sys after presenting cart_img_rd_addr.
 	output reg         cart_save_req,    // pulse: capture the cart image now
-	input  wire        cart_save_done,   // pulse: image written via cart_img_wr
+	input  wire        cart_save_done,
+	input  wire        cart_save_error,   // pulse: image written via cart_img_wr
 	input  wire        cart_img_wr,
 	input  wire [13:0] cart_img_addr,
 	input  wire [31:0] cart_img_data,
 	output reg         cart_load_req,    // pulse: section valid, drain and apply
-	input  wire        cart_load_done,   // pulse: copier finished with it
+	input  wire        cart_load_done,
+	input  wire        cart_load_error,   // pulse: copier finished with it
 	input  wire [13:0] cart_img_rd_addr,
 	output wire [31:0] cart_img_rd_data,
 
@@ -295,6 +297,8 @@ module ngpc_savestate_bridge #(
 	// the header check, and reporting a success that restores nothing.
 	localparam [16:0] BLOB_QUIET = 17'd100_000;   // ~1.35 ms at 74.25 MHz
 
+	wire        blob_sel  = bridge_addr[31:28] == BLOB_ADDR_NIBBLE;
+
 	reg [16:0] blob_quiet_cnt = BLOB_QUIET;
 
 	always @(posedge clk_74a) begin
@@ -319,7 +323,6 @@ module ngpc_savestate_bridge #(
 
 	reg [31:0] blob_q;
 
-	wire        blob_sel  = bridge_addr[31:28] == BLOB_ADDR_NIBBLE;
 	wire [14:0] blob_word = bridge_addr[16:2];
 
 	// WRITES GO WHERE THEY ARRIVE, NOT WHERE THE ADDRESS SAYS.
@@ -596,7 +599,8 @@ module ngpc_savestate_bridge #(
 					seq_pa_din  <= cart_img_data;
 					if (cart_save_done) begin
 						start_busy_q <= 1'b0;
-						start_ok_q   <= 1'b1;
+						start_ok_q   <= !cart_save_error;
+                        start_err_q <= cart_save_error;
 						state        <= S_DONE;
 					end
 				end
@@ -608,8 +612,15 @@ module ngpc_savestate_bridge #(
 					seq_pa_sel  <= 1'b1;
 					seq_pa_addr <= CART_BASE + {1'b0, cart_img_rd_addr};
 					if (cart_load_done) begin
-						ss_load <= 1'b1;
-						state   <= S_LOAD_RUN;
+                        if (cart_load_error) begin
+                            load_busy_q <= 1'b0;
+                            load_ok_q <= 1'b0;
+                            load_err_q <= 1'b1;
+                            state <= S_DONE;
+                        end else begin
+                            ss_load <= 1'b1;
+                            state <= S_LOAD_RUN;
+                        end
 					end
 				end
 

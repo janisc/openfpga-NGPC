@@ -581,6 +581,8 @@ module core_top (
   wire        stage_req;
   wire        stage_we;
   wire [24:0] stage_addr;
+  wire stage_bank, mc_save_error, mc_apply_error, stage_host_ready;
+  wire cs_save_error, cs_load_error;
   wire [15:0] stage_wdata;
   wire        stage_ready;
   wire        stage_done;
@@ -647,6 +649,7 @@ module core_top (
   synch_3 settle_sync (slots_settled_74, slots_settled, clk_sys);
 
   ngpc_stage_mem stage_mem (
+      .active_bank_i(stage_bank),
       .clk  (clk_sys),
       .reset(reset_in),
 
@@ -659,6 +662,7 @@ module core_top (
       .host_rd_data_o(stage_host_rd_data),
 
       .host_busy_o(host_busy),
+      .host_wr_ready_o(stage_host_ready),
       .diag_beats_o(stage_diag_beats),
       .diag_drops_o(stage_diag_drops),
 
@@ -917,11 +921,13 @@ module core_top (
 
       .cart_save_req   (cs_save_req),
       .cart_save_done  (cs_save_done),
+      .cart_save_error (cs_save_error),
       .cart_img_wr     (cs_img_wr),
       .cart_img_addr   (cs_img_addr),
       .cart_img_data   (cs_img_data),
       .cart_load_req   (cs_load_req),
       .cart_load_done  (cs_load_done),
+      .cart_load_error (cs_load_error),
       .cart_img_rd_addr(cs_img_rd_addr),
       .cart_img_rd_data(cs_img_rd_data),
 
@@ -934,10 +940,15 @@ module core_top (
       .draining_o  (sc_draining),
 
       .sc_host_wr  (sc_host_wr),
+      .sc_host_ready(stage_host_ready),
       .sc_host_addr(sc_host_addr),
       .sc_host_data(sc_host_data),
 
       .stage_current_i(mc_stage_current),
+      .stage_bank_i(stage_bank),
+      .save_error_i(mc_save_error),
+      .apply_error_i(mc_apply_error),
+      .host_busy_i(host_busy),
       .state_apply_o  (mc_state_apply),
       .apply_busy_i   (mc_save_busy),
       .hold_o         (mc_capture_hold)
@@ -974,11 +985,13 @@ module core_top (
 
       .cart_save_req   (cs_save_req),
       .cart_save_done  (cs_save_done),
+      .cart_save_error (cs_save_error),
       .cart_img_wr     (cs_img_wr),
       .cart_img_addr   (cs_img_addr),
       .cart_img_data   (cs_img_data),
       .cart_load_req   (cs_load_req),
       .cart_load_done  (cs_load_done),
+      .cart_load_error (cs_load_error),
       .cart_img_rd_addr(cs_img_rd_addr),
       .cart_img_rd_data(cs_img_rd_data),
 
@@ -1055,6 +1068,9 @@ module core_top (
       .audio_r(audio_r),
 
       .stage_req  (stage_req),
+      .stage_bank (stage_bank),
+      .save_error (mc_save_error),
+      .apply_error(mc_apply_error),
       .stage_we   (stage_we),
       .stage_addr (stage_addr),
       .stage_wdata(stage_wdata),

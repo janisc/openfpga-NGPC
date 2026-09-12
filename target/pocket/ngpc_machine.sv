@@ -78,6 +78,9 @@ module ngpc_machine
 	// staging region by APF at core start and read back at exit; this machine
 	// only keeps that region current. ngpc_stage_mem lives in the top level
 	// because it also answers the bridge.
+	output wire        stage_bank,
+	output wire        save_error,
+	output wire        apply_error,
 	output wire        stage_req,
 	output wire        stage_we,
 	output wire [24:0] stage_addr,
@@ -640,6 +643,9 @@ module ngpc_machine
 		.host_busy_i     (host_busy),
 		.state_apply_i   (state_apply),
 		.stage_current_o (stage_current),
+		.stage_bank_o    (stage_bank),
+		.save_error_o    (save_error),
+		.apply_error_o   (apply_error),
 		.slots_settled_i (slots_settled),
 		.diag_beats_i    (stage_diag_beats),
 		.diag_drops_i    (stage_diag_drops),

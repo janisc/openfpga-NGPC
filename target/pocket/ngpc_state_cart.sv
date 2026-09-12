@@ -35,12 +35,14 @@ module ngpc_state_cart
 	// ---- bridge side (ngpc_savestate_bridge cart section) ------------------
 	input  wire        cart_save_req,
 	output reg         cart_save_done,
+	output reg         cart_save_error,
 	output reg         cart_img_wr,
 	output reg  [13:0] cart_img_addr,
 	output reg  [31:0] cart_img_data,
 
 	input  wire        cart_load_req,
 	output reg         cart_load_done,
+	output reg         cart_load_error,
 	output reg  [13:0] cart_img_rd_addr,
 	input  wire [31:0] cart_img_rd_data,   // valid 3 clks after the address
 
@@ -54,11 +56,16 @@ module ngpc_state_cart
 	output wire        draining_o,     // drain owns staging: host-busy this
 
 	// ---- staging write (host skid path, delivery-identical) ----------------
+	input  wire        sc_host_ready,
 	output reg         sc_host_wr,
 	output reg  [24:0] sc_host_addr,
 	output reg  [15:0] sc_host_data,
 
 	// ---- cart save engine --------------------------------------------------
+	input  wire        stage_bank_i,
+	input  wire        save_error_i,
+	input  wire        apply_error_i,
+	input  wire        host_busy_i,
 	input  wire        stage_current_i,   // stager idle with nothing pending
 	output reg         state_apply_o,     // pulse: apply the staged image
 	input  wire        apply_busy_i,
@@ -93,12 +100,14 @@ module ngpc_state_cart
 	reg        apply_seen;
 	reg        draining;
 
-	assign sc_rd_active = capturing;
+	assign sc_rd_active = capturing && st != I_CUR_WAIT;
 	assign hold_o       = capturing;
 	assign draining_o   = draining;
 
 	always @(posedge clk) begin
 		cart_save_done <= 1'b0;
+		cart_save_error <= 1'b0;
+		cart_load_error <= 1'b0;
 		cart_load_done <= 1'b0;
 		cart_img_wr    <= 1'b0;
 		sc_rd_req      <= 1'b0;
@@ -126,7 +135,12 @@ module ngpc_state_cart
 				// The machine is parked (hold_o), so no new flash events can
 				// arrive; the stager finishes whatever it owed and goes idle.
 				I_CUR_WAIT: begin
-					if (stage_current_i) begin
+                    if (save_error_i) begin
+                        cart_save_error <= 1'b1;
+                        cart_save_done <= 1'b1;
+                        capturing <= 1'b0;
+                        st <= I_IDLE;
+                    end else if (stage_current_i) begin
 						st <= I_RD_LO;
 					end
 				end
@@ -135,7 +149,7 @@ module ngpc_state_cart
 				// mid-walk; once draining_o raises host-busy it cannot start
 				// another one either.
 				I_DR_WAIT: begin
-					if (stage_current_i) begin
+					if (!apply_busy_i) begin
 						st <= I_DR_ADDR;
 					end
 				end
@@ -144,7 +158,7 @@ module ngpc_state_cart
 				I_RD_LO: begin
 					if (sc_rd_ready) begin
 						sc_rd_req  <= 1'b1;
-						sc_rd_addr <= {8'd0, w, 2'b00};
+						sc_rd_addr <= (stage_bank_i ? 25'h10000 : 25'd0) + {8'd0, w, 2'b00};
 						st         <= I_RD_LO_W;
 					end
 				end
@@ -159,7 +173,7 @@ module ngpc_state_cart
 				I_RD_HI: begin
 					if (sc_rd_ready) begin
 						sc_rd_req  <= 1'b1;
-						sc_rd_addr <= {8'd0, w, 2'b00} + 25'd2;
+						sc_rd_addr <= (stage_bank_i ? 25'h10000 : 25'd0) + {8'd0, w, 2'b00} + 25'd2;
 						st         <= I_RD_HI_W;
 					end
 				end
@@ -200,16 +214,16 @@ module ngpc_state_cart
 					end
 				end
 
-				I_DR_WR_LO: begin
+				I_DR_WR_LO: if (sc_host_ready) begin
 					sc_host_wr   <= 1'b1;
-					sc_host_addr <= {8'd0, w, 2'b00};
+					sc_host_addr <= 25'h10000 + {8'd0, w, 2'b00};
 					sc_host_data <= word_q[15:0];
 					st           <= I_DR_WR_HI;
 				end
 
-				I_DR_WR_HI: begin
+				I_DR_WR_HI: if (sc_host_ready) begin
 					sc_host_wr   <= 1'b1;
-					sc_host_addr <= {8'd0, w, 2'b00} + 25'd2;
+					sc_host_addr <= 25'h10000 + {8'd0, w, 2'b00} + 25'd2;
 					sc_host_data <= word_q[31:16];
 					if (w == CART_WORDS[14:0] - 15'd1) begin
 						st <= I_APPLY_REQ;
@@ -219,7 +233,7 @@ module ngpc_state_cart
 					end
 				end
 
-				I_APPLY_REQ: begin
+				I_APPLY_REQ: if (!host_busy_i) begin
 					state_apply_o <= 1'b1;
 					apply_seen    <= 1'b0;
 					st            <= I_APPLY_RUN;
@@ -236,6 +250,7 @@ module ngpc_state_cart
 						apply_seen <= 1'b1;
 					end else if (apply_seen) begin
 						cart_load_done <= 1'b1;
+                        cart_load_error <= apply_error_i;
 						draining       <= 1'b0;
 						st             <= I_IDLE;
 					end

@@ -1,5 +1,7 @@
 # NGPC for Analogue Pocket
 
+**Experimental save-fix branch:** V3 compressed cartridge saves are ready for hardware testing. Back up saves and states before trying it; the old core cannot read V3 files. See the [test guide](docs/SAVEFIX_TESTING.md) and [build/timing notes](docs/SAVEFIX_BUILD.md). The hardware results below describe the upstream port, not validation of this branch.
+
 **This port was created by AI.** It is a port of [MiSTer-devel/NGPC_MiSTer](https://github.com/MiSTer-devel/NGPC_MiSTer) (Kitrinx / Jamie Blanks).
 
 Running on hardware:
@@ -72,12 +74,15 @@ trades away, knowingly:
 - **No autosave toggle, no manual backup buttons** — saving is always on and
   invisible. Backup is copying the `.sav` off the SD card, which is also the
   honest version of what those buttons did.
-- **A save set is capped at 63 KB of dirty blocks** — no licensed game comes
-  anywhere near it (the hungriest known dirties ~32 KB).
+- **The encoded save payload is capped at 63 KiB.** V3 compresses runs of
+  erased flash words, so larger dirty-block sets can fit. Unitron 2 can touch
+  112 KiB of physical blocks despite having small save records. An image
+  that still exceeds capacity is rejected, keeping the previous complete image.
 - **Savestates carry the cartridge delta** — a state embeds the same .sav
   image the save slot holds, so machine and flash restore as one atomic
-  pair, and loading a state rewinds your in-game saves with it. MiSTer
-  stores 8 MB per state for the same idea; ours are 96 KB.
+  pair. Rewinding is rejected if the state omits a block already dirtied in
+  the current session: the pristine bytes needed to restore that block are
+  not retained. MiSTer stores 8 MB per state for the same idea; ours are 96 KB.
 
 And a word of expectation management: the design fills 99% of the Pocket's
 FPGA and does not formally close timing at this speed grade — every feature

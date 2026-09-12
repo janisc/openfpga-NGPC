@@ -29,6 +29,7 @@ module ngpc_stage_mem
 (
 	input  wire        clk,
 	input  wire        reset,
+	input  wire        active_bank_i,  // committed 64 KiB image bank
 
 	// ---- Client A: APF, through data_loader / data_unloader ---------------
 	input  wire        host_wr_i,
@@ -39,6 +40,7 @@ module ngpc_stage_mem
 	input  wire [24:0] host_rd_addr_i,
 	output reg  [15:0] host_rd_data_o,
 
+	output wire        host_wr_ready_o, // backpressure for the internal state copier
 	output wire        host_busy_o,      // a slot transfer is in progress
 
 	// Ingestion diagnostics, stamped into the staged save's header so every
@@ -81,7 +83,9 @@ module ngpc_stage_mem
 	localparam [19:0] HOST_IDLE_CLOCKS = 20'd500_000;
 
 	reg [19:0] host_idle;
-	assign host_busy_o = host_idle != HOST_IDLE_CLOCKS;
+	// Include the first beat and queued writes so a bank commit cannot race
+	// a host transfer. Addresses latch their bank at ingress.
+
 
 	always @(posedge clk) begin
 		if (reset)                            host_idle <= HOST_IDLE_CLOCKS;
@@ -131,11 +135,12 @@ module ngpc_stage_mem
 
 	// The region is addressed in bytes by both clients; PSRAM counts 16-bit
 	// words, so the low bit is dropped.
-	wire [21:0] host_wr_word = host_wr_addr_i[22:1];
-	wire [21:0] host_rd_word = host_rd_addr_i[22:1];
+	wire [21:0] host_wr_word = {6'd0, active_bank_i ^ host_wr_addr_i[16], host_wr_addr_i[15:1]};
+	wire [21:0] host_rd_word = {6'd0, active_bank_i ^ host_rd_addr_i[16], host_rd_addr_i[15:1]};
 	wire [21:0] eng_word     = eng_addr_i[22:1];
 
-	assign eng_ready_o = !ps_busy && !ps_write_en && !ps_read_en && !host_pending;
+	// Requests are queued independently of host priority: a host beat can
+	// arrive between ready and the registered request without losing it.
 
 	// ---- Host write skid FIFO ----------------------------------------------
 	//
@@ -154,6 +159,8 @@ module ngpc_stage_mem
 	wire [9:0]  skid_fill = skid_wp - skid_rp;
 	wire        skid_empty = (skid_wp == skid_rp);
 	wire        skid_full  = (skid_fill == 10'd511);
+	// Leave room for the copier's registered pulse and the next decision.
+	assign host_wr_ready_o = skid_fill < 10'd509;
 
 	always @(posedge clk) begin
 		if (reset) begin
@@ -170,7 +177,7 @@ module ngpc_stage_mem
 					diag_drops_o <= diag_drops_o + 16'd1;
 `endif
 				end else begin
-					skid[skid_wp[8:0]] <= {host_wr_addr_i[22:1], host_wr_data_i};
+					skid[skid_wp[8:0]] <= {host_wr_word, host_wr_data_i};
 					skid_wp <= skid_wp + 10'd1;
 				end
 			end
@@ -182,8 +189,16 @@ module ngpc_stage_mem
 	reg [21:0] host_pending_addr;
 	reg [15:0] host_pending_data;
 
+	assign host_busy_o = host_idle != HOST_IDLE_CLOCKS || host_wr_i ||
+	                     host_rd_i || !skid_empty || host_pending;
+
+	reg eng_pending, eng_pending_we;
+	reg [21:0] eng_pending_addr;
+	reg [15:0] eng_pending_data;
 	reg        eng_active;
 	reg        eng_active_rd;
+	assign eng_ready_o = !eng_pending && !eng_active && !eng_req_i;
+
 
 	always @(posedge clk) begin
 		ps_write_en <= 1'b0;
@@ -193,9 +208,16 @@ module ngpc_stage_mem
 		if (reset) begin
 			host_pending <= 1'b0;
 			eng_active   <= 1'b0;
+			eng_pending <= 1'b0;
 			skid_rp      <= 10'd0;
 		end else begin
-			// Drain the write skid into the pending slot; reads keep their
+			if (eng_req_i) begin
+                eng_pending <= 1'b1;
+                eng_pending_we <= eng_we_i;
+                eng_pending_addr <= eng_word;
+                eng_pending_data <= eng_wdata_i;
+            end
+            // Drain the write skid into the pending slot; reads keep their
 			// direct path (the flush is sedately paced and proven on hardware).
 			if (!host_pending && !skid_empty) begin
 				host_pending      <= 1'b1;
@@ -221,13 +243,14 @@ module ngpc_stage_mem
 						ps_data_in  <= host_pending_data;
 						ps_write_en <= 1'b1;
 					end
-				end else if (eng_req_i) begin
+				end else if (eng_pending) begin
+                    eng_pending <= 1'b0;
 					ps_bank    <= 1'b0;
-					ps_addr    <= eng_word;
+					ps_addr    <= eng_pending_addr;
 					eng_active <= 1'b1;
 
-					if (eng_we_i) begin
-						ps_data_in    <= eng_wdata_i;
+					if (eng_pending_we) begin
+						ps_data_in    <= eng_pending_data;
 						ps_write_en   <= 1'b1;
 						eng_active_rd <= 1'b0;
 					end else begin
