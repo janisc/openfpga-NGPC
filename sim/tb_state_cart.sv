@@ -29,7 +29,7 @@ module tb_state_cart;
 
 	// ---- DUT wiring --------------------------------------------------------
 	reg         cart_save_req = 0, cart_load_req = 0;
-	wire        cart_save_done, cart_load_done;
+	wire        cart_save_done, cart_load_done, cart_load_error;
 	wire        cart_img_wr;
 	wire [13:0] cart_img_addr;
 	wire [31:0] cart_img_data;
@@ -41,11 +41,13 @@ module tb_state_cart;
 	reg         sc_rd_ready = 1, sc_rd_done = 0;
 	reg  [15:0] sc_rd_data;
 
+	reg         sc_host_ready = 1;
 	wire        sc_host_wr;
 	wire [24:0] sc_host_addr;
 	wire [15:0] sc_host_data;
 
 	reg         stage_current = 0;
+	reg         apply_reject = 0;
 	wire        state_apply;
 	reg         apply_busy = 0;
 	wire        hold;
@@ -56,17 +58,48 @@ module tb_state_cart;
 		.cart_img_wr(cart_img_wr), .cart_img_addr(cart_img_addr),
 		.cart_img_data(cart_img_data),
 		.cart_load_req(cart_load_req), .cart_load_done(cart_load_done),
+		.cart_load_error(cart_load_error),
 		.cart_img_rd_addr(cart_img_rd_addr), .cart_img_rd_data(cart_img_rd_data),
 		.sc_rd_req(sc_rd_req), .sc_rd_addr(sc_rd_addr),
 		.sc_rd_ready(sc_rd_ready), .sc_rd_done(sc_rd_done),
 		.sc_rd_data(sc_rd_data), .sc_rd_active(sc_rd_active),
 		.draining_o(sc_draining),
+		.sc_host_ready(sc_host_ready),
 		.sc_host_wr(sc_host_wr), .sc_host_addr(sc_host_addr),
 		.sc_host_data(sc_host_data),
-		.stage_current_i(stage_current), .state_apply_o(state_apply),
+		.stage_current_i(stage_current), .apply_reject_i(apply_reject),
+		.state_apply_o(state_apply),
 		.apply_busy_i(apply_busy),
 		.hold_o(hold)
 	);
+
+	// Backpressure honesty: a 511-deep skid model whose drain stalls in
+	// long bursts (a congested PSRAM). ready is the same conservative
+	// fill-threshold the real stage_mem exports; the copier's ready-then-
+	// write pipeline is legal because during a drain it is the only
+	// writer, so fill can only fall between sample and assert. The
+	// failure that must never happen is a write at TRUE full.
+	reg [9:0]  skid_fill = 0;
+	reg [9:0]  stall_lfsr = 10'h2A5;
+	reg [5:0]  drain_stall = 0;
+	wire       skid_drain = sc_draining && (skid_fill != 0) && (drain_stall == 0);
+	always @(posedge clk) begin
+		stall_lfsr <= {stall_lfsr[8:0], stall_lfsr[9] ^ stall_lfsr[6]};
+		if (drain_stall != 0)            drain_stall <= drain_stall - 6'd1;
+		else if (stall_lfsr[3:0] == 4'h7) drain_stall <= {2'b01, stall_lfsr[7:4]};
+		if (reset) begin
+			skid_fill     <= 10'd0;
+			sc_host_ready <= 1'b1;
+		end else begin
+			skid_fill <= skid_fill + ((sc_host_wr === 1'b1) ? 10'd1 : 10'd0)
+			                       - ((skid_drain === 1'b1) ? 10'd1 : 10'd0);
+			sc_host_ready <= (skid_fill < 10'd508);
+		end
+	end
+	reg lost_write = 0;
+	always @(posedge clk) begin
+		if (sc_host_wr && skid_fill == 10'd511) lost_write <= 1;
+	end
 
 	// ---- staging model: 16-bit, ready/done pacing on reads -----------------
 	reg [15:0] staging [0:2*CARTW-1];
@@ -221,7 +254,10 @@ module tb_state_cart;
 			end else if (sc_draining) begin
 				$display("   FAIL: draining_o stuck after done");
 				errors = errors + 1;
-			end else $display("   PASS");
+			end else if (lost_write) begin
+				$display("   FAIL: copier wrote into a stalled skid");
+				errors = errors + 1;
+			end else $display("   PASS (byte-exact under stall bursts)");
 		end
 
 		// ---- C3: the busy-rise race ---------------------------------------
@@ -251,6 +287,32 @@ module tb_state_cart;
 			// (we detect it by re-checking: done must come after the fall)
 			if (premature) begin
 				$display("   FAIL: premature done");
+				errors = errors + 1;
+			end else $display("   PASS");
+		end
+
+		// ---- C4: the apply's rejection reaches the bridge ------------------
+		begin : c4
+			integer got_err;
+			$display("== C4 rejected apply surfaces as cart_load_error");
+			init_patterns;
+			stage_current = 1;
+			apply_reject = 0;
+			@(posedge clk); cart_load_req <= 1;
+			@(posedge clk); cart_load_req <= 0;
+			wait (state_apply);
+			repeat (20) @(posedge clk);
+			apply_busy = 1; apply_reject = 1;   // engine runs, then refuses
+			repeat (60) @(posedge clk);
+			apply_busy = 0;
+			got_err = 0;
+			fork : c4w
+				begin wait (cart_load_done); got_err = cart_load_error; disable c4w; end
+				begin repeat (2000) @(posedge clk); disable c4w; end
+			join
+			apply_reject = 0;
+			if (got_err !== 1) begin
+				$display("   FAIL: done without error flag");
 				errors = errors + 1;
 			end else $display("   PASS");
 		end

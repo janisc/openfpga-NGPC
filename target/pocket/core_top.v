@@ -659,6 +659,7 @@ module core_top (
       .host_rd_data_o(stage_host_rd_data),
 
       .host_busy_o(host_busy),
+      .host_wr_ready_o(sc_host_ready),
       .diag_beats_o(stage_diag_beats),
       .diag_drops_o(stage_diag_drops),
 
@@ -906,6 +907,9 @@ module core_top (
   wire        sc_rd_req, sc_rd_active, sc_draining;
   wire [24:0] sc_rd_addr;
   wire        sc_host_wr;
+  wire        sc_host_ready;
+  wire        mc_apply_reject;
+  wire        cs_load_error;
   wire [24:0] sc_host_addr;
   wire [15:0] sc_host_data;
   wire        mc_stage_current, mc_save_busy;
@@ -922,6 +926,7 @@ module core_top (
       .cart_img_data   (cs_img_data),
       .cart_load_req   (cs_load_req),
       .cart_load_done  (cs_load_done),
+      .cart_load_error (cs_load_error),
       .cart_img_rd_addr(cs_img_rd_addr),
       .cart_img_rd_data(cs_img_rd_data),
 
@@ -934,10 +939,12 @@ module core_top (
       .draining_o  (sc_draining),
 
       .sc_host_wr  (sc_host_wr),
+      .sc_host_ready(sc_host_ready),
       .sc_host_addr(sc_host_addr),
       .sc_host_data(sc_host_data),
 
       .stage_current_i(mc_stage_current),
+      .apply_reject_i (mc_apply_reject),
       .state_apply_o  (mc_state_apply),
       .apply_busy_i   (mc_save_busy),
       .hold_o         (mc_capture_hold)
@@ -979,6 +986,7 @@ module core_top (
       .cart_img_data   (cs_img_data),
       .cart_load_req   (cs_load_req),
       .cart_load_done  (cs_load_done),
+      .cart_load_error (cs_load_error),
       .cart_img_rd_addr(cs_img_rd_addr),
       .cart_img_rd_data(cs_img_rd_data),
 
@@ -1063,6 +1071,10 @@ module core_top (
       .stage_rdata(stage_rdata),
       .host_busy  (host_busy || sc_draining),
       .state_apply     (mc_state_apply),
+      // APF-origin save-slot writes only; the copier's own drain rides
+      // the same mux and must not look like a delivery.
+      .save_slot_wr    (bios_wr_raw && ld_is_save),
+      .apply_reject    (mc_apply_reject),
       .capture_hold    (mc_capture_hold),
       .suppress_cart_strap(bios_reset_mode_s),
       .stage_current   (mc_stage_current),

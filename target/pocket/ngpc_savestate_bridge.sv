@@ -101,6 +101,7 @@ module ngpc_savestate_bridge #(
 	input  wire [31:0] cart_img_data,
 	output reg         cart_load_req,    // pulse: section valid, drain and apply
 	input  wire        cart_load_done,   // pulse: copier finished with it
+	input  wire        cart_load_error,  // with done: rejected, load must fail
 	input  wire [13:0] cart_img_rd_addr,
 	output wire [31:0] cart_img_rd_data,
 
@@ -608,8 +609,17 @@ module ngpc_savestate_bridge #(
 					seq_pa_sel  <= 1'b1;
 					seq_pa_addr <= CART_BASE + {1'b0, cart_img_rd_addr};
 					if (cart_load_done) begin
-						ss_load <= 1'b1;
-						state   <= S_LOAD_RUN;
+						if (cart_load_error) begin
+							// The apply refused the image (a newer save's blocks
+							// are missing from it). Nothing was written; the
+							// machine must not restore either.
+							load_busy_q <= 1'b0;
+							load_err_q  <= 1'b1;
+							state       <= S_DONE;
+						end else begin
+							ss_load <= 1'b1;
+							state   <= S_LOAD_RUN;
+						end
 					end
 				end
 

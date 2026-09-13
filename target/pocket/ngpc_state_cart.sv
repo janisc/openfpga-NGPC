@@ -41,6 +41,7 @@ module ngpc_state_cart
 
 	input  wire        cart_load_req,
 	output reg         cart_load_done,
+	output reg         cart_load_error,   // with done: rejected, nothing applied
 	output reg  [13:0] cart_img_rd_addr,
 	input  wire [31:0] cart_img_rd_data,   // valid 3 clks after the address
 
@@ -54,12 +55,14 @@ module ngpc_state_cart
 	output wire        draining_o,     // drain owns staging: host-busy this
 
 	// ---- staging write (host skid path, delivery-identical) ----------------
+	input  wire        sc_host_ready,     // skid backpressure
 	output reg         sc_host_wr,
 	output reg  [24:0] sc_host_addr,
 	output reg  [15:0] sc_host_data,
 
 	// ---- cart save engine --------------------------------------------------
 	input  wire        stage_current_i,   // stager idle with nothing pending
+	input  wire        apply_reject_i,    // the apply refused the image
 	output reg         state_apply_o,     // pulse: apply the staged image
 	input  wire        apply_busy_i,
 
@@ -93,13 +96,17 @@ module ngpc_state_cart
 	reg        apply_seen;
 	reg        draining;
 
-	assign sc_rd_active = capturing;
+	// Only take the staging port once the stager has parked -- grabbing it
+	// during the wait disconnects a walk mid-transaction and hangs it
+	// (found by supergarbo in PR #5).
+	assign sc_rd_active = capturing && (st != I_CUR_WAIT);
 	assign hold_o       = capturing;
 	assign draining_o   = draining;
 
 	always @(posedge clk) begin
 		cart_save_done <= 1'b0;
 		cart_load_done <= 1'b0;
+		cart_load_error <= 1'b0;
 		cart_img_wr    <= 1'b0;
 		sc_rd_req      <= 1'b0;
 		sc_host_wr     <= 1'b0;
@@ -201,13 +208,15 @@ module ngpc_state_cart
 				end
 
 				I_DR_WR_LO: begin
-					sc_host_wr   <= 1'b1;
-					sc_host_addr <= {8'd0, w, 2'b00};
-					sc_host_data <= word_q[15:0];
-					st           <= I_DR_WR_HI;
+					if (sc_host_ready) begin
+						sc_host_wr   <= 1'b1;
+						sc_host_addr <= {8'd0, w, 2'b00};
+						sc_host_data <= word_q[15:0];
+						st           <= I_DR_WR_HI;
+					end
 				end
 
-				I_DR_WR_HI: begin
+				I_DR_WR_HI: if (sc_host_ready) begin
 					sc_host_wr   <= 1'b1;
 					sc_host_addr <= {8'd0, w, 2'b00} + 25'd2;
 					sc_host_data <= word_q[31:16];
@@ -235,9 +244,10 @@ module ngpc_state_cart
 					if (apply_busy_i) begin
 						apply_seen <= 1'b1;
 					end else if (apply_seen) begin
-						cart_load_done <= 1'b1;
-						draining       <= 1'b0;
-						st             <= I_IDLE;
+						cart_load_done  <= 1'b1;
+						cart_load_error <= apply_reject_i;
+						draining        <= 1'b0;
+						st              <= I_IDLE;
 					end
 				end
 

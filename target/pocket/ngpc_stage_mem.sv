@@ -39,6 +39,10 @@ module ngpc_stage_mem
 	input  wire [24:0] host_rd_addr_i,
 	output reg  [15:0] host_rd_data_o,
 
+	// Backpressure for the state copier: the skid can absorb this write
+	// and the registered one behind it. Without it the drain outruns the
+	// PSRAM on contention and drops words -- silently, in release builds.
+	output wire        host_wr_ready_o,
 	output wire        host_busy_o,      // a slot transfer is in progress
 
 	// Ingestion diagnostics, stamped into the staged save's header so every
@@ -154,6 +158,7 @@ module ngpc_stage_mem
 	wire [9:0]  skid_fill = skid_wp - skid_rp;
 	wire        skid_empty = (skid_wp == skid_rp);
 	wire        skid_full  = (skid_fill == 10'd511);
+	assign host_wr_ready_o = (skid_fill < 10'd508);
 
 	always @(posedge clk) begin
 		if (reset) begin

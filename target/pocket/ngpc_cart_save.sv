@@ -91,6 +91,20 @@ module ngpc_cart_save #(
 	// hold, same bitmap restore as at power-on.
 	input  wire        state_apply_i,
 
+	// APF is writing the save slot's staging region this cycle. Watching
+	// the delivery directly is what makes the apply self-healing: if the
+	// slot arrives after the settle window already fired the apply, the
+	// burst re-arms it (issue #3 -- the 500 ms settle timer is a bet that
+	// the cart-to-save delivery gap stays short; on slow cards it loses).
+	input  wire        save_slot_wr_i,
+
+	// The last apply refused to run: the staged bitmap omits blocks that
+	// are dirty right now, and the original ROM bytes for those blocks
+	// exist nowhere on the device. Loading such a state would silently
+	// leave them un-rewound, so the load is rejected instead -- explicit
+	// limits over haunted edge cases.
+	output reg         apply_reject_o,
+
 	// APF has delivered every data slot: no loader region has seen a bridge
 	// write for a long settle window. The apply MUST wait for this. Slots
 	// stream in id order, so at cartridge-ready the save slot has not even
@@ -214,6 +228,11 @@ module ngpc_cart_save #(
 	localparam S_FINISH      = 4'd15;
 
 
+	reg [63:0] img0, img1;      // staged bitmap, held apart from dirty
+	                            // until the reject check passes
+	reg        apply_decide;    // first S_APPLY_SCAN cycle runs the check
+	reg        saw_save_wr;     // save-slot writes since the apply began
+	reg [19:0] save_wr_quiet;
 	reg  [3:0] state;
 	reg        copy_dirtied;    // the block being copied was rewritten mid-copy
 
@@ -307,8 +326,28 @@ module ngpc_cart_save #(
 			quiet         <= 20'd0;
 			apply_pending <= 1'b1;
 			apply_ok      <= 1'b0;
+			apply_reject_o <= 1'b0;
+			saw_save_wr   <= 1'b0;
+			save_wr_quiet <= 20'd0;
 		end else begin
 			if (state_apply_i) begin
+				apply_pending <= 1'b1;
+			end
+
+			// Save-slot delivery seen after the apply started means the apply
+			// ran too early (or mid-delivery): once the burst goes quiet,
+			// re-arm and run it again on the now-complete image. A normal
+			// boot never trips this -- delivery fully precedes the settled
+			// apply, so saw_save_wr is clear by the time the apply starts.
+			if (save_slot_wr_i) begin
+				saw_save_wr   <= 1'b1;
+				save_wr_quiet <= 20'd0;
+			end else if (save_wr_quiet != QUIET_CLOCKS) begin
+				save_wr_quiet <= save_wr_quiet + 20'd1;
+			end
+			if (saw_save_wr && (save_wr_quiet == QUIET_CLOCKS) &&
+			    (state == S_IDLE) && !apply_pending) begin
+				saw_save_wr   <= 1'b0;
 				apply_pending <= 1'b1;
 			end
 
@@ -325,6 +364,8 @@ module ngpc_cart_save #(
 						busy_o      <= 1'b1;
 						if (slots_settled_i) begin
 							apply_pending <= 1'b0;
+							apply_reject_o <= 1'b0;
+							saw_save_wr   <= 1'b0;
 							hdr_idx       <= 4'd0;
 							apply_ok      <= 1'b1;
 `ifdef NGPC_SAVE_DIAG
@@ -478,18 +519,19 @@ module ngpc_cart_save #(
 							5'd3:  if (stage_rdata_i != MAGIC3) apply_ok <= 1'b0;
 							5'd4:  if (stage_rdata_i != cart_crc32_i[15:0])  apply_ok <= 1'b0;
 							5'd5:  if (stage_rdata_i != cart_crc32_i[31:16]) apply_ok <= 1'b0;
-							5'd8:  dirty0[15:0]  <= stage_rdata_i;
-							5'd9:  dirty0[31:16] <= stage_rdata_i;
-							5'd10: dirty0[47:32] <= stage_rdata_i;
-							5'd11: dirty0[63:48] <= stage_rdata_i;
-							5'd12: dirty1[15:0]  <= stage_rdata_i;
-							5'd13: dirty1[31:16] <= stage_rdata_i;
-							5'd14: dirty1[47:32] <= stage_rdata_i;
-							5'd15: dirty1[63:48] <= stage_rdata_i;
+							5'd8:  img0[15:0]  <= stage_rdata_i;
+							5'd9:  img0[31:16] <= stage_rdata_i;
+							5'd10: img0[47:32] <= stage_rdata_i;
+							5'd11: img0[63:48] <= stage_rdata_i;
+							5'd12: img1[15:0]  <= stage_rdata_i;
+							5'd13: img1[31:16] <= stage_rdata_i;
+							5'd14: img1[47:32] <= stage_rdata_i;
+							5'd15: img1[63:48] <= stage_rdata_i;
 							default: ;
 						endcase
 
 						if (hdr_idx == 5'd15) begin
+							apply_decide <= 1'b1;
 							geo_die      <= 1'b0;
 							geo_block    <= 6'd0;
 							stage_offset <= 25'd0;
@@ -505,6 +547,21 @@ module ngpc_cart_save #(
 				end
 
 				S_APPLY_SCAN: begin
+					// First cycle after the header: commit or reject. dirty is
+					// only overwritten once the staged bitmap is known to cover
+					// every block that is dirty right now; at boot dirty is
+					// empty, so boot applies can never reject.
+					if (apply_decide) begin
+						apply_decide <= 1'b0;
+						if (|(dirty0 & ~img0) || |(dirty1 & ~img1)) begin
+							apply_reject_o <= 1'b1;
+							apply_ok       <= 1'b0;
+							state          <= S_FINISH;
+						end else begin
+							dirty0 <= img0;
+							dirty1 <= img1;
+						end
+					end else
 					if (block_dirty) begin
 						block_word <= 16'd0;
 						state      <= S_APPLY_RD;
