@@ -47,11 +47,14 @@ module tb_cart_save;
 	reg   [1:0] size_code1 = 2'd0;             // second die absent
 
 	reg         event0 = 0;
+	reg         save_slot_wr = 0;
+	reg         state_apply = 0;
 	reg   [5:0] block0 = 0;
 	reg   [1:0] die_busy = 0;
 	reg         host_busy = 0, slots_settled = 0;
 
 	wire        boot_hold, busy;
+	wire        apply_reject;
 	wire        p2_req, p2_we;
 	wire [24:0] p2_addr;
 	wire [15:0] p2_wdata;
@@ -114,7 +117,9 @@ module tb_cart_save;
 		.block1_i       (6'd0),
 		.die_busy_i     (die_busy),
 		.host_busy_i    (host_busy),
-		.state_apply_i   (1'b0),
+		.state_apply_i   (state_apply),
+		.save_slot_wr_i  (save_slot_wr),
+		.apply_reject_o  (apply_reject),
 		.stage_current_o (),
 		.slots_settled_i(slots_settled),
 		.boot_hold_o    (boot_hold),
@@ -316,6 +321,64 @@ module tb_cart_save;
 			errors = errors + 1; $display("   FAIL: dirty bitmap %h after apply", dut.dirty0);
 		end
 		if (errors == 0) $display("   PASS (held through the race, applied byte-exact, bitmap restored)");
+
+		// ---- E: late save delivery re-arms the apply (issue #3) ----------
+		$display("== E  save slot arriving after the settle re-arms the apply");
+		@(posedge clk);
+		cart_ready <= 0; slots_settled <= 0;
+		@(posedge clk); cart_replace <= 1;
+		@(posedge clk); cart_replace <= 0;
+		@(posedge clk);
+		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hFEED;   // nothing delivered
+		cart_ready <= 1;
+		slots_settled <= 1;               // the settle window LIES: it fired early
+		run_pass(2000, 200000);           // first apply runs on garbage, rejects magic
+		if (dut.apply_pending !== 1'b0) begin
+			errors = errors + 1; $display("   FAIL: pending not consumed by early apply");
+		end
+		// corrupt the block regions so only a re-apply can heal them
+		g_block = 6'd0; #1;
+		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = 16'h0BAD;
+		g_block = 6'd2; #1;
+		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = 16'h0BAD;
+		// the save slot NOW arrives -- late, after the settle already fired
+		@(posedge clk); host_busy <= 1; save_slot_wr <= 1;
+		for (i = 0; i < 131328; i = i + 1) psram[i] = imgA[i];
+		repeat (8) @(posedge clk);
+		save_slot_wr <= 0; host_busy <= 0;
+		// burst quiet (QUIET_CLOCKS=200) -> self-arm -> second apply
+		run_pass(4000, 2000000);
+		n2 = 0;
+		g_block = 6'd0; #1;
+		for (i = 0; i < g_words; i = i + 1)
+			if (sdram[(g_base>>1) + i] !== sdram_gold[(g_base>>1) + i]) n2 = n2 + 1;
+		g_block = 6'd2; #1;
+		for (i = 0; i < g_words; i = i + 1)
+			if (sdram[(g_base>>1) + i] !== sdram_gold[(g_base>>1) + i]) n2 = n2 + 1;
+		if (n2) begin errors = errors + 1; $display("   FAIL: %0d words not healed by re-apply", n2); end
+		else if (dut.dirty0 !== 64'h5) begin
+			errors = errors + 1; $display("   FAIL: bitmap %h after re-apply", dut.dirty0);
+		end else $display("   PASS (late delivery healed by the re-armed apply)");
+
+		// ---- F: rejecting a state whose bitmap omits current dirt --------
+		$display("== F  state load with an older bitmap is rejected");
+		// forge an older image: same payload start, bitmap says only block 0
+		for (i = 0; i < 131328; i = i + 1) psram[i] = imgA[i];
+		psram[8] = 16'h0001;
+		for (i = 0; i < 262144; i = i + 1) sdram_gold[i] = sdram[i];   // must stay put
+		@(posedge clk); state_apply <= 1;
+		@(posedge clk); state_apply <= 0;
+		run_pass(2000, 200000);
+		if (!apply_reject) begin
+			errors = errors + 1; $display("   FAIL: reject flag not raised");
+		end
+		if (dut.dirty0 !== 64'h5) begin
+			errors = errors + 1; $display("   FAIL: dirty bitmap changed to %h", dut.dirty0);
+		end
+		n2 = 0;
+		for (i = 0; i < 262144; i = i + 1) if (sdram[i] !== sdram_gold[i]) n2 = n2 + 1;
+		if (n2) begin errors = errors + 1; $display("   FAIL: SDRAM touched (%0d words)", n2); end
+		if (errors == 0) $display("   PASS (rejected, bitmap and flash untouched)");
 
 		if (errors == 0) $display("== ALL CART-SAVE SCENARIOS PASS");
 		else             $display("== %0d FAILURE(S)", errors);

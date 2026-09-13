@@ -196,6 +196,8 @@ module tb;
 	// ---- copier port -------------------------------------------------------
 	wire        cart_save_req, cart_load_req;
 	reg         cart_save_done = 0, cart_load_done = 0;
+	reg         cart_load_error = 0;
+	reg         copier_reject = 0;   // S8 knob: the apply refuses the image
 	reg         cart_img_wr = 0;
 	reg  [13:0] cart_img_addr = 0;
 	reg  [31:0] cart_img_data = 0;
@@ -232,6 +234,7 @@ module tb;
 		.cart_img_data   (cart_img_data),
 		.cart_load_req   (cart_load_req),
 		.cart_load_done  (cart_load_done),
+		.cart_load_error (cart_load_error),
 		.cart_img_rd_addr(cart_img_rd_addr),
 		.cart_img_rd_data(cart_img_rd_data),
 
@@ -290,6 +293,7 @@ module tb;
 			end
 			@(posedge clk_sys);
 			copier_draining <= 0;
+			cart_load_error <= copier_reject;
 			cart_load_done  <= 1;
 		end
 	end
@@ -557,6 +561,33 @@ module tb;
 					$display("   FAIL: rejected but machine was modified");
 					errors = errors + 1;
 				end
+			end
+		end
+
+		// S8: the copier rejects (older-bitmap state) -- the load must fail
+		// with the machine untouched, the engine never started.
+		begin : s8
+			integer ok, i, still;
+			$display("== S8 rejected cart image fails the load     ");
+			machine_init;
+			apf_save(0);
+			machine_corrupt;
+			apf_write_burst(1, 8, -1, 0, 0);
+			copier_reject = 1;
+			apf_load(ok);
+			copier_reject = 0;
+			if (ok) begin
+				$display("   FAIL: load reported ok despite rejection");
+				errors = errors + 1;
+			end else begin
+				still = 1;
+				for (i = 0; i < 64; i = i + 1)
+					if (mem0[i] !== 8'hFF) still = 0;
+				if (internals[0] !== 64'hDEADBEEF_DEADBEEF) still = 0;
+				if (!still) begin
+					$display("   FAIL: machine restored despite rejection");
+					errors = errors + 1;
+				end else $display("   PASS (load failed, machine untouched)");
 			end
 		end
 

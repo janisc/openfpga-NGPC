@@ -87,6 +87,8 @@ module ngpc_machine
 	input  wire [15:0] stage_rdata,
 	input  wire        host_busy,        // APF is moving the slot
 	input  wire        state_apply,      // savestate restore: apply staged image
+	input  wire        save_slot_wr,     // APF writing the save slot now
+	output wire        apply_reject,     // load refused: bitmap omits dirty blocks
 	input  wire        capture_hold,     // savestate capture: hold the pause
 	input  wire        suppress_cart_strap, // reset boots cartless: BIOS menu
 	output wire        stage_current,    // stager parked, image current
@@ -639,6 +641,8 @@ module ngpc_machine
 
 		.host_busy_i     (host_busy),
 		.state_apply_i   (state_apply),
+		.save_slot_wr_i  (save_slot_wr),
+		.apply_reject_o  (apply_reject),
 		.stage_current_o (stage_current),
 		.slots_settled_i (slots_settled),
 		.diag_beats_i    (stage_diag_beats),
