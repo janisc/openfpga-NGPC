@@ -22,14 +22,30 @@
 //
 // THE LAYOUT
 //
-//   staging[0]                 header: magic, cartridge CRC32 and size, and
-//                              the dirty-block bitmap
-//   staging[512 ...]           the dirty blocks themselves, in the fixed order
-//                              both directions walk, so no directory is needed
+//   staging[0]                 header: magic, cartridge CRC32 and size, the
+//                              dirty-block bitmap, and the payload's CRC32
+//   staging[512 ...]           the dirty blocks, run-length packed, in the
+//                              fixed order both directions walk, so no
+//                              directory is needed
 //
-// The header's CRC32 and byte count are what stop one game's save reaching
-// another's flash: a staged image is applied only if both match the cartridge
-// actually loaded.
+// The header's cartridge CRC32 and byte count are what stop one game's save
+// reaching another's flash: a staged image is applied only if both match the
+// cartridge actually loaded.
+//
+// The payload's own CRC32 is what stops a DAMAGED file reaching it. The
+// encoder folds each word in as it writes it and the decoder folds each word
+// in as it reads it, so nothing walks staging twice to compute it. The dirty
+// bitmap comes along for free: the decoder consumes payload words according
+// to the bitmap, so a bitmap that has been corrupted consumes a different
+// number of words and the checksum cannot match.
+//
+// The apply runs its decode TWICE -- once with the flash writes held off, and
+// again for real only if the checksum agreed. That order is the whole point:
+// the decoder writes flash as it walks, so a checksum finished after the
+// decode could only ever confirm damage already done. A file that fails is
+// refused whole: no flash written, no bitmap kept, and the save slot left
+// unclaimed, so APF does not overwrite the file either and it survives on the
+// card to be recovered.
 //
 // WHEN THE COPY HAPPENS
 //
@@ -172,18 +188,31 @@ module ngpc_cart_save #(
 
 	// ---- Dirty and pending bitmaps -----------------------------------------
 	//
-	// `dirty` is what the save contains. `pending` is what still needs copying
-	// into staging. A write sets both; a completed copy clears only pending.
+	// `dirty` is what the save contains -- it only ever grows, and it is what
+	// the header carries.
 
 	reg [63:0] dirty0,   dirty1;
-	reg [63:0] pending0, pending1;
 
-	wire pending_any = |pending0 || |pending1;
+	// WHAT STILL NEEDS COPYING used to be a second pair of 64-bit bitmaps,
+	// cleared a block at a time as the walk passed. Since a pass rebuilds the
+	// WHOLE image -- which banking requires, because the spare bank holds an
+	// older layout -- per-block bookkeeping answers a question nobody asks:
+	// either the image is current or the entire pass has to run again. One
+	// flag says that, and it says the other thing the per-block version was
+	// there for as well. A write that lands mid-pass can dirty a block the
+	// walk has already gone past, so the header would claim it while the
+	// payload lacked it and every block after it would decode from the wrong
+	// place -- a checksum cannot catch that, it would cover the broken image
+	// faithfully. The flag being set again at the end of a pass IS that
+	// condition, so the bank simply does not flip and the pass runs again.
+	// This replaced 128 registers, two 6-to-64 decoders and a 128-input OR.
+	wire flash_event = event0_i || event1_i;
+	reg  stage_pending;
 
-	// The staged image is complete and current: nothing pending and the
-	// walker parked. The savestate capture waits on this with the machine
-	// paused, so it converges instead of chasing.
-	assign stage_current_o = (state == S_IDLE) && !pending_any && cart_ready_i;
+	// The staged image is complete and current: nothing owed and the walker
+	// parked. The savestate capture waits on this with the machine paused, so
+	// it converges instead of chasing.
+	assign stage_current_o = (state == S_IDLE) && !stage_pending && cart_ready_i;
 
 	// A SAVE MUST CONTAIN SOMETHING. A dirty bit alone is not a save: a game
 	// that merely erases a block during startup -- Card Fighters does exactly
@@ -219,9 +248,6 @@ module ngpc_cart_save #(
 
 	wire block_dirty = geo_valid &&
 		(geo_die ? dirty1[geo_block] : dirty0[geo_block]);
-	wire block_pending = geo_valid &&
-		(geo_die ? pending1[geo_block] : pending0[geo_block]);
-
 	// Linear cartridge byte address, die1 starting at 2 MiB -- the mapping
 	// ngp_cart_overlay_mover uses.
 	wire [24:0] block_base_addr = {geo_die ? 4'd1 : 4'd0, geo_base};
@@ -255,6 +281,7 @@ module ngpc_cart_save #(
 	localparam S_STAGE_NEXT  = 5'd20;
 	localparam S_APPLY_CNT   = 5'd21;
 	localparam S_APPLY_CNT_W = 5'd22;
+	localparam S_CRC_SH      = 5'd23;
 
 
 	reg [63:0] img0, img1;      // staged bitmap, held apart from dirty
@@ -296,10 +323,26 @@ module ngpc_cart_save #(
 	// If this path were ever wrong the old file survives it: since 1.0.2 a
 	// refused apply is not overwritten.
 	reg        legacy;
+	// CRC32, one bit per clock. A word-wide CRC32 is a 48-input XOR tree
+	// for each of 32 outputs, which this device has no room for; serial
+	// costs 16 clocks a word and both walks have milliseconds to spare.
+	// crc_ret is where the interrupted walk resumes: the call sites hand
+	// their own next state over instead of taking it, so the shifter needs
+	// no idea who called it.
+	reg [31:0] crc_acc;
+	reg [31:0] crc_want;     // what the file says its payload comes to
+	reg [15:0] crc_sr;       // the word being shifted out
+	reg  [3:0] crc_cnt;
+	reg  [4:0] crc_ret;
+	// The apply's first pass through the decode: read everything, write
+	// nothing. from_state says the apply came from a savestate restore,
+	// where a refusal must NOT clear the live dirty bitmap -- flash was
+	// left untouched, so this session's blocks really are still dirty.
+	reg        verify_pass;
+	reg        from_state;
 	reg [19:0] save_wr_quiet;
 	reg        image_has_data;   // a non-erased word passed through this session
 	reg  [4:0] state;
-	reg        copy_dirtied;    // the block being copied was rewritten mid-copy
 
 	// Apply diagnostics, stamped into header words 22-24 of every staged save:
 	// how many applies ran since reset, the last apply's verdict (1 = header
@@ -319,10 +362,6 @@ module ngpc_cart_save #(
 	reg        apply_ok;        // the header matched this cartridge
 
 	wire flash_quiet = (die_busy_i == 2'b00) && !event0_i && !event1_i;
-
-	// A write event aimed at the very block currently being walked.
-	wire ev_this_block = (event0_i && !geo_die && block0_i == geo_block) ||
-	                     (event1_i &&  geo_die && block1_i == geo_block);
 
 	// The header as a function of its index, so it needs no storage of its own.
 	reg [15:0] hdr_word;
@@ -347,11 +386,12 @@ module ngpc_cart_save #(
 			6'd15: hdr_word = dirty1[63:48];
 			6'd16: hdr_word = diag_beats_i;
 			6'd17: hdr_word = diag_drops_i;
-			// 18 retired with 19-21: high-water read zero through every
-			// test; drops alone detect an overrun.
-			// 19-21 retired: delivery completeness and the no-verify-reads
-			// question were answered for good; the words stay zero so the
-			// header layout is stable.
+			// 18 retired: high-water read zero through every test; drops
+			// alone detect an overrun.
+			// The packed payload's CRC32, final by the time the header is
+			// written because the payload is written first.
+			6'd19: hdr_word = ~crc_acc[15:0];
+			6'd20: hdr_word = ~crc_acc[31:16];
 			6'd21: hdr_word = {8'd0, cart_subcat_i};
 			6'd22: hdr_word = diag_applies;
 			6'd23: hdr_word = diag_verdict;
@@ -376,13 +416,11 @@ module ngpc_cart_save #(
 		// Flash reports are taken at all times, including mid-copy: a block
 		// written while it is being staged is marked pending again, so the torn
 		// copy is replaced rather than kept.
-		if (event0_i) begin dirty0[block0_i] <= 1'b1; pending0[block0_i] <= 1'b1; end
-		if (event1_i) begin dirty1[block1_i] <= 1'b1; pending1[block1_i] <= 1'b1; end
-
-		if (ev_this_block && (state == S_STAGE_RD  || state == S_STAGE_RD_W ||
-		                      state == S_STAGE_WR  || state == S_STAGE_WR_W)) begin
-			copy_dirtied <= 1'b1;
-		end
+		if (event0_i) dirty0[block0_i] <= 1'b1;
+		if (event1_i) dirty1[block1_i] <= 1'b1;
+		// Every clear below re-applies this, so an event landing in the same
+		// cycle as a pass start is owed, not lost.
+		if (flash_event) stage_pending <= 1'b1;
 
 		if (flash_quiet && quiet != QUIET_CLOCKS) quiet <= quiet + 20'd1;
 		else if (!flash_quiet)                    quiet <= 20'd0;
@@ -396,8 +434,7 @@ module ngpc_cart_save #(
 			busy_o        <= 1'b0;
 			dirty0        <= 64'd0;
 			dirty1        <= 64'd0;
-			pending0      <= 64'd0;
-			pending1      <= 64'd0;
+			stage_pending <= 1'b0;
 			quiet         <= 20'd0;
 			apply_pending <= 1'b1;
 			apply_ok      <= 1'b0;
@@ -405,6 +442,8 @@ module ngpc_cart_save #(
 			save_delivered <= 1'b0;
 			stage_bank_o   <= 1'b0;
 			pack_overflow  <= 1'b0;
+			verify_pass    <= 1'b0;
+			from_state     <= 1'b0;
 			apply_reject_o <= 1'b0;
 			saw_save_wr   <= 1'b0;
 			save_wr_quiet <= 20'd0;
@@ -414,6 +453,7 @@ module ngpc_cart_save #(
 				// the copier rather than through APF, so it is delivery too.
 				apply_pending  <= 1'b1;
 				save_delivered <= 1'b1;
+				from_state     <= 1'b1;
 			end
 
 			// Save-slot delivery seen after the apply started means the apply
@@ -458,7 +498,7 @@ module ngpc_cart_save #(
 `endif
 							state         <= S_APPLY_HDR;
 						end
-					end else if (cart_ready_i && pending_any && !pack_overflow &&
+					end else if (cart_ready_i && stage_pending && !pack_overflow &&
 					             !host_busy_i &&
 					             quiet == QUIET_CLOCKS) begin
 						boot_hold_o <= 1'b0;
@@ -466,6 +506,8 @@ module ngpc_cart_save #(
 						geo_die      <= 1'b0;
 						geo_block    <= 6'd0;
 						pack_ptr     <= 16'd0;
+						crc_acc      <= 32'hFFFFFFFF;
+						stage_pending <= flash_event;
 						state        <= S_STAGE_SCAN;
 					end else begin
 						boot_hold_o <= 1'b0;
@@ -479,7 +521,6 @@ module ngpc_cart_save #(
 						block_word   <= 16'd0;
 						run_len      <= 16'd0;
 						has_lit      <= 1'b0;
-						copy_dirtied <= 1'b0;
 						state        <= S_STAGE_RD;
 					end else begin
 						if (geo_block == 6'd63) begin
@@ -539,8 +580,7 @@ module ngpc_cart_save #(
 				S_STAGE_RUN: begin
 					if (pack_ptr >= PAYLOAD_WORDS - 16'd1) begin
 						pack_overflow <= 1'b1;
-						pending0      <= 64'd0;
-						pending1      <= 64'd0;
+						stage_pending <= flash_event;
 						state         <= S_FINISH;
 					end else if (stage_ready_i) begin
 						stage_req_o   <= 1'b1;
@@ -555,7 +595,10 @@ module ngpc_cart_save #(
 				S_STAGE_RUN_W: begin
 					if (stage_done_i) begin
 						pack_ptr <= pack_ptr + 16'd1;
-						state    <= S_STAGE_LEN;
+						crc_sr   <= stage_wdata_o;
+						crc_cnt  <= 4'd0;
+						crc_ret  <= S_STAGE_LEN;
+						state    <= S_CRC_SH;
 					end
 				end
 
@@ -574,20 +617,18 @@ module ngpc_cart_save #(
 					if (stage_done_i) begin
 						pack_ptr <= pack_ptr + 16'd1;
 						run_len  <= 16'd0;
-						if (has_lit) begin
-							has_lit <= 1'b0;
-							state   <= S_STAGE_WR;
-						end else begin
-							state <= S_STAGE_NEXT;
-						end
+						has_lit  <= 1'b0;
+						crc_sr   <= stage_wdata_o;
+						crc_cnt  <= 4'd0;
+						crc_ret  <= has_lit ? S_STAGE_WR : S_STAGE_NEXT;
+						state    <= S_CRC_SH;
 					end
 				end
 
 				S_STAGE_WR: begin
 					if (pack_ptr >= PAYLOAD_WORDS - 16'd1) begin
 						pack_overflow <= 1'b1;
-						pending0      <= 64'd0;
-						pending1      <= 64'd0;
+						stage_pending <= flash_event;
 						state         <= S_FINISH;
 					end else if (stage_ready_i) begin
 						stage_req_o   <= 1'b1;
@@ -602,21 +643,20 @@ module ngpc_cart_save #(
 				S_STAGE_WR_W: begin
 					if (stage_done_i) begin
 						pack_ptr <= pack_ptr + 16'd1;
+						crc_sr   <= stage_wdata_o;
+						crc_cnt  <= 4'd0;
 						if (block_word + 16'd1 >= geo_words) begin
-							state <= S_STAGE_NEXT;
+							crc_ret <= S_STAGE_NEXT;
 						end else begin
 							block_word <= block_word + 16'd1;
-							state      <= S_STAGE_RD;
+							crc_ret    <= S_STAGE_RD;
 						end
+						state <= S_CRC_SH;
 					end
 				end
 
-				// One block is encoded. Clear its pending bit unless the game
-				// rewrote it while the copy was in flight -- see scenario D.
+				// One block is encoded; on to the next.
 				S_STAGE_NEXT: begin
-					if (geo_die) pending1[geo_block] <= copy_dirtied || ev_this_block;
-					else         pending0[geo_block] <= copy_dirtied || ev_this_block;
-
 					if (geo_block == 6'd63) begin
 						if (geo_die) begin
 							hdr_idx <= 6'd0;
@@ -644,9 +684,12 @@ module ngpc_cart_save #(
 				S_STAGE_HDR_W: begin
 					if (stage_done_i) begin
 						if (hdr_idx == 6'd31) begin
-							// The image is whole: publish it in one step.
-							stage_bank_o <= build_bank;
-							state        <= S_FINISH;
+							// The image is whole: publish it in one step -- unless
+							// the game wrote flash while the pass was running, in
+							// which case the older image in the other bank is the
+							// one that still makes sense.
+							if (!stage_pending) stage_bank_o <= build_bank;
+							state <= S_FINISH;
 						end
 						else begin
 							hdr_idx <= hdr_idx + 6'd1;
@@ -689,14 +732,21 @@ module ngpc_cart_save #(
 							5'd13: img1[31:16] <= stage_rdata_i;
 							5'd14: img1[47:32] <= stage_rdata_i;
 							5'd15: img1[63:48] <= stage_rdata_i;
+							6'd19: crc_want[15:0]  <= stage_rdata_i;
+							6'd20: crc_want[31:16] <= stage_rdata_i;
 							default: ;
 						endcase
 
-						if (hdr_idx == 6'd15) begin
+						if (hdr_idx == 6'd20) begin
 							apply_decide <= 1'b1;
 							geo_die      <= 1'b0;
 							geo_block    <= 6'd0;
 							pack_ptr     <= 16'd0;
+							crc_acc      <= 32'hFFFFFFFF;
+							// A V2 file carries no checksum and is applied as it
+							// always was; a V3 file is decoded once with the writes
+							// held off before any of it reaches flash.
+							verify_pass  <= apply_ok && !legacy;
 `ifdef NGPC_SAVE_DIAG
 							diag_verdict <= apply_ok ? 16'd1 : 16'd2;
 `endif
@@ -718,6 +768,7 @@ module ngpc_cart_save #(
 						if (|(dirty0 & ~img0) || |(dirty1 & ~img1)) begin
 							apply_reject_o <= 1'b1;
 							apply_ok       <= 1'b0;
+							verify_pass    <= 1'b0;
 							state          <= S_FINISH;
 						end else begin
 							dirty0 <= img0;
@@ -754,14 +805,17 @@ module ngpc_cart_save #(
 				S_APPLY_RD_W: begin
 					if (stage_done_i) begin
 						pack_ptr <= pack_ptr + 16'd1;
+						crc_sr   <= stage_rdata_i;
+						crc_cnt  <= 4'd0;
 						if (stage_rdata_i == 16'hFFFF && !legacy) begin
-							state <= S_APPLY_CNT;
+							crc_ret <= S_APPLY_CNT;
 						end else begin
 							image_has_data <= 1'b1;
 							xfer_data      <= stage_rdata_i;
 							fill_rem       <= 16'd1;
-							state          <= S_APPLY_WR;
+							crc_ret        <= S_APPLY_WR;
 						end
+						state <= S_CRC_SH;
 					end
 				end
 
@@ -781,14 +835,17 @@ module ngpc_cart_save #(
 						xfer_data <= 16'hFFFF;
 						// A zero count would stall the walk; treat it as one word.
 						fill_rem  <= (stage_rdata_i == 16'd0) ? 16'd1 : stage_rdata_i;
-						state     <= S_APPLY_WR;
+						crc_sr    <= stage_rdata_i;
+						crc_cnt   <= 4'd0;
+						crc_ret   <= S_APPLY_WR;
+						state     <= S_CRC_SH;
 					end
 				end
 
 				S_APPLY_WR: begin
 					if (p2_ready_i) begin
-						p2_req_o   <= 1'b1;
-						p2_we_o    <= 1'b1;
+						p2_req_o   <= !verify_pass;
+						p2_we_o    <= !verify_pass;
 						p2_addr_o  <= block_base_addr + {8'd0, block_word, 1'b0};
 						p2_wdata_o <= xfer_data;
 						state      <= S_APPLY_WR_W;
@@ -796,9 +853,9 @@ module ngpc_cart_save #(
 				end
 
 				S_APPLY_WR_W: begin
-					if (p2_done_i) begin
+					if (p2_done_i || verify_pass) begin
 `ifdef NGPC_SAVE_DIAG
-						diag_p2wr <= diag_p2wr + 16'd1;
+						if (!verify_pass) diag_p2wr <= diag_p2wr + 16'd1;
 `endif
 						if (block_word + 16'd1 >= geo_words) begin
 							if (geo_block == 6'd63) begin
@@ -822,11 +879,56 @@ module ngpc_cart_save #(
 						end
 					end
 				end
+				// Sixteen clocks, then back to whoever called. The caller left
+				// its own next state in crc_ret on the way in.
+				S_CRC_SH: begin
+					crc_sr  <= {1'b0, crc_sr[15:1]};
+					crc_acc <= (crc_acc[0] ^ crc_sr[0])
+					           ? ({1'b0, crc_acc[31:1]} ^ 32'hEDB88320)
+					           :  {1'b0, crc_acc[31:1]};
+					crc_cnt <= crc_cnt + 4'd1;
+					if (crc_cnt == 4'd15) state <= crc_ret;
+				end
+
 				S_FINISH: begin
-					boot_hold_o <= 1'b0;
-					busy_o      <= 1'b0;
-					quiet       <= 20'd0;
-					state       <= S_IDLE;
+					from_state <= 1'b0;
+					if (verify_pass) begin
+						// The decode has run end to end without touching flash.
+						verify_pass <= 1'b0;
+						if (~crc_acc == crc_want) begin
+							geo_die   <= 1'b0;
+							geo_block <= 6'd0;
+							pack_ptr  <= 16'd0;
+							state     <= S_APPLY_SCAN;
+						end else begin
+							// Refuse the whole file. At boot the bitmap was empty
+							// before the header committed it, so putting it back
+							// empty is exact, and it leaves the slot unclaimed --
+							// which is what keeps APF from overwriting the file.
+							// After a savestate restore the bitmap describes THIS
+							// session's flash, which nothing has touched, so it
+							// stays: clearing it would throw away real progress.
+							apply_ok       <= 1'b0;
+							apply_reject_o <= 1'b1;
+							if (!from_state) begin
+								dirty0         <= 64'd0;
+								dirty1         <= 64'd0;
+								image_has_data <= 1'b0;
+							end
+`ifdef NGPC_SAVE_DIAG
+							diag_verdict <= 16'd3;
+`endif
+							boot_hold_o <= 1'b0;
+							busy_o      <= 1'b0;
+							quiet       <= 20'd0;
+							state       <= S_IDLE;
+						end
+					end else begin
+						boot_hold_o <= 1'b0;
+						busy_o      <= 1'b0;
+						quiet       <= 20'd0;
+						state       <= S_IDLE;
+					end
 				end
 
 				default: state <= S_IDLE;

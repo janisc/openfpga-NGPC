@@ -116,6 +116,14 @@ module tb_cart_save;
 		.cart_replace_i (cart_replace),
 		.cart_crc32_i   (cart_crc),
 		.cart_bytes_i   (cart_bytes),
+		// Header words 16-18 are inside the checksummed span, so leaving
+		// these unconnected poisons the CRC with X -- which is how this
+		// bench gap was found.
+		.diag_beats_i   (16'h1234),
+		.diag_drops_i   (16'h0000),
+		.cart_title_i   (96'h54524143545345544350474E),
+		.cart_catalog_i (16'h0042),
+		.cart_subcat_i  (8'h01),
 		.size_code0_i   (size_code0),
 		.size_code1_i   (size_code1),
 		.event0_i       (event0),
@@ -163,6 +171,7 @@ module tb_cart_save;
 	// ---- helpers -----------------------------------------------------------
 	integer errors;
 	reg [15:0] imgA [0:131327];      // the scenario-A staged image, kept as gold
+	reg [15:0] imgK [0:131327];      // the same, kept for the damage scenario
 
 	task flash_write(input [5:0] blk);
 		begin
@@ -195,22 +204,29 @@ module tb_cart_save;
 	// run of erased words is the marker 0xFFFF plus its length. Unpack the
 	// whole stream back into flat block order so the checks below can
 	// compare it against the cartridge the way they always have.
+	// Decoding is driven by the bitmap IN THE FILE, not by the engine's
+	// live one -- that is what the decoder does, and it is why a corrupted
+	// bitmap changes how many payload words get consumed.
 	reg [15:0] dec [0:131071];
-	task decode_payload;
+	integer dec_used;
+	task decode_at(input integer base);
 		integer pk, out, b, w, n, k;
 		reg [15:0] word;
+		reg [63:0] bmp;
 		begin
+			bmp = {psram[base+11], psram[base+10], psram[base+9], psram[base+8]};
 			pk = 0; out = 0;
 			for (b = 0; b < 64; b = b + 1) begin
-				if (dut.dirty0[b]) begin
+				if (bmp[b]) begin
 					g_block = b[5:0]; #1;
 					w = 0;
-					while (w < g_words) begin
-						word = psram[BANK + 256 + pk]; pk = pk + 1;
+					while (w < g_words && pk < 32512) begin
+						word = psram[base + 256 + pk]; pk = pk + 1;
 						if (word !== 16'hFFFF) begin
 							dec[out] = word; out = out + 1; w = w + 1;
 						end else begin
-							n = psram[BANK + 256 + pk]; pk = pk + 1;
+							n = psram[base + 256 + pk]; pk = pk + 1;
+							if (n == 0) n = 1;
 							for (k = 0; k < n; k = k + 1) begin
 								dec[out] = 16'hFFFF; out = out + 1; w = w + 1;
 							end
@@ -218,6 +234,56 @@ module tb_cart_save;
 					end
 				end
 			end
+			dec_used = pk;
+		end
+	endtask
+	task decode_payload; begin decode_at(BANK); end endtask
+
+	// The image's own checksum, reimplemented here from the format rather
+	// than from the engine: CRC32 over header words 0-18 and then the
+	// packed payload, each word low byte first, as the file stores them.
+	// When the DUT and this agree, two independent implementations agree.
+	function [31:0] crc32_word_tb(input [31:0] c, input [15:0] w);
+		integer b; reg [31:0] v;
+		begin
+			v = c;
+			for (b = 0; b < 16; b = b + 1)
+				v = (v[0] ^ w[b]) ? ((v >> 1) ^ 32'hEDB88320) : (v >> 1);
+			crc32_word_tb = v;
+		end
+	endfunction
+
+	function [31:0] crc_of(input integer base, input integer nwords);
+		integer k; reg [31:0] c;
+		begin
+			c = 32'hFFFFFFFF;
+			for (k = 0; k < nwords; k = k + 1) c = crc32_word_tb(c, psram[base + 256 + k]);
+			crc_of = ~c;
+		end
+	endfunction
+
+	// Write the staged image out exactly as APF would put it on the card,
+	// so tools/savinfo.py can be pointed at a file this engine really
+	// produced instead of one written to match the tool.
+	task dump_image(input integer base);
+		integer f, k;
+		begin
+			f = $fopen("sim/staged.sav", "wb");
+			for (k = 0; k < 32512; k = k + 1) begin
+				$fwrite(f, "%c%c", psram[base + k] & 8'hFF, psram[base + k] >> 8);
+			end
+			$fclose(f);
+		end
+	endtask
+
+	// Re-stamp a hand-edited image so the checksum is not what rejects it.
+	task stamp_crc(input integer base);
+		reg [31:0] c;
+		begin
+			decode_at(base);
+			c = crc_of(base, dec_used);
+			psram[base + 19] = c[15:0];
+			psram[base + 20] = c[31:16];
 		end
 	endtask
 
@@ -237,6 +303,7 @@ module tb_cart_save;
 	endtask
 
 	integer i, n0, n2, offB;
+	reg bank_q;
 
 	// transition monitor: every change of apply_pending, with context
 	reg ap_q = 0;
@@ -299,7 +366,12 @@ module tb_cart_save;
 		check_block(6'd8, 25'd0);
 		g_block = 6'd8; #1; offB = {g_words, 1'b0};
 		check_block(6'd10, offB[24:0]);
-		if (errors == 0) $display("   PASS (header + payload byte-exact)");
+		if ({psram[BANK+20], psram[BANK+19]} !== crc_of(BANK, dec_used)) begin
+			errors = errors + 1;
+			$display("   FAIL: stamped crc %h%h, expected %h",
+			         psram[BANK+20], psram[BANK+19], crc_of(BANK, dec_used));
+		end
+		if (errors == 0) $display("   PASS (header + payload byte-exact, checksum stamped)");
 		for (i = 0; i < 131328; i = i + 1) imgA[i] = psram[i];
 
 		// ---- D: torn copy self-corrects ----------------------------------
@@ -326,7 +398,7 @@ module tb_cart_save;
 		decode_payload;
 		check_block(6'd8, 25'd0);
 		if (errors == 0) $display("   PASS (second pass carried the rewrite)");
-		for (i = 0; i < 131328; i = i + 1) imgA[i] = psram[i];
+		for (i = 0; i < 131328; i = i + 1) begin imgA[i] = psram[i]; imgK[i] = psram[i]; end
 
 		// ---- B: the boot-order race --------------------------------------
 		$display("== B  apply waits for slot delivery, then lands");
@@ -529,6 +601,7 @@ module tb_cart_save;
 		check_block(6'd8, 25'd0);
 		g_block = 6'd8; #1; offB = {g_words, 1'b0};
 		check_block(6'd10, offB[24:0]);
+		dump_image(BANK);
 		if (errors == 0) $display("   PASS (packed small, decodes byte-exact)");
 
 		// ---- J: a V2 save still restores, and is rewritten as V3 ---------
@@ -589,6 +662,94 @@ module tb_cart_save;
 			errors = errors + 1;
 			$display("   FAIL: not converted to V3 (magic %h)", psram[BANK+3]);
 		end else $display("   PASS (rewritten as V3)");
+
+		// ---- K: a damaged image must be refused before flash is touched --
+		// The decoder writes as it walks, so a checksum taken during the
+		// decode would only ever confirm damage already done. The check is
+		// a separate pass ahead of it, and this scenario is the reason.
+		$display("== K  a damaged payload is refused, flash untouched");
+		@(posedge clk);
+		cart_ready <= 0; slots_settled <= 0;
+		@(posedge clk); cart_replace <= 1;
+		@(posedge clk); cart_replace <= 0;
+		@(posedge clk);
+		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hFEED;
+		cart_ready <= 1;
+		@(posedge clk); host_busy <= 1; save_slot_wr <= 1;
+		for (i = 0; i < 131328; i = i + 1) psram[i] = imgK[i];
+		psram[256 + 100] = psram[256 + 100] ^ 16'h0040;   // one bit of rot
+		repeat (50) @(posedge clk);
+		save_slot_wr <= 0; host_busy <= 0;
+		repeat (20) @(posedge clk);
+		slots_settled <= 1;
+		@(posedge clk);
+		g_block = 6'd8; #1;
+		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = 16'h0BAD;
+		g_block = 6'd10; #1;
+		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = 16'h0BAD;
+		for (i = 0; i < 262144; i = i + 1) sdram_gold[i] = sdram[i];
+		run_pass(4000, 2000000);
+		n2 = 0;
+		for (i = 0; i < 262144; i = i + 1) if (sdram[i] !== sdram_gold[i]) n2 = n2 + 1;
+		if (n2) begin errors = errors + 1; $display("   FAIL: %0d flash words written", n2); end
+		if (dut.dirty0 !== 64'd0) begin
+			errors = errors + 1; $display("   FAIL: bitmap committed as %h", dut.dirty0);
+		end
+		if (save_present) begin
+			errors = errors + 1; $display("   FAIL: claimed the slot, so APF would overwrite the file");
+		end
+		if (errors == 0) $display("   PASS (refused; flash, bitmap and the file on the card all intact)");
+
+		// ---- L: a pass torn by a flash write must not publish ------------
+		// The encoder walks blocks in order and writes the header last, so a
+		// block dirtied AFTER the walk went past it lands in the bitmap but
+		// not in the payload -- and every block after it would then decode
+		// from the wrong offset. A checksum cannot see this: it would cover
+		// the broken image faithfully. The bank simply does not flip.
+		$display("== L  a pass torn by a mid-walk flash write does not publish");
+		@(posedge clk);
+		cart_ready <= 0; slots_settled <= 0;
+		@(posedge clk); cart_replace <= 1;
+		@(posedge clk); cart_replace <= 0;
+		@(posedge clk);
+		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hDEAD;
+		cart_ready <= 1; slots_settled <= 1;
+		run_pass(4000, 2000000);          // no-file boot: nothing to apply
+		flash_write(6'd8);
+		flash_write(6'd10);
+		run_pass(4000, 2000000);          // a clean pass commits blocks 8+10
+		bank_q = stage_bank;
+		if (psram[BANK+8] !== 16'h0500) begin
+			errors = errors + 1; $display("   FAIL: setup bitmap %h", psram[BANK+8]);
+		end
+		// now tear one: dirty block 9 while the walk is inside block 10
+		flash_write(6'd8);
+		i = 0;
+		while (!(busy && dut.geo_block == 6'd10 && dut.block_word > 16'd64)
+		       && i < 400000) begin i = i + 1; @(posedge clk); end
+		if (!busy) begin errors = errors + 1; $display("   FAIL: pass never reached block 10"); end
+		flash_write(6'd9);                // block 9 is already behind the walk
+		i = 0;
+		while (busy && i < 2000000) begin i = i + 1; @(posedge clk); end
+		if (stage_bank !== bank_q) begin
+			errors = errors + 1;
+			$display("   FAIL: the torn pass published (bank %b -> %b)", bank_q, stage_bank);
+		end
+		if (psram[BANK+8] !== 16'h0500) begin
+			errors = errors + 1;
+			$display("   FAIL: committed image changed to bitmap %h", psram[BANK+8]);
+		end
+		run_pass(4000, 4000000);          // the next pass carries all three
+		if (psram[BANK+8] !== 16'h0700) begin
+			errors = errors + 1;
+			$display("   FAIL: retry bitmap %h, expected 0700", psram[BANK+8]);
+		end
+		decode_payload;
+		if ({psram[BANK+20], psram[BANK+19]} !== crc_of(BANK, dec_used)) begin
+			errors = errors + 1; $display("   FAIL: retry image checksum wrong");
+		end
+		if (errors == 0)
+			$display("   PASS (torn pass withheld, the retry published all three blocks)");
 
 		if (errors == 0) $display("== ALL CART-SAVE SCENARIOS PASS");
 		else             $display("== %0d FAILURE(S)", errors);
