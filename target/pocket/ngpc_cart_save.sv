@@ -165,7 +165,8 @@ module ngpc_cart_save #(
 	localparam [15:0] MAGIC0 = 16'h4E47;  // "NG"
 	localparam [15:0] MAGIC1 = 16'h5043;  // "PC"
 	localparam [15:0] MAGIC2 = 16'h5341;  // "SA"
-	localparam [15:0] MAGIC3 = 16'h5633;  // "V3" -- erased runs are packed;
+	localparam [15:0] MAGIC3    = 16'h5633;  // "V3" -- erased runs are packed;
+	localparam [15:0] MAGIC3_V2 = 16'h5632;  // "V2" -- raw blocks, still read
 	                                      // layout differs from the
 	                                      // sector-based version that preceded it
 
@@ -285,6 +286,11 @@ module ngpc_cart_save #(
 	reg [15:0] fill_rem;
 	reg        has_lit;
 	reg        pack_overflow;
+	// A V2 save is read as it always was -- raw blocks in fixed slots -- and
+	// rewritten as V3 by the next staging pass. Migration is one way and
+	// needs nothing from the player. If this path were ever wrong the old
+	// file survives it: since 1.0.2 a refused apply is not overwritten.
+	reg        legacy;
 	reg [19:0] save_wr_quiet;
 	reg        image_has_data;   // a non-erased word passed through this session
 	reg  [4:0] state;
@@ -663,7 +669,11 @@ module ngpc_cart_save #(
 							           apply_ok <= 1'b0;
 							5'd1:  if (stage_rdata_i != MAGIC1) apply_ok <= 1'b0;
 							5'd2:  if (stage_rdata_i != MAGIC2) apply_ok <= 1'b0;
-							5'd3:  if (stage_rdata_i != MAGIC3) apply_ok <= 1'b0;
+							5'd3:  begin
+							           if ((stage_rdata_i != MAGIC3) &&
+							               (stage_rdata_i != MAGIC3_V2)) apply_ok <= 1'b0;
+							           legacy <= (stage_rdata_i == MAGIC3_V2);
+							       end
 							5'd4:  if (stage_rdata_i != cart_crc32_i[15:0])  apply_ok <= 1'b0;
 							5'd5:  if (stage_rdata_i != cart_crc32_i[31:16]) apply_ok <= 1'b0;
 							5'd8:  img0[15:0]  <= stage_rdata_i;
@@ -682,6 +692,7 @@ module ngpc_cart_save #(
 							geo_die      <= 1'b0;
 							geo_block    <= 6'd0;
 							pack_ptr     <= 16'd0;
+							stage_offset <= 25'd0;
 `ifdef NGPC_SAVE_DIAG
 							diag_verdict <= apply_ok ? 16'd1 : 16'd2;
 `endif
@@ -731,7 +742,8 @@ module ngpc_cart_save #(
 						stage_req_o  <= 1'b1;
 						stage_we_o   <= 1'b0;
 						stage_addr_o <= {8'd0, stage_bank_o, 16'd0} + 25'd512 +
-						                {8'd0, pack_ptr, 1'b0};
+						                (legacy ? stage_offset + {8'd0, block_word, 1'b0}
+						                        : {8'd0, pack_ptr, 1'b0});
 						state        <= S_APPLY_RD_W;
 					end
 				end
@@ -739,7 +751,7 @@ module ngpc_cart_save #(
 				S_APPLY_RD_W: begin
 					if (stage_done_i) begin
 						pack_ptr <= pack_ptr + 16'd1;
-						if (stage_rdata_i == 16'hFFFF) begin
+						if (stage_rdata_i == 16'hFFFF && !legacy) begin
 							state <= S_APPLY_CNT;
 						end else begin
 							image_has_data <= 1'b1;
@@ -786,6 +798,8 @@ module ngpc_cart_save #(
 						diag_p2wr <= diag_p2wr + 16'd1;
 `endif
 						if (block_word + 16'd1 >= geo_words) begin
+							if (legacy) stage_offset <= stage_offset +
+							                            {9'd0, geo_words, 1'b0};
 							if (geo_block == 6'd63) begin
 								if (geo_die) state <= S_FINISH;
 								else begin

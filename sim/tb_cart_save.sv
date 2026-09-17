@@ -531,6 +531,65 @@ module tb_cart_save;
 		check_block(6'd10, offB[24:0]);
 		if (errors == 0) $display("   PASS (packed small, decodes byte-exact)");
 
+		// ---- J: a V2 save still restores, and is rewritten as V3 ---------
+		// Upgrading must not look like data loss. A V2 file is raw blocks in
+		// fixed slots; it is read as it always was and converted by the next
+		// staging pass. Built here by hand rather than captured, so the old
+		// format is pinned down independently of the code that wrote it.
+		$display("== J  a V2 save restores and converts to V3");
+		@(posedge clk);
+		cart_ready <= 0; slots_settled <= 0;
+		@(posedge clk); cart_replace <= 1;
+		@(posedge clk); cart_replace <= 0;
+		@(posedge clk);
+		// give the two blocks known contents, then hand-build the V2 image
+		g_block = 6'd8; #1;
+		for (i = 0; i < g_words; i = i + 1) begin
+			sdram_gold[(g_base>>1) + i] = 16'h5500 + i[15:0];
+			psram[256 + i] = 16'h5500 + i[15:0];          // raw slot, block 8
+		end
+		n0 = g_words;
+		g_block = 6'd10; #1;
+		for (i = 0; i < g_words; i = i + 1) begin
+			sdram_gold[(g_base>>1) + i] = 16'hAA00 + i[15:0];
+			psram[256 + n0 + i] = 16'hAA00 + i[15:0];     // raw slot, block 10
+		end
+		psram[0] = 16'h4E47; psram[1] = 16'h5043;
+		psram[2] = 16'h5341; psram[3] = 16'h5632;        // "V2"
+		psram[4] = cart_crc[15:0]; psram[5] = cart_crc[31:16];
+		psram[6] = 16'd0; psram[7] = 16'd0;
+		psram[8] = 16'h0500; psram[9] = 16'd0;           // blocks 8 and 10
+		for (i = 10; i < 32; i = i + 1) psram[i] = 16'd0;
+		// the cartridge itself is blank: only the apply can fill it
+		g_block = 6'd8; #1;
+		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = 16'h0BAD;
+		g_block = 6'd10; #1;
+		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = 16'h0BAD;
+		@(posedge clk); cart_ready <= 1; host_busy <= 1; save_slot_wr <= 1;
+		repeat (8) @(posedge clk);
+		save_slot_wr <= 0; host_busy <= 0;
+		repeat (20) @(posedge clk);
+		slots_settled <= 1;
+		run_pass(4000, 2000000);
+		n2 = 0;
+		g_block = 6'd8; #1;
+		for (i = 0; i < g_words; i = i + 1)
+			if (sdram[(g_base>>1) + i] !== sdram_gold[(g_base>>1) + i]) n2 = n2 + 1;
+		g_block = 6'd10; #1;
+		for (i = 0; i < g_words; i = i + 1)
+			if (sdram[(g_base>>1) + i] !== sdram_gold[(g_base>>1) + i]) n2 = n2 + 1;
+		if (n2) begin
+			errors = errors + 1;
+			$display("   FAIL: %0d words not restored from the V2 image", n2);
+		end else $display("   PASS (V2 image restored byte-exact)");
+		// the next save rewrites the file in the new format
+		flash_write(6'd8);
+		run_pass(4000, 2000000);
+		if (psram[BANK+3] !== 16'h5633) begin
+			errors = errors + 1;
+			$display("   FAIL: not converted to V3 (magic %h)", psram[BANK+3]);
+		end else $display("   PASS (rewritten as V3)");
+
 		if (errors == 0) $display("== ALL CART-SAVE SCENARIOS PASS");
 		else             $display("== %0d FAILURE(S)", errors);
 		$finish;
