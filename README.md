@@ -34,6 +34,36 @@ Not included, never will be. Place your own dumps at
 | `boot0.rom` | NGPC color BIOS, 64 KiB |
 | `boot1.rom` | NGP mono BIOS, 64 KiB |
 
+## Saves
+
+Saving is automatic: the core tracks the flash blocks a game rewrites and
+persists exactly those. There is no save menu.
+
+**A save belongs to a ROM file, not to a game.** The Pocket finds a save by
+the ROM's path and filename, mirroring it under `Saves/ngpc/`. So:
+
+- Two copies of the same ROM in different folders keep two separate saves.
+  If a collection set gives you the same game in several category folders,
+  progress does not follow you between them.
+- Renaming or moving a ROM orphans its save. Nothing is lost -- rename the
+  `.sav` to match and it works again.
+- A save carries the cartridge's identity, so it is always possible to tell
+  which game an orphaned file belongs to.
+
+### Reading a save file
+
+`tools/savinfo.py` decodes any save and reports what is actually in it -- the
+cartridge, the ROM checksum, which flash blocks it carries, whether those
+blocks hold real data or only erased flash, and the core's own diagnostic
+counters:
+
+```
+python3 tools/savinfo.py "Saves/ngpc/common/Your Game.sav"
+```
+
+**If you are reporting a save problem, please include this output.** It
+answers in one line what otherwise takes a week of correspondence.
+
 ## Known behaviors
 
 See [docs/KNOWN_BEHAVIORS.md](docs/KNOWN_BEHAVIORS.md) — play-tested findings
@@ -72,8 +102,12 @@ trades away, knowingly:
 - **No autosave toggle, no manual backup buttons** — saving is always on and
   invisible. Backup is copying the `.sav` off the SD card, which is also the
   honest version of what those buttons did.
-- **A save set is capped at 63 KB of dirty blocks** — no licensed game comes
-  anywhere near it (the hungriest known dirties ~32 KB).
+- **A save set is capped at 63 KB of dirty blocks.** This was originally
+  described here as beyond the reach of any licensed game; that was wrong.
+  Biomotor Unitron 2 touches 72 KB of erase blocks with a *single* save
+  slot, because its small save records sit in large blocks. Such saves are
+  stored truncated. Compression that keeps them whole is in progress
+  ([#5](https://github.com/janisc/openfpga-NGPC/pull/5)).
 - **Savestates carry the cartridge delta** — a state embeds the same .sav
   image the save slot holds, so machine and flash restore as one atomic
   pair, and loading a state rewinds your in-game saves with it. MiSTer
