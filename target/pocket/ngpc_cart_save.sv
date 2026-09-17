@@ -71,6 +71,14 @@ module ngpc_cart_save #(
 	input  wire        cart_replace_i,     // cart_download_start
 	input  wire [31:0] cart_crc32_i,
 	input  wire [24:0] cart_bytes_i,
+
+	// The cartridge's OWN identity, as a real NGPC reads it from the cart
+	// header. Stamped into the save so an orphaned file -- one whose ROM was
+	// renamed or moved, which is all it takes for APF to stop finding it --
+	// says in plain text which game it belongs to.
+	input  wire [95:0] cart_title_i,
+	input  wire [15:0] cart_catalog_i,
+	input  wire  [7:0] cart_subcat_i,
 	input  wire  [1:0] size_code0_i,
 	input  wire  [1:0] size_code1_i,
 
@@ -174,7 +182,18 @@ module ngpc_cart_save #(
 	// paused, so it converges instead of chasing.
 	assign stage_current_o = (state == S_IDLE) && !pending_any && cart_ready_i;
 
-	assign save_present_o = |dirty0 || |dirty1;
+	// A SAVE MUST CONTAIN SOMETHING. A dirty bit alone is not a save: a game
+	// that merely erases a block during startup -- Card Fighters does exactly
+	// this when it finds no save -- dirties it with nothing in it. Claiming
+	// the slot for that image makes APF write a 65 KB file of erased flash,
+	// and if a real save file was already on the card, IT IS OVERWRITTEN AND
+	// GONE. One missed apply then costs the player everything, permanently
+	// (issue #3: a good save destroyed on the relaunch that failed to
+	// restore it, then frozen because an already-erased block is never
+	// erased again). So the claim also requires that some word we have
+	// moved this session -- staged out of flash, or applied into it -- was
+	// not erased. An all-0xFF image is indistinguishable from no save.
+	assign save_present_o = (|dirty0 || |dirty1) && image_has_data;
 
 	// ---- Block geometry -----------------------------------------------------
 
@@ -232,7 +251,17 @@ module ngpc_cart_save #(
 	                            // until the reject check passes
 	reg        apply_decide;    // first S_APPLY_SCAN cycle runs the check
 	reg        saw_save_wr;     // save-slot writes since the apply began
+	// Sticky for the whole cartridge session: APF delivered save data at
+	// some point. The staging PSRAM is NOT cleared between core launches --
+	// it is external memory and survives reconfiguration -- so a previous
+	// session's image can still be sitting there with valid magic and a CRC
+	// that matches, and it WILL be accepted and written into a cartridge
+	// that has no save of its own. Measured on hardware the moment empty
+	// captures stopped creating files: ingest 0 beats, verdict ACCEPTED,
+	// 16 KB restored from nothing. No delivery means there is no file.
+	reg        save_delivered;
 	reg [19:0] save_wr_quiet;
+	reg        image_has_data;   // a non-erased word passed through this session
 	reg  [3:0] state;
 	reg        copy_dirtied;    // the block being copied was rewritten mid-copy
 
@@ -287,9 +316,19 @@ module ngpc_cart_save #(
 			// 19-21 retired: delivery completeness and the no-verify-reads
 			// question were answered for good; the words stay zero so the
 			// header layout is stable.
+			5'd21: hdr_word = {8'd0, cart_subcat_i};
 			5'd22: hdr_word = diag_applies;
 			5'd23: hdr_word = diag_verdict;
 			5'd24: hdr_word = diag_p2wr;
+			// The cartridge's own header identity, 12 ASCII characters of title
+			// plus the catalogue numbers, so the file is self-describing.
+			5'd25: hdr_word = cart_title_i[15:0];
+			5'd26: hdr_word = cart_title_i[31:16];
+			5'd27: hdr_word = cart_title_i[47:32];
+			5'd28: hdr_word = cart_title_i[63:48];
+			5'd29: hdr_word = cart_title_i[79:64];
+			5'd30: hdr_word = cart_title_i[95:80];
+			5'd31: hdr_word = cart_catalog_i;
 			default: hdr_word = 16'd0;
 		endcase
 	end
@@ -326,12 +365,17 @@ module ngpc_cart_save #(
 			quiet         <= 20'd0;
 			apply_pending <= 1'b1;
 			apply_ok      <= 1'b0;
+			image_has_data <= 1'b0;
+			save_delivered <= 1'b0;
 			apply_reject_o <= 1'b0;
 			saw_save_wr   <= 1'b0;
 			save_wr_quiet <= 20'd0;
 		end else begin
 			if (state_apply_i) begin
-				apply_pending <= 1'b1;
+				// A savestate restore writes the staged image itself, through
+				// the copier rather than through APF, so it is delivery too.
+				apply_pending  <= 1'b1;
+				save_delivered <= 1'b1;
 			end
 
 			// Save-slot delivery seen after the apply started means the apply
@@ -340,6 +384,7 @@ module ngpc_cart_save #(
 			// boot never trips this -- delivery fully precedes the settled
 			// apply, so saw_save_wr is clear by the time the apply starts.
 			if (save_slot_wr_i) begin
+				save_delivered <= 1'b1;
 				saw_save_wr   <= 1'b1;
 				save_wr_quiet <= 20'd0;
 			end else if (save_wr_quiet != QUIET_CLOCKS) begin
@@ -425,6 +470,7 @@ module ngpc_cart_save #(
 
 				S_STAGE_RD_W: begin
 					if (p2_done_i) begin
+						if (p2_rdata_i != 16'hFFFF) image_has_data <= 1'b1;
 						xfer_data <= p2_rdata_i;
 						state     <= S_STAGE_WR;
 					end
@@ -492,7 +538,7 @@ module ngpc_cart_save #(
 
 				S_STAGE_HDR_W: begin
 					if (stage_done_i) begin
-						if (hdr_idx == 5'd24) state   <= S_FINISH;
+						if (hdr_idx == 5'd31) state   <= S_FINISH;
 						else begin
 							hdr_idx <= hdr_idx + 5'd1;
 							state   <= S_STAGE_HDR;
@@ -513,7 +559,10 @@ module ngpc_cart_save #(
 				S_APPLY_HDR_W: begin
 					if (stage_done_i) begin
 						case (hdr_idx)
-							5'd0:  if (stage_rdata_i != MAGIC0) apply_ok <= 1'b0;
+							// Nothing delivered this session means no save file exists,
+							// whatever the staging region happens to still contain.
+							5'd0:  if ((stage_rdata_i != MAGIC0) || !save_delivered)
+							           apply_ok <= 1'b0;
 							5'd1:  if (stage_rdata_i != MAGIC1) apply_ok <= 1'b0;
 							5'd2:  if (stage_rdata_i != MAGIC2) apply_ok <= 1'b0;
 							5'd3:  if (stage_rdata_i != MAGIC3) apply_ok <= 1'b0;
@@ -588,6 +637,7 @@ module ngpc_cart_save #(
 
 				S_APPLY_RD_W: begin
 					if (stage_done_i) begin
+						if (stage_rdata_i != 16'hFFFF) image_has_data <= 1'b1;
 						xfer_data <= stage_rdata_i;
 						state     <= S_APPLY_WR;
 					end

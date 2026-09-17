@@ -621,6 +621,9 @@ module ngpc_machine
 		.cart_replace_i  (cart_download_start),
 		.cart_crc32_i    (cart_image_crc32),
 		.cart_bytes_i    (cart_image_bytes),
+		.cart_title_i    (cart_header_title),
+		.cart_catalog_i  (cart_header_catalog),
+		.cart_subcat_i   (cart_header_subcatalog),
 		// NOT the mainboard's size codes. Those are ngp_cart's latched copies,
 		// and ngp_cart sits on the machine reset -- which INCLUDES the apply's
 		// own boot_hold. The audit's finding: during the apply, the hold wipes
