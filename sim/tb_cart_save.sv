@@ -53,7 +53,7 @@ module tb_cart_save;
 	reg   [1:0] die_busy = 0;
 	reg         host_busy = 0, slots_settled = 0;
 
-	wire        boot_hold, busy;
+	wire        boot_hold, busy, save_present;
 	wire        apply_reject;
 	wire        p2_req, p2_we;
 	wire [24:0] p2_addr;
@@ -122,6 +122,7 @@ module tb_cart_save;
 		.apply_reject_o  (apply_reject),
 		.stage_current_o (),
 		.slots_settled_i(slots_settled),
+		.save_present_o (save_present),
 		.boot_hold_o    (boot_hold),
 		.busy_o         (busy),
 		.p2_req_o       (p2_req),
@@ -379,6 +380,45 @@ module tb_cart_save;
 		for (i = 0; i < 262144; i = i + 1) if (sdram[i] !== sdram_gold[i]) n2 = n2 + 1;
 		if (n2) begin errors = errors + 1; $display("   FAIL: SDRAM touched (%0d words)", n2); end
 		if (errors == 0) $display("   PASS (rejected, bitmap and flash untouched)");
+
+		// ---- G: an erased-only image must not claim the save slot --------
+		// A game that merely erases a block on startup (Card Fighters does)
+		// dirties it with nothing in it. Claiming the slot for that makes APF
+		// overwrite a real save file on the card with 65 KB of erased flash --
+		// the amplifier that turned one missed apply into permanent data loss.
+		$display("== G  erased-only image must not claim the save slot");
+		@(posedge clk);
+		cart_ready <= 0; slots_settled <= 0;
+		@(posedge clk); cart_replace <= 1;
+		@(posedge clk); cart_replace <= 0;
+		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hDEAD;   // no file at all
+		@(posedge clk); cart_ready <= 1; slots_settled <= 1;
+		run_pass(2000, 2000000);         // no-file boot: rejects, stages nothing
+		if (save_present) begin
+			errors = errors + 1; $display("   FAIL: slot claimed before any write");
+		end
+		// the game erases block 0 and writes nothing into it
+		g_block = 6'd0; #1;
+		for (i = 0; i < g_words; i = i + 1) begin
+			sdram[(g_base>>1) + i] = 16'hFFFF; sdram_gold[(g_base>>1) + i] = 16'hFFFF;
+		end
+		flash_write(6'd0);
+		run_pass(2000, 2000000);
+		if (dut.dirty0 !== 64'h1) begin
+			errors = errors + 1; $display("   FAIL: block 0 not marked dirty (%h)", dut.dirty0);
+		end else if (save_present) begin
+			errors = errors + 1;
+			$display("   FAIL: erased-only image claimed the slot -- a real save");
+			$display("         file on the card would be overwritten with nothing");
+		end else $display("   PASS (dirty, but nothing to save: slot not claimed)");
+		// and now a real save in another block must claim it again
+		g_block = 6'd2; #1;
+		sdram[(g_base>>1) + 3] = 16'hC0DE; sdram_gold[(g_base>>1) + 3] = 16'hC0DE;
+		flash_write(6'd2);
+		run_pass(2000, 2000000);
+		if (!save_present) begin
+			errors = errors + 1; $display("   FAIL: real save did not claim the slot");
+		end else $display("   PASS (real data present: slot claimed)");
 
 		if (errors == 0) $display("== ALL CART-SAVE SCENARIOS PASS");
 		else             $display("== %0d FAILURE(S)", errors);

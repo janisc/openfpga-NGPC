@@ -174,7 +174,18 @@ module ngpc_cart_save #(
 	// paused, so it converges instead of chasing.
 	assign stage_current_o = (state == S_IDLE) && !pending_any && cart_ready_i;
 
-	assign save_present_o = |dirty0 || |dirty1;
+	// A SAVE MUST CONTAIN SOMETHING. A dirty bit alone is not a save: a game
+	// that merely erases a block during startup -- Card Fighters does exactly
+	// this when it finds no save -- dirties it with nothing in it. Claiming
+	// the slot for that image makes APF write a 65 KB file of erased flash,
+	// and if a real save file was already on the card, IT IS OVERWRITTEN AND
+	// GONE. One missed apply then costs the player everything, permanently
+	// (issue #3: a good save destroyed on the relaunch that failed to
+	// restore it, then frozen because an already-erased block is never
+	// erased again). So the claim also requires that some word we have
+	// moved this session -- staged out of flash, or applied into it -- was
+	// not erased. An all-0xFF image is indistinguishable from no save.
+	assign save_present_o = (|dirty0 || |dirty1) && image_has_data;
 
 	// ---- Block geometry -----------------------------------------------------
 
@@ -233,6 +244,7 @@ module ngpc_cart_save #(
 	reg        apply_decide;    // first S_APPLY_SCAN cycle runs the check
 	reg        saw_save_wr;     // save-slot writes since the apply began
 	reg [19:0] save_wr_quiet;
+	reg        image_has_data;   // a non-erased word passed through this session
 	reg  [3:0] state;
 	reg        copy_dirtied;    // the block being copied was rewritten mid-copy
 
@@ -326,6 +338,7 @@ module ngpc_cart_save #(
 			quiet         <= 20'd0;
 			apply_pending <= 1'b1;
 			apply_ok      <= 1'b0;
+			image_has_data <= 1'b0;
 			apply_reject_o <= 1'b0;
 			saw_save_wr   <= 1'b0;
 			save_wr_quiet <= 20'd0;
@@ -425,6 +438,7 @@ module ngpc_cart_save #(
 
 				S_STAGE_RD_W: begin
 					if (p2_done_i) begin
+						if (p2_rdata_i != 16'hFFFF) image_has_data <= 1'b1;
 						xfer_data <= p2_rdata_i;
 						state     <= S_STAGE_WR;
 					end
@@ -588,6 +602,7 @@ module ngpc_cart_save #(
 
 				S_APPLY_RD_W: begin
 					if (stage_done_i) begin
+						if (stage_rdata_i != 16'hFFFF) image_has_data <= 1'b1;
 						xfer_data <= stage_rdata_i;
 						state     <= S_APPLY_WR;
 					end
