@@ -286,10 +286,15 @@ module ngpc_cart_save #(
 	reg [15:0] fill_rem;
 	reg        has_lit;
 	reg        pack_overflow;
-	// A V2 save is read as it always was -- raw blocks in fixed slots -- and
-	// rewritten as V3 by the next staging pass. Migration is one way and
-	// needs nothing from the player. If this path were ever wrong the old
-	// file survives it: since 1.0.2 a refused apply is not overwritten.
+	// A V2 save is read as it always was and rewritten as V3 by the next
+	// staging pass. Migration is one way and needs nothing from the player.
+	// It costs one flag and one AND term, because V2's payload is the dirty
+	// blocks concatenated -- the same sequential walk the packed stream
+	// uses. Only the meaning of 0xFFFF differs: a marker, or just a word.
+	// Giving the legacy path its own addressing instead cost an adder, a
+	// 25-bit register and a wide mux, and did not fit on any seed.
+	// If this path were ever wrong the old file survives it: since 1.0.2 a
+	// refused apply is not overwritten.
 	reg        legacy;
 	reg [19:0] save_wr_quiet;
 	reg        image_has_data;   // a non-erased word passed through this session
@@ -692,7 +697,6 @@ module ngpc_cart_save #(
 							geo_die      <= 1'b0;
 							geo_block    <= 6'd0;
 							pack_ptr     <= 16'd0;
-							stage_offset <= 25'd0;
 `ifdef NGPC_SAVE_DIAG
 							diag_verdict <= apply_ok ? 16'd1 : 16'd2;
 `endif
@@ -742,8 +746,7 @@ module ngpc_cart_save #(
 						stage_req_o  <= 1'b1;
 						stage_we_o   <= 1'b0;
 						stage_addr_o <= {8'd0, stage_bank_o, 16'd0} + 25'd512 +
-						                (legacy ? stage_offset + {8'd0, block_word, 1'b0}
-						                        : {8'd0, pack_ptr, 1'b0});
+						                {8'd0, pack_ptr, 1'b0};
 						state        <= S_APPLY_RD_W;
 					end
 				end
@@ -798,8 +801,6 @@ module ngpc_cart_save #(
 						diag_p2wr <= diag_p2wr + 16'd1;
 `endif
 						if (block_word + 16'd1 >= geo_words) begin
-							if (legacy) stage_offset <= stage_offset +
-							                            {9'd0, geo_words, 1'b0};
 							if (geo_block == 6'd63) begin
 								if (geo_die) state <= S_FINISH;
 								else begin
