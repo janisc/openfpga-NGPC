@@ -768,3 +768,8 @@ set_global_assignment -name PHYSICAL_SYNTHESIS_EFFORT NORMAL
 #
 # So retiming and fitting are mutually exclusive on this design. OFF is what
 # fits, with saves and sleep both present and roughly 580 ALMs to spare.
+
+# Ship the save diagnostics: every .sav carries its own header counters
+# (ingest beats/drops, applies, verdict, p2 writes). This investigation cost
+# a week for want of them in the field.
+set_global_assignment -name VERILOG_MACRO "NGPC_SAVE_DIAG=1"

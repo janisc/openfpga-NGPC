@@ -71,6 +71,14 @@ module ngpc_cart_save #(
 	input  wire        cart_replace_i,     // cart_download_start
 	input  wire [31:0] cart_crc32_i,
 	input  wire [24:0] cart_bytes_i,
+
+	// The cartridge's OWN identity, as a real NGPC reads it from the cart
+	// header. Stamped into the save so an orphaned file -- one whose ROM was
+	// renamed or moved, which is all it takes for APF to stop finding it --
+	// says in plain text which game it belongs to.
+	input  wire [95:0] cart_title_i,
+	input  wire [15:0] cart_catalog_i,
+	input  wire  [7:0] cart_subcat_i,
 	input  wire  [1:0] size_code0_i,
 	input  wire  [1:0] size_code1_i,
 
@@ -299,9 +307,19 @@ module ngpc_cart_save #(
 			// 19-21 retired: delivery completeness and the no-verify-reads
 			// question were answered for good; the words stay zero so the
 			// header layout is stable.
+			5'd21: hdr_word = {8'd0, cart_subcat_i};
 			5'd22: hdr_word = diag_applies;
 			5'd23: hdr_word = diag_verdict;
 			5'd24: hdr_word = diag_p2wr;
+			// The cartridge's own header identity, 12 ASCII characters of title
+			// plus the catalogue numbers, so the file is self-describing.
+			5'd25: hdr_word = cart_title_i[15:0];
+			5'd26: hdr_word = cart_title_i[31:16];
+			5'd27: hdr_word = cart_title_i[47:32];
+			5'd28: hdr_word = cart_title_i[63:48];
+			5'd29: hdr_word = cart_title_i[79:64];
+			5'd30: hdr_word = cart_title_i[95:80];
+			5'd31: hdr_word = cart_catalog_i;
 			default: hdr_word = 16'd0;
 		endcase
 	end
@@ -506,7 +524,7 @@ module ngpc_cart_save #(
 
 				S_STAGE_HDR_W: begin
 					if (stage_done_i) begin
-						if (hdr_idx == 5'd24) state   <= S_FINISH;
+						if (hdr_idx == 5'd31) state   <= S_FINISH;
 						else begin
 							hdr_idx <= hdr_idx + 5'd1;
 							state   <= S_STAGE_HDR;
