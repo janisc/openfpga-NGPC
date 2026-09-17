@@ -92,6 +92,7 @@ module ngpc_machine
 	input  wire        capture_hold,     // savestate capture: hold the pause
 	input  wire        suppress_cart_strap, // reset boots cartless: BIOS menu
 	output wire        stage_current,    // stager parked, image current
+	output wire        stage_bank,       // committed staging bank
 	output wire        save_busy_state,  // cart-save engine busy (apply observer)
 	input  wire        slots_settled,    // no loader region written for ~500 ms
 	input  wire [15:0] stage_diag_beats,
@@ -647,6 +648,7 @@ module ngpc_machine
 		.save_slot_wr_i  (save_slot_wr),
 		.apply_reject_o  (apply_reject),
 		.stage_current_o (stage_current),
+		.stage_bank_o    (stage_bank),
 		.slots_settled_i (slots_settled),
 		.diag_beats_i    (stage_diag_beats),
 		.diag_drops_i    (stage_diag_drops),

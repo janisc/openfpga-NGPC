@@ -647,6 +647,7 @@ module core_top (
   synch_3 settle_sync (slots_settled_74, slots_settled, clk_sys);
 
   ngpc_stage_mem stage_mem (
+      .active_bank_i(mc_stage_bank),
       .clk  (clk_sys),
       .reset(reset_in),
 
@@ -665,7 +666,9 @@ module core_top (
 
       .eng_req_i  (sc_rd_active ? sc_rd_req : stage_req),
       .eng_we_i   (sc_rd_active ? 1'b0 : stage_we),
-      .eng_addr_i (sc_rd_active ? sc_rd_addr : stage_addr),
+      // The copier reads the committed image, so it carries the bank too.
+      .eng_addr_i (sc_rd_active ? (sc_rd_addr | {8'd0, mc_stage_bank, 16'd0})
+                                : stage_addr),
       .eng_wdata_i(stage_wdata),
       .eng_ready_o(stage_ready),
       .eng_done_o (stage_done),
@@ -912,7 +915,7 @@ module core_top (
   wire        cs_load_error;
   wire [24:0] sc_host_addr;
   wire [15:0] sc_host_data;
-  wire        mc_stage_current, mc_save_busy;
+  wire        mc_stage_current, mc_save_busy, mc_stage_bank;
   wire        mc_state_apply, mc_capture_hold;
 
   ngpc_state_cart state_cart (
@@ -1078,6 +1081,7 @@ module core_top (
       .capture_hold    (mc_capture_hold),
       .suppress_cart_strap(bios_reset_mode_s),
       .stage_current   (mc_stage_current),
+      .stage_bank      (mc_stage_bank),
       .save_busy_state (mc_save_busy),
       .slots_settled(slots_settled),
       .stage_diag_beats(stage_diag_beats),

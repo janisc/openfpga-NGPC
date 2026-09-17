@@ -15,6 +15,11 @@
 // core_top's delivery detector.
 //
 // SCENARIOS
+// BLOCK CHOICE: the small top blocks (8 KB, 8 KB, 16 KB on a 4 Mbit die) --
+// where real NGPC saves live. The 64 KB blocks were used here once; two of
+// them make a 128 KB image, which cannot fit a 64 KB staging bank and is
+// far past the save slot a real image has to fit anyway.
+//
 //   A  stage: game writes two flash blocks, dies go quiet -> engine stages
 //      them; the PSRAM image must carry the header (magic, CRC, byte count,
 //      bitmap) and the block payload in walk order.
@@ -53,7 +58,9 @@ module tb_cart_save;
 	reg   [1:0] die_busy = 0;
 	reg         host_busy = 0, slots_settled = 0;
 
-	wire        boot_hold, busy, save_present;
+	wire        boot_hold, busy, save_present, stage_bank;
+	// Staging is double-banked; APF only ever sees the committed one.
+	wire [17:0] BANK = stage_bank ? 18'd32768 : 18'd0;
 	wire        apply_reject;
 	wire        p2_req, p2_we;
 	wire [24:0] p2_addr;
@@ -123,6 +130,7 @@ module tb_cart_save;
 		.stage_current_o (),
 		.slots_settled_i(slots_settled),
 		.save_present_o (save_present),
+		.stage_bank_o   (stage_bank),
 		.boot_hold_o    (boot_hold),
 		.busy_o         (busy),
 		.p2_req_o       (p2_req),
@@ -190,7 +198,7 @@ module tb_cart_save;
 			g_block = blk; #1;
 			bad = 0;
 			for (w = 0; w < g_words; w = w + 1)
-				if (psram[(25'd512 + off)/2 + w] !== sdram_gold[(g_base>>1) + w]) bad = bad + 1;
+				if (psram[BANK + (25'd512 + off)/2 + w] !== sdram_gold[(g_base>>1) + w]) bad = bad + 1;
 			if (bad) begin
 				errors = errors + 1;
 				$display("   FAIL: block %0d payload, %0d words wrong", blk, bad);
@@ -239,43 +247,52 @@ module tb_cart_save;
 
 		// ---- A: the game saves -------------------------------------------
 		$display("== A  stage two written blocks on quiescence");
-		flash_write(6'd0);
-		flash_write(6'd2);
+		flash_write(6'd8);
+		flash_write(6'd10);
 		// dies quiet -> QUIET_CLOCKS(200) -> staging (two 64 KB blocks,
 		// ~6 cycles a word: allow 2M)
 		run_pass(2000, 2000000);
 		// header
-		if (psram[0] !== 16'h4E47 || psram[1] !== 16'h5043 ||
-		    psram[2] !== 16'h5341 || psram[3] !== 16'h5632) begin
-			errors = errors + 1; $display("   FAIL: magic %h %h %h %h", psram[0],psram[1],psram[2],psram[3]);
+		if (psram[BANK+0] !== 16'h4E47 || psram[BANK+1] !== 16'h5043 ||
+		    psram[BANK+2] !== 16'h5341 || psram[BANK+3] !== 16'h5632) begin
+			errors = errors + 1; $display("   FAIL: magic %h %h %h %h",
+			         psram[BANK+0],psram[BANK+1],psram[BANK+2],psram[BANK+3]);
 		end
-		if (psram[4] !== cart_crc[15:0] || psram[5] !== cart_crc[31:16]) begin
-			errors = errors + 1; $display("   FAIL: crc %h%h", psram[5], psram[4]);
+		if (psram[BANK+4] !== cart_crc[15:0] || psram[BANK+5] !== cart_crc[31:16]) begin
+			errors = errors + 1; $display("   FAIL: crc %h%h", psram[BANK+5], psram[BANK+4]);
 		end
-		if (psram[8] !== 16'h0005) begin   // dirty0 = blocks 0 and 2
-			errors = errors + 1; $display("   FAIL: bitmap %h expected 0005", psram[8]);
+		if (psram[BANK+8] !== 16'h0500) begin   // dirty0 = blocks 8 and 10
+			errors = errors + 1; $display("   FAIL: bitmap %h expected 0500", psram[BANK+8]);
 		end
 		// payload: block 0 then block 2, in walk order
-		check_block(6'd0, 25'd0);
-		g_block = 6'd0; #1; offB = {g_words, 1'b0};
-		check_block(6'd2, offB[24:0]);
+		check_block(6'd8, 25'd0);
+		g_block = 6'd8; #1; offB = {g_words, 1'b0};
+		check_block(6'd10, offB[24:0]);
 		if (errors == 0) $display("   PASS (header + payload byte-exact)");
 		for (i = 0; i < 131328; i = i + 1) imgA[i] = psram[i];
 
 		// ---- D: torn copy self-corrects ----------------------------------
 		$display("== D  block rewritten mid-stage is re-staged");
-		sdram[16'h0010] = 16'h1111; sdram_gold[16'h0010] = 16'h1111;   // block 0 changes
-		flash_write(6'd0);
-		// wait for staging to START, then fire another write mid-copy
+		g_block = 6'd8; #1;
+		sdram[(g_base>>1) + 8] = 16'h1111; sdram_gold[(g_base>>1) + 8] = 16'h1111;
+		flash_write(6'd8);
+		// Wait until block 8 is genuinely PART-COPIED before rewriting it.
+		// Waiting only for `busy` is not enough: the walk scans from block 0,
+		// so an event fired then lands before this block is read at all, the
+		// copy captures the new data by itself, and clearing pending is right.
+		// The case that must not be lost is a write landing after some of the
+		// block has already been staged.
 		i = 0;
-		while (!busy && i < 100000) begin i = i + 1; @(posedge clk); end
+		while (!(busy && dut.geo_block == 6'd8 && dut.block_word > 16'd64)
+		       && i < 200000) begin i = i + 1; @(posedge clk); end
 		if (!busy) begin errors = errors + 1; $display("   FAIL: restage never started"); end
-		sdram[16'h0011] = 16'h2222; sdram_gold[16'h0011] = 16'h2222;
-		flash_write(6'd0);                 // marks it pending again mid-pass
+		g_block = 6'd8; #1;
+		sdram[(g_base>>1) + 9] = 16'h2222; sdram_gold[(g_base>>1) + 9] = 16'h2222;
+		flash_write(6'd8);                 // marks it pending again mid-pass
 		i = 0;
 		while (busy && i < 2000000) begin i = i + 1; @(posedge clk); end
 		run_pass(2000, 2000000);           // second pass carries the rewrite
-		check_block(6'd0, 25'd0);
+		check_block(6'd8, 25'd0);
 		if (errors == 0) $display("   PASS (second pass carried the rewrite)");
 		for (i = 0; i < 131328; i = i + 1) imgA[i] = psram[i];
 
@@ -304,21 +321,21 @@ module tb_cart_save;
 		slots_settled <= 1;
 		@(posedge clk);
 		// corrupt the block regions so only the apply can heal them
-		g_block = 6'd0; #1;
+		g_block = 6'd8; #1;
 		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = 16'h0BAD;
-		g_block = 6'd2; #1;
+		g_block = 6'd10; #1;
 		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = 16'h0BAD;
 		run_pass(2000, 2000000);
 		if (boot_hold) begin errors = errors + 1; $display("   FAIL: boot never released"); end
 		n2 = 0;
-		g_block = 6'd0; #1;
+		g_block = 6'd8; #1;
 		for (i = 0; i < g_words; i = i + 1)
 			if (sdram[(g_base>>1) + i] !== sdram_gold[(g_base>>1) + i]) n2 = n2 + 1;
-		g_block = 6'd2; #1;
+		g_block = 6'd10; #1;
 		for (i = 0; i < g_words; i = i + 1)
 			if (sdram[(g_base>>1) + i] !== sdram_gold[(g_base>>1) + i]) n2 = n2 + 1;
 		if (n2) begin errors = errors + 1; $display("   FAIL: %0d words not restored", n2); end
-		if (dut.dirty0 !== 64'h5) begin
+		if (dut.dirty0 !== 64'h500) begin
 			errors = errors + 1; $display("   FAIL: dirty bitmap %h after apply", dut.dirty0);
 		end
 		if (errors == 0) $display("   PASS (held through the race, applied byte-exact, bitmap restored)");
@@ -338,9 +355,9 @@ module tb_cart_save;
 			errors = errors + 1; $display("   FAIL: pending not consumed by early apply");
 		end
 		// corrupt the block regions so only a re-apply can heal them
-		g_block = 6'd0; #1;
+		g_block = 6'd8; #1;
 		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = 16'h0BAD;
-		g_block = 6'd2; #1;
+		g_block = 6'd10; #1;
 		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = 16'h0BAD;
 		// the save slot NOW arrives -- late, after the settle already fired
 		@(posedge clk); host_busy <= 1; save_slot_wr <= 1;
@@ -350,14 +367,14 @@ module tb_cart_save;
 		// burst quiet (QUIET_CLOCKS=200) -> self-arm -> second apply
 		run_pass(4000, 2000000);
 		n2 = 0;
-		g_block = 6'd0; #1;
+		g_block = 6'd8; #1;
 		for (i = 0; i < g_words; i = i + 1)
 			if (sdram[(g_base>>1) + i] !== sdram_gold[(g_base>>1) + i]) n2 = n2 + 1;
-		g_block = 6'd2; #1;
+		g_block = 6'd10; #1;
 		for (i = 0; i < g_words; i = i + 1)
 			if (sdram[(g_base>>1) + i] !== sdram_gold[(g_base>>1) + i]) n2 = n2 + 1;
 		if (n2) begin errors = errors + 1; $display("   FAIL: %0d words not healed by re-apply", n2); end
-		else if (dut.dirty0 !== 64'h5) begin
+		else if (dut.dirty0 !== 64'h500) begin
 			errors = errors + 1; $display("   FAIL: bitmap %h after re-apply", dut.dirty0);
 		end else $display("   PASS (late delivery healed by the re-armed apply)");
 
@@ -365,7 +382,7 @@ module tb_cart_save;
 		$display("== F  state load with an older bitmap is rejected");
 		// forge an older image: same payload start, bitmap says only block 0
 		for (i = 0; i < 131328; i = i + 1) psram[i] = imgA[i];
-		psram[8] = 16'h0001;
+		psram[8] = 16'h0001; psram[32768+8] = 16'h0001;
 		for (i = 0; i < 262144; i = i + 1) sdram_gold[i] = sdram[i];   // must stay put
 		@(posedge clk); state_apply <= 1;
 		@(posedge clk); state_apply <= 0;
@@ -373,7 +390,7 @@ module tb_cart_save;
 		if (!apply_reject) begin
 			errors = errors + 1; $display("   FAIL: reject flag not raised");
 		end
-		if (dut.dirty0 !== 64'h5) begin
+		if (dut.dirty0 !== 64'h500) begin
 			errors = errors + 1; $display("   FAIL: dirty bitmap changed to %h", dut.dirty0);
 		end
 		n2 = 0;
@@ -398,21 +415,21 @@ module tb_cart_save;
 			errors = errors + 1; $display("   FAIL: slot claimed before any write");
 		end
 		// the game erases block 0 and writes nothing into it
-		g_block = 6'd0; #1;
+		g_block = 6'd8; #1;
 		for (i = 0; i < g_words; i = i + 1) begin
 			sdram[(g_base>>1) + i] = 16'hFFFF; sdram_gold[(g_base>>1) + i] = 16'hFFFF;
 		end
-		flash_write(6'd0);
+		flash_write(6'd8);
 		run_pass(2000, 2000000);
-		if (dut.dirty0 !== 64'h1) begin
-			errors = errors + 1; $display("   FAIL: block 0 not marked dirty (%h)", dut.dirty0);
+		if (dut.dirty0 !== 64'h100) begin
+			errors = errors + 1; $display("   FAIL: block 8 not marked dirty (%h)", dut.dirty0);
 		end else if (save_present) begin
 			errors = errors + 1;
 			$display("   FAIL: erased-only image claimed the slot -- a real save");
 			$display("         file on the card would be overwritten with nothing");
 		end else $display("   PASS (dirty, but nothing to save: slot not claimed)");
 		// and now a real save in another block must claim it again
-		g_block = 6'd2; #1;
+		g_block = 6'd10; #1;
 		sdram[(g_base>>1) + 3] = 16'hC0DE; sdram_gold[(g_base>>1) + 3] = 16'hC0DE;
 		flash_write(6'd2);
 		run_pass(2000, 2000000);

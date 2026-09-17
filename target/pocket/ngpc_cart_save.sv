@@ -138,6 +138,7 @@ module ngpc_cart_save #(
 	// bytes and no file is created for games that never save.
 	output wire        save_present_o,
 	output wire        stage_current_o,   // idle with nothing left to stage
+	output reg         stage_bank_o,      // committed bank: what APF sees
 
 	// ---- Cartridge SDRAM, background port ----------------------------------
 	output reg         p2_req_o,
@@ -260,6 +261,13 @@ module ngpc_cart_save #(
 	// captures stopped creating files: ingest 0 beats, verdict ACCEPTED,
 	// 16 KB restored from nothing. No delivery means there is no file.
 	reg        save_delivered;
+	// Staging is double-banked. A pass rebuilds the WHOLE image into the
+	// spare bank and flips only when it is complete, so APF can never read
+	// a half-built image and a pass cut short leaves the last good one
+	// intact. Every dirty block is copied each pass, not just the newly
+	// dirtied ones: the spare bank holds an older image whose payload
+	// layout no longer matches the current bitmap.
+	wire       build_bank = ~stage_bank_o;
 	reg [19:0] save_wr_quiet;
 	reg        image_has_data;   // a non-erased word passed through this session
 	reg  [3:0] state;
@@ -367,6 +375,7 @@ module ngpc_cart_save #(
 			apply_ok      <= 1'b0;
 			image_has_data <= 1'b0;
 			save_delivered <= 1'b0;
+			stage_bank_o   <= 1'b0;
 			apply_reject_o <= 1'b0;
 			saw_save_wr   <= 1'b0;
 			save_wr_quiet <= 20'd0;
@@ -436,15 +445,11 @@ module ngpc_cart_save #(
 
 				// ---------------- stage: cartridge -> staging ----------------
 				S_STAGE_SCAN: begin
-					if (block_pending) begin
+					if (block_dirty) begin
 						block_word   <= 16'd0;
 						copy_dirtied <= 1'b0;
 						state        <= S_STAGE_RD;
 					end else begin
-						// Dirty-but-not-pending blocks still occupy their slot
-						// in the payload, so the offset advances for them too.
-						if (block_dirty) stage_offset <= stage_offset + {9'd0, geo_words, 1'b0};
-
 						if (geo_block == 6'd63) begin
 							if (geo_die) begin
 								hdr_idx <= 4'd0;
@@ -480,8 +485,8 @@ module ngpc_cart_save #(
 					if (stage_ready_i) begin
 						stage_req_o   <= 1'b1;
 						stage_we_o    <= 1'b1;
-						stage_addr_o  <= 25'd512 + stage_offset +
-						                 {8'd0, block_word, 1'b0};
+						stage_addr_o  <= {8'd0, build_bank, 16'd0} + 25'd512 +
+						                 stage_offset + {8'd0, block_word, 1'b0};
 						stage_wdata_o <= xfer_data;
 						state         <= S_STAGE_WR_W;
 					end
@@ -530,7 +535,7 @@ module ngpc_cart_save #(
 					if (stage_ready_i) begin
 						stage_req_o   <= 1'b1;
 						stage_we_o    <= 1'b1;
-						stage_addr_o  <= {19'd0, hdr_idx, 1'b0};
+						stage_addr_o  <= {8'd0, build_bank, 16'd0} + {19'd0, hdr_idx, 1'b0};
 						stage_wdata_o <= hdr_word;
 						state         <= S_STAGE_HDR_W;
 					end
@@ -538,7 +543,11 @@ module ngpc_cart_save #(
 
 				S_STAGE_HDR_W: begin
 					if (stage_done_i) begin
-						if (hdr_idx == 5'd31) state   <= S_FINISH;
+						if (hdr_idx == 5'd31) begin
+							// The image is whole: publish it in one step.
+							stage_bank_o <= build_bank;
+							state        <= S_FINISH;
+						end
 						else begin
 							hdr_idx <= hdr_idx + 5'd1;
 							state   <= S_STAGE_HDR;
@@ -551,7 +560,7 @@ module ngpc_cart_save #(
 					if (stage_ready_i) begin
 						stage_req_o  <= 1'b1;
 						stage_we_o   <= 1'b0;
-						stage_addr_o <= {19'd0, hdr_idx, 1'b0};
+						stage_addr_o <= {8'd0, stage_bank_o, 16'd0} + {19'd0, hdr_idx, 1'b0};
 						state        <= S_APPLY_HDR_W;
 					end
 				end
@@ -629,8 +638,8 @@ module ngpc_cart_save #(
 					if (stage_ready_i) begin
 						stage_req_o  <= 1'b1;
 						stage_we_o   <= 1'b0;
-						stage_addr_o <= 25'd512 + stage_offset +
-						                {8'd0, block_word, 1'b0};
+						stage_addr_o <= {8'd0, stage_bank_o, 16'd0} + 25'd512 +
+						                stage_offset + {8'd0, block_word, 1'b0};
 						state        <= S_APPLY_RD_W;
 					end
 				end

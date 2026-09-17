@@ -30,6 +30,12 @@ module ngpc_stage_mem
 	input  wire        clk,
 	input  wire        reset,
 
+	// Which 64 KB bank of the staging region is the COMMITTED image. APF
+	// only ever sees this one: it delivers into it and flushes out of it,
+	// so a flush can never catch a half-built image. The engine builds the
+	// next image in the other bank and flips this when the image is whole.
+	input  wire        active_bank_i,
+
 	// ---- Client A: APF, through data_loader / data_unloader ---------------
 	input  wire        host_wr_i,
 	input  wire [24:0] host_wr_addr_i,   // byte address within the region
@@ -135,8 +141,8 @@ module ngpc_stage_mem
 
 	// The region is addressed in bytes by both clients; PSRAM counts 16-bit
 	// words, so the low bit is dropped.
-	wire [21:0] host_wr_word = host_wr_addr_i[22:1];
-	wire [21:0] host_rd_word = host_rd_addr_i[22:1];
+	wire [21:0] host_wr_word = {5'd0, active_bank_i, host_wr_addr_i[15:1]};
+	wire [21:0] host_rd_word = {5'd0, active_bank_i, host_rd_addr_i[15:1]};
 	wire [21:0] eng_word     = eng_addr_i[22:1];
 
 	assign eng_ready_o = !ps_busy && !ps_write_en && !ps_read_en && !host_pending;
