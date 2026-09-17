@@ -165,7 +165,8 @@ module ngpc_cart_save #(
 	localparam [15:0] MAGIC0 = 16'h4E47;  // "NG"
 	localparam [15:0] MAGIC1 = 16'h5043;  // "PC"
 	localparam [15:0] MAGIC2 = 16'h5341;  // "SA"
-	localparam [15:0] MAGIC3 = 16'h5632;  // "V2" -- layout differs from the
+	localparam [15:0] MAGIC3 = 16'h5633;  // "V3" -- erased runs are packed;
+	                                      // layout differs from the
 	                                      // sector-based version that preceded it
 
 	// ---- Dirty and pending bitmaps -----------------------------------------
@@ -230,22 +231,29 @@ module ngpc_cart_save #(
 
 	// ---- State --------------------------------------------------------------
 
-	localparam S_IDLE        = 4'd0;
-	localparam S_STAGE_SCAN  = 4'd1;
-	localparam S_STAGE_RD    = 4'd2;
-	localparam S_STAGE_RD_W  = 4'd3;
-	localparam S_STAGE_WR    = 4'd4;
-	localparam S_STAGE_WR_W  = 4'd5;
-	localparam S_STAGE_HDR   = 4'd6;
-	localparam S_STAGE_HDR_W = 4'd7;
-	localparam S_APPLY_HDR   = 4'd8;
-	localparam S_APPLY_HDR_W = 4'd9;
-	localparam S_APPLY_SCAN  = 4'd10;
-	localparam S_APPLY_RD    = 4'd11;
-	localparam S_APPLY_RD_W  = 4'd12;
-	localparam S_APPLY_WR    = 4'd13;
-	localparam S_APPLY_WR_W  = 4'd14;
-	localparam S_FINISH      = 4'd15;
+	localparam S_IDLE        = 5'd0;
+	localparam S_STAGE_SCAN  = 5'd1;
+	localparam S_STAGE_RD    = 5'd2;
+	localparam S_STAGE_RD_W  = 5'd3;
+	localparam S_STAGE_WR    = 5'd4;
+	localparam S_STAGE_WR_W  = 5'd5;
+	localparam S_STAGE_HDR   = 5'd6;
+	localparam S_STAGE_HDR_W = 5'd7;
+	localparam S_APPLY_HDR   = 5'd8;
+	localparam S_APPLY_HDR_W = 5'd9;
+	localparam S_APPLY_SCAN  = 5'd10;
+	localparam S_APPLY_RD    = 5'd11;
+	localparam S_APPLY_RD_W  = 5'd12;
+	localparam S_APPLY_WR    = 5'd13;
+	localparam S_APPLY_WR_W  = 5'd14;
+	localparam S_FINISH      = 5'd15;
+	localparam S_STAGE_RUN   = 5'd16;
+	localparam S_STAGE_RUN_W = 5'd17;
+	localparam S_STAGE_LEN   = 5'd18;
+	localparam S_STAGE_LEN_W = 5'd19;
+	localparam S_STAGE_NEXT  = 5'd20;
+	localparam S_APPLY_CNT   = 5'd21;
+	localparam S_APPLY_CNT_W = 5'd22;
 
 
 	reg [63:0] img0, img1;      // staged bitmap, held apart from dirty
@@ -268,9 +276,18 @@ module ngpc_cart_save #(
 	// dirtied ones: the spare bank holds an older image whose payload
 	// layout no longer matches the current bitmap.
 	wire       build_bank = ~stage_bank_o;
+
+	// The packed payload is a stream, not a set of fixed block slots, so a
+	// single word pointer walks it for both the encoder and the decoder.
+	localparam [15:0] PAYLOAD_WORDS = 16'd32256;   // 0xFE00 less the header
+	reg [15:0] pack_ptr;
+	reg [15:0] run_len;
+	reg [15:0] fill_rem;
+	reg        has_lit;
+	reg        pack_overflow;
 	reg [19:0] save_wr_quiet;
 	reg        image_has_data;   // a non-erased word passed through this session
-	reg  [3:0] state;
+	reg  [4:0] state;
 	reg        copy_dirtied;    // the block being copied was rewritten mid-copy
 
 	// Apply diagnostics, stamped into header words 22-24 of every staged save:
@@ -285,7 +302,7 @@ module ngpc_cart_save #(
 
 	reg [15:0] block_word;      // position within the block being copied
 	reg [15:0] xfer_data;       // the word in flight
-	reg  [4:0] hdr_idx;         // position within the header
+	reg  [5:0] hdr_idx;         // position within the header
 	reg [19:0] quiet;
 	reg        apply_pending;   // apply the staged image once the cart is ready
 	reg        apply_ok;        // the header matched this cartridge
@@ -311,32 +328,32 @@ module ngpc_cart_save #(
 			5'd7:  hdr_word = cart_bytes_i[15:0];
 			5'd8:  hdr_word = dirty0[15:0];
 			5'd9:  hdr_word = dirty0[31:16];
-			5'd10: hdr_word = dirty0[47:32];
-			5'd11: hdr_word = dirty0[63:48];
-			5'd12: hdr_word = dirty1[15:0];
-			5'd13: hdr_word = dirty1[31:16];
-			5'd14: hdr_word = dirty1[47:32];
-			5'd15: hdr_word = dirty1[63:48];
-			5'd16: hdr_word = diag_beats_i;
-			5'd17: hdr_word = diag_drops_i;
+			6'd10: hdr_word = dirty0[47:32];
+			6'd11: hdr_word = dirty0[63:48];
+			6'd12: hdr_word = dirty1[15:0];
+			6'd13: hdr_word = dirty1[31:16];
+			6'd14: hdr_word = dirty1[47:32];
+			6'd15: hdr_word = dirty1[63:48];
+			6'd16: hdr_word = diag_beats_i;
+			6'd17: hdr_word = diag_drops_i;
 			// 18 retired with 19-21: high-water read zero through every
 			// test; drops alone detect an overrun.
 			// 19-21 retired: delivery completeness and the no-verify-reads
 			// question were answered for good; the words stay zero so the
 			// header layout is stable.
-			5'd21: hdr_word = {8'd0, cart_subcat_i};
-			5'd22: hdr_word = diag_applies;
-			5'd23: hdr_word = diag_verdict;
-			5'd24: hdr_word = diag_p2wr;
+			6'd21: hdr_word = {8'd0, cart_subcat_i};
+			6'd22: hdr_word = diag_applies;
+			6'd23: hdr_word = diag_verdict;
+			6'd24: hdr_word = diag_p2wr;
 			// The cartridge's own header identity, 12 ASCII characters of title
 			// plus the catalogue numbers, so the file is self-describing.
-			5'd25: hdr_word = cart_title_i[15:0];
-			5'd26: hdr_word = cart_title_i[31:16];
-			5'd27: hdr_word = cart_title_i[47:32];
-			5'd28: hdr_word = cart_title_i[63:48];
-			5'd29: hdr_word = cart_title_i[79:64];
-			5'd30: hdr_word = cart_title_i[95:80];
-			5'd31: hdr_word = cart_catalog_i;
+			6'd25: hdr_word = cart_title_i[15:0];
+			6'd26: hdr_word = cart_title_i[31:16];
+			6'd27: hdr_word = cart_title_i[47:32];
+			6'd28: hdr_word = cart_title_i[63:48];
+			6'd29: hdr_word = cart_title_i[79:64];
+			6'd30: hdr_word = cart_title_i[95:80];
+			6'd31: hdr_word = cart_catalog_i;
 			default: hdr_word = 16'd0;
 		endcase
 	end
@@ -376,6 +393,7 @@ module ngpc_cart_save #(
 			image_has_data <= 1'b0;
 			save_delivered <= 1'b0;
 			stage_bank_o   <= 1'b0;
+			pack_overflow  <= 1'b0;
 			apply_reject_o <= 1'b0;
 			saw_save_wr   <= 1'b0;
 			save_wr_quiet <= 20'd0;
@@ -420,7 +438,7 @@ module ngpc_cart_save #(
 							apply_pending <= 1'b0;
 							apply_reject_o <= 1'b0;
 							saw_save_wr   <= 1'b0;
-							hdr_idx       <= 4'd0;
+							hdr_idx <= 6'd0;
 							apply_ok      <= 1'b1;
 `ifdef NGPC_SAVE_DIAG
 							diag_applies  <= diag_applies + 16'd1;
@@ -429,13 +447,14 @@ module ngpc_cart_save #(
 `endif
 							state         <= S_APPLY_HDR;
 						end
-					end else if (cart_ready_i && pending_any && !host_busy_i &&
+					end else if (cart_ready_i && pending_any && !pack_overflow &&
+					             !host_busy_i &&
 					             quiet == QUIET_CLOCKS) begin
 						boot_hold_o <= 1'b0;
 						busy_o       <= 1'b1;
 						geo_die      <= 1'b0;
 						geo_block    <= 6'd0;
-						stage_offset <= 25'd0;
+						pack_ptr     <= 16'd0;
 						state        <= S_STAGE_SCAN;
 					end else begin
 						boot_hold_o <= 1'b0;
@@ -447,12 +466,14 @@ module ngpc_cart_save #(
 				S_STAGE_SCAN: begin
 					if (block_dirty) begin
 						block_word   <= 16'd0;
+						run_len      <= 16'd0;
+						has_lit      <= 1'b0;
 						copy_dirtied <= 1'b0;
 						state        <= S_STAGE_RD;
 					end else begin
 						if (geo_block == 6'd63) begin
 							if (geo_die) begin
-								hdr_idx <= 4'd0;
+								hdr_idx <= 6'd0;
 								state   <= S_STAGE_HDR;
 							end else begin
 								geo_die   <= 1'b1;
@@ -473,20 +494,95 @@ module ngpc_cart_save #(
 					end
 				end
 
+				// The encoder. A literal passes through; a run of erased words
+				// becomes the marker 0xFFFF followed by its length. Runs stop at
+				// a block boundary so each block decodes on its own terms.
 				S_STAGE_RD_W: begin
 					if (p2_done_i) begin
 						if (p2_rdata_i != 16'hFFFF) image_has_data <= 1'b1;
-						xfer_data <= p2_rdata_i;
-						state     <= S_STAGE_WR;
+						if (p2_rdata_i == 16'hFFFF) begin
+							run_len <= run_len + 16'd1;
+							if (block_word + 16'd1 >= geo_words) begin
+								state <= S_STAGE_RUN;
+							end else begin
+								block_word <= block_word + 16'd1;
+								state      <= S_STAGE_RD;
+							end
+						end else begin
+							xfer_data <= p2_rdata_i;
+							if (run_len != 16'd0) begin
+								has_lit <= 1'b1;
+								state   <= S_STAGE_RUN;
+							end else begin
+								state <= S_STAGE_WR;
+							end
+						end
 					end
 				end
 
-				S_STAGE_WR: begin
+				// An image that will not fit the slot is abandoned rather than
+				// truncated: the bank does not flip, so the last complete image
+				// stays committed, and staging stands down until the cartridge
+				// changes. Compression is what makes this rare; banking is what
+				// makes it safe.
+				S_STAGE_RUN: begin
+					if (pack_ptr >= PAYLOAD_WORDS - 16'd1) begin
+						pack_overflow <= 1'b1;
+						pending0      <= 64'd0;
+						pending1      <= 64'd0;
+						state         <= S_FINISH;
+					end else if (stage_ready_i) begin
+						stage_req_o   <= 1'b1;
+						stage_we_o    <= 1'b1;
+						stage_addr_o  <= {8'd0, build_bank, 16'd0} + 25'd512 +
+						                 {8'd0, pack_ptr, 1'b0};
+						stage_wdata_o <= 16'hFFFF;
+						state         <= S_STAGE_RUN_W;
+					end
+				end
+
+				S_STAGE_RUN_W: begin
+					if (stage_done_i) begin
+						pack_ptr <= pack_ptr + 16'd1;
+						state    <= S_STAGE_LEN;
+					end
+				end
+
+				S_STAGE_LEN: begin
 					if (stage_ready_i) begin
 						stage_req_o   <= 1'b1;
 						stage_we_o    <= 1'b1;
 						stage_addr_o  <= {8'd0, build_bank, 16'd0} + 25'd512 +
-						                 stage_offset + {8'd0, block_word, 1'b0};
+						                 {8'd0, pack_ptr, 1'b0};
+						stage_wdata_o <= run_len;
+						state         <= S_STAGE_LEN_W;
+					end
+				end
+
+				S_STAGE_LEN_W: begin
+					if (stage_done_i) begin
+						pack_ptr <= pack_ptr + 16'd1;
+						run_len  <= 16'd0;
+						if (has_lit) begin
+							has_lit <= 1'b0;
+							state   <= S_STAGE_WR;
+						end else begin
+							state <= S_STAGE_NEXT;
+						end
+					end
+				end
+
+				S_STAGE_WR: begin
+					if (pack_ptr >= PAYLOAD_WORDS - 16'd1) begin
+						pack_overflow <= 1'b1;
+						pending0      <= 64'd0;
+						pending1      <= 64'd0;
+						state         <= S_FINISH;
+					end else if (stage_ready_i) begin
+						stage_req_o   <= 1'b1;
+						stage_we_o    <= 1'b1;
+						stage_addr_o  <= {8'd0, build_bank, 16'd0} + 25'd512 +
+						                 {8'd0, pack_ptr, 1'b0};
 						stage_wdata_o <= xfer_data;
 						state         <= S_STAGE_WR_W;
 					end
@@ -494,33 +590,9 @@ module ngpc_cart_save #(
 
 				S_STAGE_WR_W: begin
 					if (stage_done_i) begin
+						pack_ptr <= pack_ptr + 16'd1;
 						if (block_word + 16'd1 >= geo_words) begin
-							// The block is staged. Clear pending -- UNLESS the
-							// game rewrote it while the copy was in flight. The
-							// event handler above re-marks the bit, but this
-							// assignment runs later in the block and would
-							// overwrite that re-mark, so the mid-copy history
-							// has to be carried explicitly: the first version
-							// of this line wiped the re-mark and a torn copy
-							// stayed torn (caught by sim/tb_cart_save.sv, D).
-							if (geo_die) pending1[geo_block] <= copy_dirtied || ev_this_block;
-							else         pending0[geo_block] <= copy_dirtied || ev_this_block;
-
-							stage_offset <= stage_offset + {9'd0, geo_words, 1'b0};
-
-							if (geo_block == 6'd63) begin
-								if (geo_die) begin
-									hdr_idx <= 4'd0;
-									state   <= S_STAGE_HDR;
-								end else begin
-									geo_die   <= 1'b1;
-									geo_block <= 6'd0;
-									state     <= S_STAGE_SCAN;
-								end
-							end else begin
-								geo_block <= geo_block + 6'd1;
-								state     <= S_STAGE_SCAN;
-							end
+							state <= S_STAGE_NEXT;
 						end else begin
 							block_word <= block_word + 16'd1;
 							state      <= S_STAGE_RD;
@@ -528,14 +600,31 @@ module ngpc_cart_save #(
 					end
 				end
 
-				// The header goes last, so a staging pass interrupted by a
-				// power cut leaves the previous header describing the previous
-				// payload rather than a half-written one.
+				// One block is encoded. Clear its pending bit unless the game
+				// rewrote it while the copy was in flight -- see scenario D.
+				S_STAGE_NEXT: begin
+					if (geo_die) pending1[geo_block] <= copy_dirtied || ev_this_block;
+					else         pending0[geo_block] <= copy_dirtied || ev_this_block;
+
+					if (geo_block == 6'd63) begin
+						if (geo_die) begin
+							hdr_idx <= 6'd0;
+							state   <= S_STAGE_HDR;
+						end else begin
+							geo_die   <= 1'b1;
+							geo_block <= 6'd0;
+							state     <= S_STAGE_SCAN;
+						end
+					end else begin
+						geo_block <= geo_block + 6'd1;
+						state     <= S_STAGE_SCAN;
+					end
+				end
 				S_STAGE_HDR: begin
 					if (stage_ready_i) begin
 						stage_req_o   <= 1'b1;
 						stage_we_o    <= 1'b1;
-						stage_addr_o  <= {8'd0, build_bank, 16'd0} + {19'd0, hdr_idx, 1'b0};
+						stage_addr_o  <= {8'd0, build_bank, 16'd0} + {19'd0, hdr_idx[4:0], 1'b0};
 						stage_wdata_o <= hdr_word;
 						state         <= S_STAGE_HDR_W;
 					end
@@ -543,13 +632,13 @@ module ngpc_cart_save #(
 
 				S_STAGE_HDR_W: begin
 					if (stage_done_i) begin
-						if (hdr_idx == 5'd31) begin
+						if (hdr_idx == 6'd31) begin
 							// The image is whole: publish it in one step.
 							stage_bank_o <= build_bank;
 							state        <= S_FINISH;
 						end
 						else begin
-							hdr_idx <= hdr_idx + 5'd1;
+							hdr_idx <= hdr_idx + 6'd1;
 							state   <= S_STAGE_HDR;
 						end
 					end
@@ -560,7 +649,7 @@ module ngpc_cart_save #(
 					if (stage_ready_i) begin
 						stage_req_o  <= 1'b1;
 						stage_we_o   <= 1'b0;
-						stage_addr_o <= {8'd0, stage_bank_o, 16'd0} + {19'd0, hdr_idx, 1'b0};
+						stage_addr_o <= {8'd0, stage_bank_o, 16'd0} + {19'd0, hdr_idx[4:0], 1'b0};
 						state        <= S_APPLY_HDR_W;
 					end
 				end
@@ -588,17 +677,17 @@ module ngpc_cart_save #(
 							default: ;
 						endcase
 
-						if (hdr_idx == 5'd15) begin
+						if (hdr_idx == 6'd15) begin
 							apply_decide <= 1'b1;
 							geo_die      <= 1'b0;
 							geo_block    <= 6'd0;
-							stage_offset <= 25'd0;
+							pack_ptr     <= 16'd0;
 `ifdef NGPC_SAVE_DIAG
 							diag_verdict <= apply_ok ? 16'd1 : 16'd2;
 `endif
 							state        <= apply_ok ? S_APPLY_SCAN : S_FINISH;
 						end else begin
-							hdr_idx <= hdr_idx + 5'd1;
+							hdr_idx <= hdr_idx + 6'd1;
 							state   <= apply_ok ? S_APPLY_HDR : S_FINISH;
 						end
 					end
@@ -622,6 +711,7 @@ module ngpc_cart_save #(
 					end else
 					if (block_dirty) begin
 						block_word <= 16'd0;
+						fill_rem   <= 16'd0;
 						state      <= S_APPLY_RD;
 					end else if (geo_block == 6'd63) begin
 						if (geo_die) state <= S_FINISH;
@@ -634,20 +724,48 @@ module ngpc_cart_save #(
 					end
 				end
 
+				// The decoder, streaming the packed payload in the same block
+				// order the encoder wrote it.
 				S_APPLY_RD: begin
 					if (stage_ready_i) begin
 						stage_req_o  <= 1'b1;
 						stage_we_o   <= 1'b0;
 						stage_addr_o <= {8'd0, stage_bank_o, 16'd0} + 25'd512 +
-						                stage_offset + {8'd0, block_word, 1'b0};
+						                {8'd0, pack_ptr, 1'b0};
 						state        <= S_APPLY_RD_W;
 					end
 				end
 
 				S_APPLY_RD_W: begin
 					if (stage_done_i) begin
-						if (stage_rdata_i != 16'hFFFF) image_has_data <= 1'b1;
-						xfer_data <= stage_rdata_i;
+						pack_ptr <= pack_ptr + 16'd1;
+						if (stage_rdata_i == 16'hFFFF) begin
+							state <= S_APPLY_CNT;
+						end else begin
+							image_has_data <= 1'b1;
+							xfer_data      <= stage_rdata_i;
+							fill_rem       <= 16'd1;
+							state          <= S_APPLY_WR;
+						end
+					end
+				end
+
+				S_APPLY_CNT: begin
+					if (stage_ready_i) begin
+						stage_req_o  <= 1'b1;
+						stage_we_o   <= 1'b0;
+						stage_addr_o <= {8'd0, stage_bank_o, 16'd0} + 25'd512 +
+						                {8'd0, pack_ptr, 1'b0};
+						state        <= S_APPLY_CNT_W;
+					end
+				end
+
+				S_APPLY_CNT_W: begin
+					if (stage_done_i) begin
+						pack_ptr  <= pack_ptr + 16'd1;
+						xfer_data <= 16'hFFFF;
+						// A zero count would stall the walk; treat it as one word.
+						fill_rem  <= (stage_rdata_i == 16'd0) ? 16'd1 : stage_rdata_i;
 						state     <= S_APPLY_WR;
 					end
 				end
@@ -668,8 +786,6 @@ module ngpc_cart_save #(
 						diag_p2wr <= diag_p2wr + 16'd1;
 `endif
 						if (block_word + 16'd1 >= geo_words) begin
-							stage_offset <= stage_offset + {9'd0, geo_words, 1'b0};
-
 							if (geo_block == 6'd63) begin
 								if (geo_die) state <= S_FINISH;
 								else begin
@@ -681,13 +797,16 @@ module ngpc_cart_save #(
 								geo_block <= geo_block + 6'd1;
 								state     <= S_APPLY_SCAN;
 							end
+						end else if (fill_rem > 16'd1) begin
+							fill_rem   <= fill_rem - 16'd1;
+							block_word <= block_word + 16'd1;
+							state      <= S_APPLY_WR;
 						end else begin
 							block_word <= block_word + 16'd1;
 							state      <= S_APPLY_RD;
 						end
 					end
 				end
-
 				S_FINISH: begin
 					boot_hold_o <= 1'b0;
 					busy_o      <= 1'b0;

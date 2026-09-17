@@ -191,14 +191,44 @@ module tb_cart_save;
 		end
 	endtask
 
-	// verify one staged block at a given payload offset against sdram_gold
+	// The staged payload is RLE-packed (V3): a literal passes through, a
+	// run of erased words is the marker 0xFFFF plus its length. Unpack the
+	// whole stream back into flat block order so the checks below can
+	// compare it against the cartridge the way they always have.
+	reg [15:0] dec [0:131071];
+	task decode_payload;
+		integer pk, out, b, w, n, k;
+		reg [15:0] word;
+		begin
+			pk = 0; out = 0;
+			for (b = 0; b < 64; b = b + 1) begin
+				if (dut.dirty0[b]) begin
+					g_block = b[5:0]; #1;
+					w = 0;
+					while (w < g_words) begin
+						word = psram[BANK + 256 + pk]; pk = pk + 1;
+						if (word !== 16'hFFFF) begin
+							dec[out] = word; out = out + 1; w = w + 1;
+						end else begin
+							n = psram[BANK + 256 + pk]; pk = pk + 1;
+							for (k = 0; k < n; k = k + 1) begin
+								dec[out] = 16'hFFFF; out = out + 1; w = w + 1;
+							end
+						end
+					end
+				end
+			end
+		end
+	endtask
+
+	// verify one decoded block at a given flat offset against sdram_gold
 	task check_block(input [5:0] blk, input [24:0] off);
 		integer w; integer bad;
 		begin
 			g_block = blk; #1;
 			bad = 0;
 			for (w = 0; w < g_words; w = w + 1)
-				if (psram[BANK + (25'd512 + off)/2 + w] !== sdram_gold[(g_base>>1) + w]) bad = bad + 1;
+				if (dec[off/2 + w] !== sdram_gold[(g_base>>1) + w]) bad = bad + 1;
 			if (bad) begin
 				errors = errors + 1;
 				$display("   FAIL: block %0d payload, %0d words wrong", blk, bad);
@@ -254,7 +284,7 @@ module tb_cart_save;
 		run_pass(2000, 2000000);
 		// header
 		if (psram[BANK+0] !== 16'h4E47 || psram[BANK+1] !== 16'h5043 ||
-		    psram[BANK+2] !== 16'h5341 || psram[BANK+3] !== 16'h5632) begin
+		    psram[BANK+2] !== 16'h5341 || psram[BANK+3] !== 16'h5633) begin
 			errors = errors + 1; $display("   FAIL: magic %h %h %h %h",
 			         psram[BANK+0],psram[BANK+1],psram[BANK+2],psram[BANK+3]);
 		end
@@ -265,6 +295,7 @@ module tb_cart_save;
 			errors = errors + 1; $display("   FAIL: bitmap %h expected 0500", psram[BANK+8]);
 		end
 		// payload: block 0 then block 2, in walk order
+		decode_payload;
 		check_block(6'd8, 25'd0);
 		g_block = 6'd8; #1; offB = {g_words, 1'b0};
 		check_block(6'd10, offB[24:0]);
@@ -292,6 +323,7 @@ module tb_cart_save;
 		i = 0;
 		while (busy && i < 2000000) begin i = i + 1; @(posedge clk); end
 		run_pass(2000, 2000000);           // second pass carries the rewrite
+		decode_payload;
 		check_block(6'd8, 25'd0);
 		if (errors == 0) $display("   PASS (second pass carried the rewrite)");
 		for (i = 0; i < 131328; i = i + 1) imgA[i] = psram[i];
@@ -461,6 +493,43 @@ module tb_cart_save;
 			errors = errors + 1;
 			$display("   FAIL: stale bitmap adopted (%h)", dut.dirty0);
 		end else $display("   PASS (no delivery, no apply, flash untouched)");
+
+		// ---- I: a realistic save is mostly erased, and must pack small ----
+		// Measured on real cartridges: Card Fighters packs 32 KB into about
+		// 2 KB, Unitron 2's 72 KB into about 3.5 KB. This proves the encoder
+		// actually packs rather than passing data through, and that what it
+		// packs still decodes back byte for byte.
+		$display("== I  erased-heavy image packs small and restores exactly");
+		@(posedge clk);
+		cart_ready <= 0; slots_settled <= 0;
+		@(posedge clk); cart_replace <= 1;
+		@(posedge clk); cart_replace <= 0;
+		@(posedge clk); cart_ready <= 1; slots_settled <= 1;
+		run_pass(2000, 2000000);
+		// block 8: erased except a small record. block 10: fully erased.
+		g_block = 6'd8; #1;
+		for (i = 0; i < g_words; i = i + 1) begin
+			sdram[(g_base>>1) + i] = (i < 64) ? (16'hA000 + i[15:0]) : 16'hFFFF;
+			sdram_gold[(g_base>>1) + i] = sdram[(g_base>>1) + i];
+		end
+		g_block = 6'd10; #1;
+		for (i = 0; i < g_words; i = i + 1) begin
+			sdram[(g_base>>1) + i] = 16'hFFFF; sdram_gold[(g_base>>1) + i] = 16'hFFFF;
+		end
+		flash_write(6'd8);
+		flash_write(6'd10);
+		run_pass(2000, 2000000);
+		$display("   packed %0d words for %0d raw words (%0d%%)",
+		         dut.pack_ptr, 4096 + 8192, (dut.pack_ptr * 100) / (4096 + 8192));
+		if (dut.pack_ptr > 16'd256) begin
+			errors = errors + 1;
+			$display("   FAIL: encoder did not pack (%0d words)", dut.pack_ptr);
+		end
+		decode_payload;
+		check_block(6'd8, 25'd0);
+		g_block = 6'd8; #1; offB = {g_words, 1'b0};
+		check_block(6'd10, offB[24:0]);
+		if (errors == 0) $display("   PASS (packed small, decodes byte-exact)");
 
 		if (errors == 0) $display("== ALL CART-SAVE SCENARIOS PASS");
 		else             $display("== %0d FAILURE(S)", errors);
