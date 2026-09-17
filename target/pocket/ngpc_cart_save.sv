@@ -251,6 +251,15 @@ module ngpc_cart_save #(
 	                            // until the reject check passes
 	reg        apply_decide;    // first S_APPLY_SCAN cycle runs the check
 	reg        saw_save_wr;     // save-slot writes since the apply began
+	// Sticky for the whole cartridge session: APF delivered save data at
+	// some point. The staging PSRAM is NOT cleared between core launches --
+	// it is external memory and survives reconfiguration -- so a previous
+	// session's image can still be sitting there with valid magic and a CRC
+	// that matches, and it WILL be accepted and written into a cartridge
+	// that has no save of its own. Measured on hardware the moment empty
+	// captures stopped creating files: ingest 0 beats, verdict ACCEPTED,
+	// 16 KB restored from nothing. No delivery means there is no file.
+	reg        save_delivered;
 	reg [19:0] save_wr_quiet;
 	reg        image_has_data;   // a non-erased word passed through this session
 	reg  [3:0] state;
@@ -357,12 +366,16 @@ module ngpc_cart_save #(
 			apply_pending <= 1'b1;
 			apply_ok      <= 1'b0;
 			image_has_data <= 1'b0;
+			save_delivered <= 1'b0;
 			apply_reject_o <= 1'b0;
 			saw_save_wr   <= 1'b0;
 			save_wr_quiet <= 20'd0;
 		end else begin
 			if (state_apply_i) begin
-				apply_pending <= 1'b1;
+				// A savestate restore writes the staged image itself, through
+				// the copier rather than through APF, so it is delivery too.
+				apply_pending  <= 1'b1;
+				save_delivered <= 1'b1;
 			end
 
 			// Save-slot delivery seen after the apply started means the apply
@@ -371,6 +384,7 @@ module ngpc_cart_save #(
 			// boot never trips this -- delivery fully precedes the settled
 			// apply, so saw_save_wr is clear by the time the apply starts.
 			if (save_slot_wr_i) begin
+				save_delivered <= 1'b1;
 				saw_save_wr   <= 1'b1;
 				save_wr_quiet <= 20'd0;
 			end else if (save_wr_quiet != QUIET_CLOCKS) begin
@@ -545,7 +559,10 @@ module ngpc_cart_save #(
 				S_APPLY_HDR_W: begin
 					if (stage_done_i) begin
 						case (hdr_idx)
-							5'd0:  if (stage_rdata_i != MAGIC0) apply_ok <= 1'b0;
+							// Nothing delivered this session means no save file exists,
+							// whatever the staging region happens to still contain.
+							5'd0:  if ((stage_rdata_i != MAGIC0) || !save_delivered)
+							           apply_ok <= 1'b0;
 							5'd1:  if (stage_rdata_i != MAGIC1) apply_ok <= 1'b0;
 							5'd2:  if (stage_rdata_i != MAGIC2) apply_ok <= 1'b0;
 							5'd3:  if (stage_rdata_i != MAGIC3) apply_ok <= 1'b0;

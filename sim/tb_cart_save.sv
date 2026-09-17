@@ -296,10 +296,10 @@ module tb_cart_save;
 			errors = errors + 1; $display("   FAIL: apply consumed before delivery");
 		end
 		// "APF" now streams the save slot in, then everything settles
-		@(posedge clk); host_busy <= 1;
+		@(posedge clk); host_busy <= 1; save_slot_wr <= 1;
 		for (i = 0; i < 131328; i = i + 1) psram[i] = imgA[i];
 		repeat (50) @(posedge clk);
-		host_busy <= 0;
+		save_slot_wr <= 0; host_busy <= 0;
 		repeat (20) @(posedge clk);
 		slots_settled <= 1;
 		@(posedge clk);
@@ -419,6 +419,31 @@ module tb_cart_save;
 		if (!save_present) begin
 			errors = errors + 1; $display("   FAIL: real save did not claim the slot");
 		end else $display("   PASS (real data present: slot claimed)");
+
+		// ---- H: a valid image nobody delivered must NOT be applied --------
+		// The staging PSRAM is external and survives a core relaunch, so a
+		// previous session's image can still be sitting there with good magic
+		// and a matching CRC. Measured on hardware: ingest 0 beats, verdict
+		// ACCEPTED, 16 KB written into a cartridge with no save of its own.
+		$display("== H  undelivered stale image must not be applied");
+		@(posedge clk);
+		cart_ready <= 0; slots_settled <= 0;
+		@(posedge clk); cart_replace <= 1;
+		@(posedge clk); cart_replace <= 0;
+		@(posedge clk);
+		for (i = 0; i < 131328; i = i + 1) psram[i] = imgA[i];   // left behind
+		for (i = 0; i < 262144; i = i + 1) sdram_gold[i] = sdram[i];
+		cart_ready <= 1; slots_settled <= 1;                     // nothing delivered
+		run_pass(2000, 2000000);
+		n2 = 0;
+		for (i = 0; i < 262144; i = i + 1) if (sdram[i] !== sdram_gold[i]) n2 = n2 + 1;
+		if (n2) begin
+			errors = errors + 1;
+			$display("   FAIL: %0d words written into flash from an undelivered image", n2);
+		end else if (dut.dirty0 !== 64'd0) begin
+			errors = errors + 1;
+			$display("   FAIL: stale bitmap adopted (%h)", dut.dirty0);
+		end else $display("   PASS (no delivery, no apply, flash untouched)");
 
 		if (errors == 0) $display("== ALL CART-SAVE SCENARIOS PASS");
 		else             $display("== %0d FAILURE(S)", errors);
