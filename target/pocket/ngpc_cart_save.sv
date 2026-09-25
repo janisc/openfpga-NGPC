@@ -150,7 +150,7 @@ module ngpc_cart_save #(
 	// A save exists for this cartridge -- some block is dirty, either because
 	// the game wrote flash this session or because a staged image was applied
 	// at boot. This is what the core reports to APF's data-slot size table:
-	// present -> the slot flushes 0x40200 bytes at shutdown, absent -> zero
+	// present -> the slot flushes 0xFE00 bytes at shutdown, absent -> zero
 	// bytes and no file is created for games that never save.
 	output wire        save_present_o,
 	output wire        stage_current_o,   // idle with nothing left to stage
@@ -181,10 +181,11 @@ module ngpc_cart_save #(
 	localparam [15:0] MAGIC0 = 16'h4E47;  // "NG"
 	localparam [15:0] MAGIC1 = 16'h5043;  // "PC"
 	localparam [15:0] MAGIC2 = 16'h5341;  // "SA"
-	localparam [15:0] MAGIC3    = 16'h5633;  // "V3" -- erased runs are packed;
+	// "V4": erased runs are packed. The tag skips V3 on purpose -- the PR #5
+	// test build wrote files tagged V3 with a different header layout, and a
+	// tag has to mean one layout. Those files fail the magic and are refused.
+	localparam [15:0] MAGIC3    = 16'h5634;  // "V4" -- erased runs are packed
 	localparam [15:0] MAGIC3_V2 = 16'h5632;  // "V2" -- raw blocks, still read
-	                                      // layout differs from the
-	                                      // sector-based version that preceded it
 
 	// ---- Dirty and pending bitmaps -----------------------------------------
 	//
@@ -212,7 +213,18 @@ module ngpc_cart_save #(
 	// The staged image is complete and current: nothing owed and the walker
 	// parked. The savestate capture waits on this with the machine paused, so
 	// it converges instead of chasing.
-	assign stage_current_o = (state == S_IDLE) && !stage_pending && cart_ready_i;
+	//
+	// After an overflow nothing is staged again this session, so a pending
+	// pass would never come: waiting for it would hold the machine paused
+	// forever and hang sleep. The committed image is the last one that fit,
+	// and that is what a capture gets.
+	//
+	// A pending apply is deliberately NOT waited for: the state LOAD waits on
+	// this too, and on wake from sleep the boot apply is pending until the
+	// slots settle. A drain that runs first goes to the spare bank and the
+	// apply then takes the state's image, which is the right outcome.
+	assign stage_current_o = (state == S_IDLE) && cart_ready_i &&
+	                         (!stage_pending || pack_overflow);
 
 	// A SAVE MUST CONTAIN SOMETHING. A dirty bit alone is not a save: a game
 	// that merely erases a block during startup -- Card Fighters does exactly
@@ -340,6 +352,13 @@ module ngpc_cart_save #(
 	// left untouched, so this session's blocks really are still dirty.
 	reg        verify_pass;
 	reg        from_state;
+	// The bank the apply reads. At boot and on a late delivery that is the
+	// committed bank, where APF put the file. A savestate's image is drained
+	// into the SPARE bank instead, and becomes committed only if the apply
+	// accepts it -- a refused state then leaves the image APF will flush at
+	// exit exactly as it was.
+	reg        apply_bank;
+	reg        in_apply;
 	reg [19:0] save_wr_quiet;
 	reg        image_has_data;   // a non-erased word passed through this session
 	reg  [4:0] state;
@@ -444,6 +463,7 @@ module ngpc_cart_save #(
 			pack_overflow  <= 1'b0;
 			verify_pass    <= 1'b0;
 			from_state     <= 1'b0;
+			in_apply       <= 1'b0;
 			apply_reject_o <= 1'b0;
 			saw_save_wr   <= 1'b0;
 			save_wr_quiet <= 20'd0;
@@ -491,6 +511,8 @@ module ngpc_cart_save #(
 							saw_save_wr   <= 1'b0;
 							hdr_idx <= 6'd0;
 							apply_ok      <= 1'b1;
+							in_apply      <= 1'b1;
+							apply_bank    <= from_state ? ~stage_bank_o : stage_bank_o;
 `ifdef NGPC_SAVE_DIAG
 							diag_applies  <= diag_applies + 16'd1;
 							diag_verdict  <= 16'd0;
@@ -687,8 +709,13 @@ module ngpc_cart_save #(
 							// The image is whole: publish it in one step -- unless
 							// the game wrote flash while the pass was running, in
 							// which case the older image in the other bank is the
-							// one that still makes sense.
-							if (!stage_pending) stage_bank_o <= build_bank;
+							// one that still makes sense. Nor while APF is moving
+							// the slot: it reads and writes the committed bank, and
+							// a flip mid-transfer would put half of one image and
+							// half of the other in the file. The pass is owed
+							// again and runs once the transfer is over.
+							if (!stage_pending && !host_busy_i) stage_bank_o <= build_bank;
+							else                                stage_pending <= 1'b1;
 							state <= S_FINISH;
 						end
 						else begin
@@ -703,7 +730,7 @@ module ngpc_cart_save #(
 					if (stage_ready_i) begin
 						stage_req_o  <= 1'b1;
 						stage_we_o   <= 1'b0;
-						stage_addr_o <= {8'd0, stage_bank_o, 16'd0} + {19'd0, hdr_idx[4:0], 1'b0};
+						stage_addr_o <= {8'd0, apply_bank, 16'd0} + {19'd0, hdr_idx[4:0], 1'b0};
 						state        <= S_APPLY_HDR_W;
 					end
 				end
@@ -771,6 +798,8 @@ module ngpc_cart_save #(
 							verify_pass    <= 1'b0;
 							state          <= S_FINISH;
 						end else begin
+							// Committed before the checksum is known because the
+							// walk itself follows dirty. A refusal undoes it below.
 							dirty0 <= img0;
 							dirty1 <= img1;
 						end
@@ -793,10 +822,17 @@ module ngpc_cart_save #(
 				// The decoder, streaming the packed payload in the same block
 				// order the encoder wrote it.
 				S_APPLY_RD: begin
-					if (stage_ready_i) begin
+					// The payload ends at the slot. A V2 file from before
+					// packing could claim more blocks than the slot held --
+					// the file was cut at 0xFE00 -- and reading on would pour
+					// whatever the memory past it holds into flash. Stop: the
+					// blocks the file never carried keep what flash has now.
+					if (pack_ptr >= PAYLOAD_WORDS) begin
+						state <= S_FINISH;
+					end else if (stage_ready_i) begin
 						stage_req_o  <= 1'b1;
 						stage_we_o   <= 1'b0;
-						stage_addr_o <= {8'd0, stage_bank_o, 16'd0} + 25'd512 +
+						stage_addr_o <= {8'd0, apply_bank, 16'd0} + 25'd512 +
 						                {8'd0, pack_ptr, 1'b0};
 						state        <= S_APPLY_RD_W;
 					end
@@ -810,7 +846,7 @@ module ngpc_cart_save #(
 						if (stage_rdata_i == 16'hFFFF && !legacy) begin
 							crc_ret <= S_APPLY_CNT;
 						end else begin
-							image_has_data <= 1'b1;
+							if (!verify_pass) image_has_data <= 1'b1;
 							xfer_data      <= stage_rdata_i;
 							fill_rem       <= 16'd1;
 							crc_ret        <= S_APPLY_WR;
@@ -823,7 +859,7 @@ module ngpc_cart_save #(
 					if (stage_ready_i) begin
 						stage_req_o  <= 1'b1;
 						stage_we_o   <= 1'b0;
-						stage_addr_o <= {8'd0, stage_bank_o, 16'd0} + 25'd512 +
+						stage_addr_o <= {8'd0, apply_bank, 16'd0} + 25'd512 +
 						                {8'd0, pack_ptr, 1'b0};
 						state        <= S_APPLY_CNT_W;
 					end
@@ -891,7 +927,6 @@ module ngpc_cart_save #(
 				end
 
 				S_FINISH: begin
-					from_state <= 1'b0;
 					if (verify_pass) begin
 						// The decode has run end to end without touching flash.
 						verify_pass <= 1'b0;
@@ -905,9 +940,12 @@ module ngpc_cart_save #(
 							// before the header committed it, so putting it back
 							// empty is exact, and it leaves the slot unclaimed --
 							// which is what keeps APF from overwriting the file.
-							// After a savestate restore the bitmap describes THIS
-							// session's flash, which nothing has touched, so it
-							// stays: clearing it would throw away real progress.
+							// After a savestate restore the bitmap covered this
+							// session's blocks and the file's are a superset of
+							// them; flash was never touched, so the extra blocks
+							// only stage what flash already holds. It stays.
+							// image_has_data was never raised by the check pass,
+							// so a refused image cannot make the slot claim itself.
 							apply_ok       <= 1'b0;
 							apply_reject_o <= 1'b1;
 							if (!from_state) begin
@@ -915,6 +953,8 @@ module ngpc_cart_save #(
 								dirty1         <= 64'd0;
 								image_has_data <= 1'b0;
 							end
+							in_apply       <= 1'b0;
+							from_state     <= 1'b0;
 `ifdef NGPC_SAVE_DIAG
 							diag_verdict <= 16'd3;
 `endif
@@ -924,6 +964,17 @@ module ngpc_cart_save #(
 							state       <= S_IDLE;
 						end
 					end else begin
+						if (in_apply) begin
+							// An accepted savestate image is committed where it
+							// was drained, and it fit once, so staging may run
+							// again. A refused one leaves the committed bank alone.
+							if (from_state && apply_ok) begin
+								stage_bank_o  <= apply_bank;
+								pack_overflow <= 1'b0;
+							end
+							in_apply   <= 1'b0;
+							from_state <= 1'b0;
+						end
 						boot_hold_o <= 1'b0;
 						busy_o      <= 1'b0;
 						quiet       <= 20'd0;

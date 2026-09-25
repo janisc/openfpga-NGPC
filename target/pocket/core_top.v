@@ -646,8 +646,13 @@ module core_top (
 
   synch_3 settle_sync (slots_settled_74, slots_settled, clk_sys);
 
+  wire        stage_wr_bank;   // assigned beside the state copier below
+
   ngpc_stage_mem stage_mem (
       .active_bank_i(mc_stage_bank),
+      // The drain stages a savestate's image in the SPARE bank; the apply
+      // commits it only if it accepts it.
+      .host_wr_bank_i(stage_wr_bank),
       .clk  (clk_sys),
       .reset(reset_in),
 
@@ -916,6 +921,7 @@ module core_top (
   wire [24:0] sc_host_addr;
   wire [15:0] sc_host_data;
   wire        mc_stage_current, mc_save_busy, mc_stage_bank;
+  assign stage_wr_bank = sc_host_wr ? ~mc_stage_bank : mc_stage_bank;
   wire        mc_state_apply, mc_capture_hold;
 
   ngpc_state_cart state_cart (

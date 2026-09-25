@@ -82,11 +82,17 @@ def main(path):
         print('magic           : %r  <-- NOT a janisc.NGPC save' % magic)
         return 1
     version = swapped[7:8].decode('latin1')
-    if version not in '23':
+    if version == '3':
+        # V3 was the tag of the PR #5 test build, whose header differs; this
+        # core refuses those files rather than misread them.
+        print('magic           : NGPCSAV3 -- written by the PR #5 test build, not this core;')
+        print('                  this core refuses it and leaves it on the card')
+        return 1
+    if version not in '24':
         print('magic           : ok, but version %r is from a newer core' % version)
         return 1
     print('magic           : ok (NGPCSAV%s%s)' % (
-        version, '' if version == '3' else '  -- pre-1.0.3 layout, uncompressed'))
+        version, '' if version == '4' else '  -- pre-1.1 layout, uncompressed'))
 
     title = bytes(b for i in range(25, 31) for b in (d[2 * i], d[2 * i + 1]))
     printable = ''.join(chr(c) if 32 <= c < 127 else '.' for c in title)
@@ -113,7 +119,7 @@ def main(path):
 
     sizes = [geo.get(b, 0) for _, b in blocks]
     truncated = False
-    if version == '3':
+    if version == '4':
         payload = [int.from_bytes(d[HDR_BYTES + 2 * i:HDR_BYTES + 2 * i + 2], 'little')
                    for i in range(PAYLOAD_WORDS)]
         chunks, used, complete = unpack_v3(payload, sizes)
@@ -132,9 +138,24 @@ def main(path):
         for n in sizes:
             chunks.append(d[off:off + n])
             off += n
+        if off > len(d):
+            # Before packing, a save bigger than the slot was cut at 0xFE00
+            # while its header still listed every block. The core restores
+            # what the file holds and leaves the rest of flash alone.
+            truncated = True
+            print('NOTE            : the header lists %d bytes of blocks but the file holds %d;'
+                  % (sum(sizes), len(d) - HDR_BYTES))
+            print('                  blocks past the end were never saved (cut at the slot size)')
 
     any_data = False
     for (die, b), n, chunk in zip(blocks, sizes, chunks):
+        if len(chunk) < n:
+            print('   die%d block %-2d %6d bytes : %s' % (die, b, n,
+                  'MISSING (past the end of the file)' if not chunk else
+                  'CUT SHORT (%d of %d bytes in the file)' % (len(chunk), n)))
+            if chunk and not all(c == 0xFF for c in chunk):
+                any_data = True
+            continue
         erased = all(c == 0xFF for c in chunk)
         if not erased:
             any_data = True
@@ -156,6 +177,10 @@ def main(path):
         print('         contents, so the core will refuse it rather than write')
         print('         nonsense into the cartridge. Keep the file: an older copy')
         print('         or a backup is the only way back.')
+    elif truncated and version == '2':
+        print('VERDICT: PARTLY SAVED. An older core cut this save at the slot size;')
+        print('         only the part in the file can be restored. %s' % (
+              'Some of that part has data.' if any_data else 'That part holds no data.'))
     elif truncated:
         print('VERDICT: the packed payload ends early -- the file is truncated.')
     elif not blocks:

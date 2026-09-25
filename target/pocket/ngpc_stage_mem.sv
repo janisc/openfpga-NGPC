@@ -35,6 +35,11 @@ module ngpc_stage_mem
 	// so a flush can never catch a half-built image. The engine builds the
 	// next image in the other bank and flips this when the image is whole.
 	input  wire        active_bank_i,
+	// The bank a host WRITE lands in, chosen per writer by core_top: APF's
+	// delivery goes to the committed bank, the savestate drain to the spare
+	// one, so a state the apply then refuses leaves the committed image --
+	// the one APF flushes at exit -- exactly as it was.
+	input  wire        host_wr_bank_i,
 
 	// ---- Client A: APF, through data_loader / data_unloader ---------------
 	input  wire        host_wr_i,
@@ -141,7 +146,11 @@ module ngpc_stage_mem
 
 	// The region is addressed in bytes by both clients; PSRAM counts 16-bit
 	// words, so the low bit is dropped.
-	wire [21:0] host_wr_word = {5'd0, active_bank_i, host_wr_addr_i[15:1]};
+	wire [21:0] host_wr_word = {5'd0, host_wr_bank_i, host_wr_addr_i[15:1]};
+	// A bank is 64 KB and the slot is 0xFE00. Anything written past the
+	// bank -- a foreign or oversized file -- is dropped rather than let
+	// into the other bank or wrapped over this one's header.
+	wire        host_wr_in_bank = (host_wr_addr_i[24:16] == 9'd0);
 	wire [21:0] host_rd_word = {5'd0, active_bank_i, host_rd_addr_i[15:1]};
 	wire [21:0] eng_word     = eng_addr_i[22:1];
 
@@ -180,8 +189,8 @@ module ngpc_stage_mem
 `ifdef NGPC_SAVE_DIAG
 					diag_drops_o <= diag_drops_o + 16'd1;
 `endif
-				end else begin
-					skid[skid_wp[8:0]] <= {host_wr_addr_i[22:1], host_wr_data_i};
+				end else if (host_wr_in_bank) begin
+					skid[skid_wp[8:0]] <= {host_wr_word, host_wr_data_i};
 					skid_wp <= skid_wp + 10'd1;
 				end
 			end

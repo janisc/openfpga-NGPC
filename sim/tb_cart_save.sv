@@ -58,7 +58,7 @@ module tb_cart_save;
 	reg   [1:0] die_busy = 0;
 	reg         host_busy = 0, slots_settled = 0;
 
-	wire        boot_hold, busy, save_present, stage_bank;
+	wire        boot_hold, busy, save_present, stage_bank, stage_current;
 	// Staging is double-banked; APF only ever sees the committed one.
 	wire [17:0] BANK = stage_bank ? 18'd32768 : 18'd0;
 	wire        apply_reject;
@@ -135,7 +135,7 @@ module tb_cart_save;
 		.state_apply_i   (state_apply),
 		.save_slot_wr_i  (save_slot_wr),
 		.apply_reject_o  (apply_reject),
-		.stage_current_o (),
+		.stage_current_o (stage_current),
 		.slots_settled_i(slots_settled),
 		.save_present_o (save_present),
 		.stage_bank_o   (stage_bank),
@@ -200,7 +200,7 @@ module tb_cart_save;
 		end
 	endtask
 
-	// The staged payload is RLE-packed (V3): a literal passes through, a
+	// The staged payload is RLE-packed (V4): a literal passes through, a
 	// run of erased words is the marker 0xFFFF plus its length. Unpack the
 	// whole stream back into flat block order so the checks below can
 	// compare it against the cartridge the way they always have.
@@ -302,8 +302,10 @@ module tb_cart_save;
 		end
 	endtask
 
-	integer i, n0, n2, offB;
-	reg bank_q;
+	integer i, n0, n2, offB, SPARE;
+	reg bank_q, hd_q;
+	reg [63:0] dirty_q;
+	reg [15:0] keep [0:32767];       // a copy of the committed bank
 
 	// transition monitor: every change of apply_pending, with context
 	reg ap_q = 0;
@@ -351,7 +353,7 @@ module tb_cart_save;
 		run_pass(2000, 2000000);
 		// header
 		if (psram[BANK+0] !== 16'h4E47 || psram[BANK+1] !== 16'h5043 ||
-		    psram[BANK+2] !== 16'h5341 || psram[BANK+3] !== 16'h5633) begin
+		    psram[BANK+2] !== 16'h5341 || psram[BANK+3] !== 16'h5634) begin
 			errors = errors + 1; $display("   FAIL: magic %h %h %h %h",
 			         psram[BANK+0],psram[BANK+1],psram[BANK+2],psram[BANK+3]);
 		end
@@ -604,12 +606,12 @@ module tb_cart_save;
 		dump_image(BANK);
 		if (errors == 0) $display("   PASS (packed small, decodes byte-exact)");
 
-		// ---- J: a V2 save still restores, and is rewritten as V3 ---------
+		// ---- J: a V2 save still restores, and is rewritten as V4 ---------
 		// Upgrading must not look like data loss. A V2 file is raw blocks in
 		// fixed slots; it is read as it always was and converted by the next
 		// staging pass. Built here by hand rather than captured, so the old
 		// format is pinned down independently of the code that wrote it.
-		$display("== J  a V2 save restores and converts to V3");
+		$display("== J  a V2 save restores and converts to V4");
 		@(posedge clk);
 		cart_ready <= 0; slots_settled <= 0;
 		@(posedge clk); cart_replace <= 1;
@@ -658,10 +660,10 @@ module tb_cart_save;
 		// the next save rewrites the file in the new format
 		flash_write(6'd8);
 		run_pass(4000, 2000000);
-		if (psram[BANK+3] !== 16'h5633) begin
+		if (psram[BANK+3] !== 16'h5634) begin
 			errors = errors + 1;
-			$display("   FAIL: not converted to V3 (magic %h)", psram[BANK+3]);
-		end else $display("   PASS (rewritten as V3)");
+			$display("   FAIL: not converted to V4 (magic %h)", psram[BANK+3]);
+		end else $display("   PASS (rewritten as V4)");
 
 		// ---- K: a damaged image must be refused before flash is touched --
 		// The decoder writes as it walks, so a checksum taken during the
@@ -751,13 +753,177 @@ module tb_cart_save;
 		if (errors == 0)
 			$display("   PASS (torn pass withheld, the retry published all three blocks)");
 
+		// ---- M: no bank flip while APF is moving the slot ----------------
+		// APF reads (flush) and writes (delivery) the committed bank. A pass
+		// that finishes mid-transfer must not flip it, or the file on the
+		// card is half one image and half the other. The pass is owed and
+		// publishes once the transfer is over.
+		$display("== M  no bank flip while APF is moving the slot");
+		bank_q = stage_bank;
+		flash_write(6'd9);
+		i = 0;
+		while (!busy && i < 4000) begin i = i + 1; @(posedge clk); end
+		if (!busy) begin errors = errors + 1; $display("   FAIL: pass never started"); end
+		host_busy <= 1;                   // the exit flush begins mid-pass
+		i = 0;
+		while (busy && i < 4000000) begin i = i + 1; @(posedge clk); end
+		if (stage_bank !== bank_q) begin
+			errors = errors + 1; $display("   FAIL: flipped under the transfer");
+		end
+		repeat (2000) @(posedge clk);
+		if (busy) begin errors = errors + 1; $display("   FAIL: a pass started during the transfer"); end
+		host_busy <= 0;
+		run_pass(4000, 4000000);
+		if (stage_bank === bank_q) begin
+			errors = errors + 1; $display("   FAIL: the owed pass never published");
+		end
+		decode_payload;
+		if ({psram[BANK+20], psram[BANK+19]} !== crc_of(BANK, dec_used)) begin
+			errors = errors + 1; $display("   FAIL: published image checksum wrong");
+		end
+		if (errors == 0) $display("   PASS (held through the transfer, published after it)");
+
+		// ---- O: a savestate image goes to the spare bank ------------------
+		// The copier drains a state's image into the SPARE bank (core_top
+		// picks the bank per writer); the apply reads it there and commits it
+		// by flipping only if it accepts it.
+		$display("== O  an accepted savestate image is applied from the spare bank and committed");
+		bank_q = stage_bank;
+		SPARE = bank_q ? 0 : 32768;
+		// the capture: the committed image as it is now
+		for (i = 0; i < 32768; i = i + 1) psram[SPARE + i] = psram[BANK + i];
+		for (i = 0; i < 262144; i = i + 1) sdram_gold[i] = sdram[i];
+		// the game plays on and rewrites a word of block 9 (no event: the
+		// block is already dirty, and an event would start a pass)
+		g_block = 6'd9; #1;
+		sdram[(g_base>>1) + 5] = 16'h7777;
+		@(posedge clk); state_apply <= 1;
+		@(posedge clk); state_apply <= 0;
+		run_pass(4000, 4000000);
+		if (apply_reject) begin errors = errors + 1; $display("   FAIL: refused a good state"); end
+		if (stage_bank === bank_q) begin
+			errors = errors + 1; $display("   FAIL: accepted state not committed (no flip)");
+		end
+		n2 = 0;
+		for (i = 0; i < 262144; i = i + 1) if (sdram[i] !== sdram_gold[i]) n2 = n2 + 1;
+		if (n2) begin errors = errors + 1; $display("   FAIL: %0d flash words not rewound", n2); end
+		if (errors == 0) $display("   PASS (flash rewound to the state, its image committed)");
+
+		$display("== O2 a refused savestate image leaves the committed bank and flash alone");
+		bank_q = stage_bank;
+		SPARE = bank_q ? 0 : 32768;
+		for (i = 0; i < 32768; i = i + 1) keep[i] = psram[BANK + i];
+		for (i = 0; i < 32768; i = i + 1) psram[SPARE + i] = psram[BANK + i];
+		// a state whose bitmap claims one more block, and whose payload is
+		// damaged: the bitmap check passes (it covers every dirty block),
+		// the checksum does not
+		psram[SPARE + 8] = psram[SPARE + 8] | 16'h0001;
+		psram[SPARE + 256 + 3] = psram[SPARE + 256 + 3] ^ 16'h0100;
+		dirty_q = dut.dirty0; hd_q = dut.image_has_data;
+		for (i = 0; i < 262144; i = i + 1) sdram_gold[i] = sdram[i];
+		@(posedge clk); state_apply <= 1;
+		@(posedge clk); state_apply <= 0;
+		run_pass(4000, 4000000);
+		if (!apply_reject) begin errors = errors + 1; $display("   FAIL: damaged state accepted"); end
+		if (stage_bank !== bank_q) begin errors = errors + 1; $display("   FAIL: bank flipped"); end
+		n2 = 0;
+		for (i = 0; i < 32768; i = i + 1) if (psram[BANK + i] !== keep[i]) n2 = n2 + 1;
+		if (n2) begin errors = errors + 1; $display("   FAIL: committed image changed (%0d words)", n2); end
+		// The bitmap may grow to the refused file's (a superset: the reject
+		// check guarantees it); losing any of this session's blocks is the
+		// failure.
+		if ((dut.dirty0 & dirty_q) !== dirty_q) begin
+			errors = errors + 1; $display("   FAIL: bitmap %h lost blocks of %h", dut.dirty0, dirty_q);
+		end
+		if (dut.image_has_data !== hd_q) begin
+			errors = errors + 1; $display("   FAIL: data flag changed by a refused image");
+		end
+		n2 = 0;
+		for (i = 0; i < 262144; i = i + 1) if (sdram[i] !== sdram_gold[i]) n2 = n2 + 1;
+		if (n2) begin errors = errors + 1; $display("   FAIL: flash touched (%0d words)", n2); end
+		if (errors == 0) $display("   PASS (refused; the exit file, bitmap and flash are as they were)");
+
+		// ---- N: a V2 file cut at the slot restores only what it holds -----
+		// Before packing, a save larger than the slot was cut at 0xFE00 while
+		// its header still listed every block -- found on real cards for
+		// Faselei!, Neo Turf Masters, Neo 21, Unitron 2 and Bust-A-Move. The
+		// decode must stop at the slot, not pour the memory past it into
+		// flash. Block 0 here is 64 KB, so the file cuts it 512 words short
+		// and never reaches block 8.
+		$display("== N  a V2 file cut at the slot size restores only what it holds");
+		@(posedge clk);
+		cart_ready <= 0; slots_settled <= 0;
+		@(posedge clk); cart_replace <= 1;
+		@(posedge clk); cart_replace <= 0;
+		@(posedge clk);
+		g_block = 6'd0; #1;
+		if (g_words !== 16'd32768) begin
+			errors = errors + 1; $display("   FAIL: bench assumes block 0 is 64 KB (%0d words)", g_words);
+		end
+		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'h5A5A;     // what lies past the file
+		for (i = 0; i < 32; i = i + 1) psram[i] = 16'd0;
+		psram[0] = 16'h4E47; psram[1] = 16'h5043;
+		psram[2] = 16'h5341; psram[3] = 16'h5632;                    // "V2"
+		psram[4] = cart_crc[15:0]; psram[5] = cart_crc[31:16];
+		psram[8] = 16'h0101;                                         // blocks 0 and 8
+		for (i = 0; i < 32256; i = i + 1)                            // the file's payload
+			psram[256 + i] = (i % 64 == 0) ? (16'h3300 + i[15:0]) : 16'hFFFF;
+		for (i = 256; i < 512; i = i + 1) psram[i] = 16'h0000;       // header padding
+		for (i = 0; i < 262144; i = i + 1) sdram_gold[i] = sdram[i];
+		g_block = 6'd0; #1;
+		for (i = 0; i < 32768; i = i + 1) begin
+			sdram[(g_base>>1) + i] = 16'h0BAD;
+			sdram_gold[(g_base>>1) + i] = (i < 32256) ? psram[256 + i] : 16'h0BAD;
+		end
+		g_block = 6'd8; #1;
+		for (i = 0; i < g_words; i = i + 1) begin
+			sdram[(g_base>>1) + i] = 16'h0BAD; sdram_gold[(g_base>>1) + i] = 16'h0BAD;
+		end
+		@(posedge clk); cart_ready <= 1; host_busy <= 1; save_slot_wr <= 1;
+		repeat (8) @(posedge clk);
+		save_slot_wr <= 0; host_busy <= 0;
+		repeat (20) @(posedge clk);
+		slots_settled <= 1;
+		run_pass(4000, 4000000);
+		n2 = 0;
+		for (i = 0; i < 262144; i = i + 1) if (sdram[i] !== sdram_gold[i]) n2 = n2 + 1;
+		if (n2) begin
+			errors = errors + 1;
+			$display("   FAIL: %0d flash words differ -- memory past the file reached flash", n2);
+		end else $display("   PASS (the file's part restored, the rest of flash untouched)");
+
+		// ---- P: an overflow must not hang a capture ---------------------
+		// After an image too big for the slot, staging stands down for the
+		// session. A later flash write leaves a pass owed that never comes;
+		// a savestate or sleep waiting for it would hold the machine paused
+		// forever.
+		$display("== P  after an overflow, a capture still finds staging current");
+		@(posedge clk);
+		cart_ready <= 0; slots_settled <= 0;
+		@(posedge clk); cart_replace <= 1;
+		@(posedge clk); cart_replace <= 0;
+		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hDEAD;
+		@(posedge clk); cart_ready <= 1; slots_settled <= 1;
+		run_pass(4000, 4000000);                   // no-file boot
+		g_block = 6'd0; #1;
+		for (i = 0; i < 32768; i = i + 1) sdram[(g_base>>1) + i] = 16'h1000 + i[15:0];
+		flash_write(6'd0);                          // 64 KB of real data: cannot fit
+		run_pass(4000, 8000000);
+		if (!dut.pack_overflow) begin errors = errors + 1; $display("   FAIL: no overflow"); end
+		flash_write(6'd8);                          // the game saves again
+		repeat (2000) @(posedge clk);
+		if (!stage_current) begin
+			errors = errors + 1;
+			$display("   FAIL: stage_current stuck low -- a capture would hang the machine");
+		end else $display("   PASS (capture proceeds on the last image that fit)");
+
 		if (errors == 0) $display("== ALL CART-SAVE SCENARIOS PASS");
 		else             $display("== %0d FAILURE(S)", errors);
 		$finish;
 	end
 
 	initial begin
-		#400_000_000;
+		#900_000_000;
 		$display("== WATCHDOG TIMEOUT");
 		$finish;
 	end
