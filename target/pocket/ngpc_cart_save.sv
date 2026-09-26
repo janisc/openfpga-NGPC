@@ -846,7 +846,10 @@ module ngpc_cart_save #(
 						if (stage_rdata_i == 16'hFFFF && !legacy) begin
 							crc_ret <= S_APPLY_CNT;
 						end else begin
-							if (!verify_pass) image_has_data <= 1'b1;
+							// Only a non-erased word is data. On the V2 path every
+							// word lands here, erased or not, and an all-erased old
+							// file would otherwise claim the slot and be rewritten.
+							if (!verify_pass && stage_rdata_i != 16'hFFFF) image_has_data <= 1'b1;
 							xfer_data      <= stage_rdata_i;
 							fill_rem       <= 16'd1;
 							crc_ret        <= S_APPLY_WR;

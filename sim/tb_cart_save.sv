@@ -917,6 +917,36 @@ module tb_cart_save;
 			$display("   FAIL: stage_current stuck low -- a capture would hang the machine");
 		end else $display("   PASS (capture proceeds on the last image that fit)");
 
+		// ---- Q: an all-erased V2 file must not claim the slot ------------
+		// On the V2 path every word goes through the literal branch, erased
+		// or not. Found on a real card (Neo Turf Masters): an old file of
+		// nothing but erased flash was applied, claimed the slot, and was
+		// written back as an equally empty V4 file.
+		$display("== Q  an all-erased V2 file does not claim the slot");
+		@(posedge clk);
+		cart_ready <= 0; slots_settled <= 0;
+		@(posedge clk); cart_replace <= 1;
+		@(posedge clk); cart_replace <= 0;
+		@(posedge clk);
+		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hFFFF;
+		for (i = 0; i < 32; i = i + 1) psram[i] = 16'd0;
+		psram[0] = 16'h4E47; psram[1] = 16'h5043;
+		psram[2] = 16'h5341; psram[3] = 16'h5632;                    // "V2"
+		psram[4] = cart_crc[15:0]; psram[5] = cart_crc[31:16];
+		psram[8] = 16'h0100;                                         // block 8, erased
+		for (i = 32; i < 256; i = i + 1) psram[i] = 16'h0000;
+		@(posedge clk); cart_ready <= 1; host_busy <= 1; save_slot_wr <= 1;
+		repeat (8) @(posedge clk);
+		save_slot_wr <= 0; host_busy <= 0;
+		repeat (20) @(posedge clk);
+		slots_settled <= 1;
+		run_pass(4000, 4000000);
+		if (dut.dirty0 !== 64'h100) begin
+			errors = errors + 1; $display("   FAIL: bitmap %h, expected 0100", dut.dirty0);
+		end else if (save_present) begin
+			errors = errors + 1; $display("   FAIL: an erased-only V2 file claimed the slot");
+		end else $display("   PASS (applied, dirty, but nothing to save: slot not claimed)");
+
 		if (errors == 0) $display("== ALL CART-SAVE SCENARIOS PASS");
 		else             $display("== %0d FAILURE(S)", errors);
 		$finish;
