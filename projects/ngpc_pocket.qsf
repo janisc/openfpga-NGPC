@@ -351,6 +351,7 @@ set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to dram_a[9]
 set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to dram_ba[0]
 set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to dram_ba[1]
 set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to dram_cas_n
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to dram_cke
 set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to dram_dq[0]
 set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to dram_dq[10]
 set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to dram_dq[11]
