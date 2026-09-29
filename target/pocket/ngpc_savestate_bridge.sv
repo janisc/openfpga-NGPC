@@ -102,6 +102,18 @@ module ngpc_savestate_bridge #(
 	output reg         cart_load_req,    // pulse: section valid, drain and apply
 	input  wire        cart_load_done,   // pulse: copier finished with it
 	input  wire        cart_load_error,  // with done: rejected, load must fail
+
+	// The save engine's freeze (a refused save file is being kept as it
+	// was). Stamped into the identity block of every capture as layout 3, so
+	// that a frozen session that sleeps wakes up frozen. Without it the wake
+	// read the refused file back as "no save", unfroze, and the next in-game
+	// save overwrote it (review).
+	input  wire        frozen_i,
+	output reg         load_frozen_o,    // the state being loaded is layout 3
+	// One pulse per failed load, whatever failed: the engine freezes a
+	// wake-shaped session on it, since a failed wake cold-boots the game
+	// without its save.
+	output wire        load_fail_o,
 	input  wire [13:0] cart_img_rd_addr,
 	output wire [31:0] cart_img_rd_data,
 
@@ -465,11 +477,21 @@ module ngpc_savestate_bridge #(
 	// cleanly instead of restoring against the wrong cartridge context.
 	localparam [14:0] ID_BASE   = 15'd8420;
 	localparam [31:0] ID_MAGIC  = 32'h4E475053;   // "NGPS"
-	localparam [31:0] ID_LAYOUT = 32'd2;   // 2 = cart image section present
+	localparam [31:0] ID_LAYOUT        = 32'd2;   // cart image section present
+	localparam [31:0] ID_LAYOUT_FROZEN = 32'd3;   // ...captured while frozen:
+	                                              // the section is the refused
+	                                              // file, not a save. Older
+	                                              // builds reject layout 3.
 	localparam [14:0] CART_BASE = 15'd8424;
 
 	reg [3:0]  state;
 	reg [2:0]  id_cnt;
+
+	// load_err_q rises once per failed load and holds until the next load
+	// starts; its rising edge is the engine's failure pulse.
+	reg        load_err_prev = 1'b0;
+	always @(posedge clk_sys) load_err_prev <= load_err_q;
+	assign load_fail_o = load_err_q && !load_err_prev;
 	reg [31:0] chk_magic, chk_crc, chk_layout;
 	reg        prev_start, prev_load, prev_ss_busy;
 	reg        saw_loading;      // the engine accepted the header this run
@@ -493,6 +515,7 @@ module ngpc_savestate_bridge #(
 			start_ok_q   <= 1'b0; start_err_q  <= 1'b0;
 			load_ack_q   <= 1'b0; load_busy_q  <= 1'b0;
 			load_ok_q    <= 1'b0; load_err_q   <= 1'b0;
+			load_frozen_o <= 1'b0;
 		end else begin
 			case (state)
 				S_IDLE: begin
@@ -511,6 +534,7 @@ module ngpc_savestate_bridge #(
 						load_busy_q   <= 1'b1;
 						load_ok_q     <= 1'b0;
 						load_err_q    <= 1'b0;
+						load_frozen_o <= 1'b0;
 						saw_loading   <= 1'b0;
 						state         <= S_LOAD_WAIT;
 					end
@@ -533,7 +557,7 @@ module ngpc_savestate_bridge #(
 					case (id_cnt[1:0])
 						2'd0:    seq_pa_din <= ID_MAGIC;
 						2'd1:    seq_pa_din <= cart_crc32;
-						2'd2:    seq_pa_din <= ID_LAYOUT;
+						2'd2:    seq_pa_din <= frozen_i ? ID_LAYOUT_FROZEN : ID_LAYOUT;
 						default: seq_pa_din <= ~cart_crc32;
 					endcase
 					id_cnt <= id_cnt + 3'd1;
@@ -576,7 +600,9 @@ module ngpc_savestate_bridge #(
 						3'd4: chk_layout <= a_q;
 						default: begin
 							if (blob_full_s && chk_magic == ID_MAGIC && chk_crc == cart_crc32
-							    && chk_layout == ID_LAYOUT && a_q == ~cart_crc32) begin
+							    && (chk_layout == ID_LAYOUT || chk_layout == ID_LAYOUT_FROZEN)
+							    && a_q == ~cart_crc32) begin
+								load_frozen_o <= (chk_layout == ID_LAYOUT_FROZEN);
 								cart_load_req <= 1'b1;
 								state         <= S_LOAD_CART;
 							end else begin

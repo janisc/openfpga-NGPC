@@ -122,6 +122,21 @@ module ngpc_cart_save #(
 	// still arriving in the other one.
 	input  wire        draining_i,
 
+	// The state being loaded was captured in a frozen session (the bridge
+	// read layout 3 from its identity block). Valid from before the
+	// state_apply_i pulse until state_done_o. See S11 in S_IDLE.
+	input  wire        state_frozen_i,
+
+	// The bridge reported a savestate load as failed, for any reason --
+	// including failures the engine never saw (identity, incomplete blob,
+	// copier timeout). At a wake that failure leaves the game cold-booted
+	// without its save, so it freezes the session like a refused image does.
+	input  wire        state_fail_i,
+
+	// The session is frozen. The bridge stamps it into every capture, so a
+	// frozen session that sleeps wakes up frozen instead of unfrozen.
+	output wire        frozen_o,
+
 	// APF is writing the save slot's staging region this cycle. Watching
 	// the delivery directly is what makes the apply self-healing: if the
 	// slot arrives after the settle window already fired the apply, the
@@ -274,6 +289,12 @@ module ngpc_cart_save #(
 	// the real protection is refused_q below, which keeps that bank exactly
 	// as delivered once a file has been refused.
 	assign save_present_o = (|dirty0 || |dirty1) && image_has_data && !refused_q;
+	assign frozen_o       = refused_q;
+
+	// Nothing in this session has been restored yet and nothing written: the
+	// shape of a wake, where a savestate is the only copy of the save the
+	// session will get. A refusal or failure in this shape freezes.
+	wire wake_shaped = !base_q && !(|dirty0 || |dirty1);
 
 	// ---- Block geometry -----------------------------------------------------
 
@@ -390,6 +411,7 @@ module ngpc_cart_save #(
 	localparam [2:0] F_HDR    = 3'd3;   // tag or cartridge CRC mismatch
 	localparam [2:0] F_CRC    = 3'd4;   // payload checksum mismatch
 	localparam [2:0] F_COVER  = 3'd5;   // state bitmap omits dirty blocks
+	localparam [2:0] F_FROZEN = 3'd6;   // state captured while frozen: skipped
 	reg  [2:0] fail_kind;
 	reg  [5:0] fail_idx;
 	// Staging is double-banked. A pass rebuilds the WHOLE image into the
@@ -499,7 +521,9 @@ module ngpc_cart_save #(
 			// written because the payload is written first.
 			6'd19: hdr_word = ~crc_acc[15:0];
 			6'd20: hdr_word = ~crc_acc[31:16];
-			6'd21: hdr_word = {8'd0, cart_subcat_i};
+			// High byte: the writer revision, so a file says which build
+			// wrote it. 0x05 = 1.1.0-rc5 and later; older writers left 0.
+			6'd21: hdr_word = {8'h05, cart_subcat_i};
 			6'd22: hdr_word = diag_applies;
 			6'd23: hdr_word = diag_verdict;
 			6'd24: hdr_word = diag_p2wr;
@@ -564,8 +588,22 @@ module ngpc_cart_save #(
 			apply_reject_o <= 1'b0;
 			saw_save_wr   <= 1'b0;
 			save_wr_quiet <= 20'd0;
+			// A cartridge reload drops a state request or a state apply in
+			// flight. Answer it as refused, or the copier waits for a
+			// state_done that never comes and the new cartridge is held in
+			// reset behind the drain (review, FSM-6). A reset clears the
+			// copier and the bridge as well, so only cart_replace needs this.
+			if (!reset && (state_req || state_apply_i || (in_apply && from_state))) begin
+				state_done_o   <= 1'b1;
+				apply_reject_o <= 1'b1;
+			end
 		end else begin
 			if (state_apply_i) state_req <= 1'b1;
+
+			// S1(c): a savestate load that failed before this engine could
+			// refuse anything (identity, incomplete blob, copier timeout)
+			// still leaves a wake without its save. Same rule as a refusal.
+			if (state_fail_i && wake_shaped) refused_q <= 1'b1;
 
 			// Save-slot delivery seen after the apply started means the apply
 			// ran too early (or mid-delivery): once the burst goes quiet,
@@ -621,7 +659,19 @@ module ngpc_cart_save #(
 							diag_verdict  <= 16'd0;
 							diag_p2wr     <= 16'd0;
 `endif
-							state         <= S_APPLY_HDR;
+							// A state captured in a frozen session carries the
+							// file this build refused, not a save. Apply nothing
+							// and stay frozen, but let the machine restore: a
+							// frozen session must still be able to sleep and
+							// wake. Flash then holds what it held before that
+							// sleep -- the refused file was never applied.
+							if (state_req && state_frozen_i) begin
+								apply_ok  <= 1'b0;
+								fail_kind <= F_FROZEN;
+								state     <= S_FINISH;
+							end else begin
+								state     <= S_APPLY_HDR;
+							end
 						end
 					end else if (cart_ready_i && stage_pending && !pack_overflow &&
 					             !refused_q && !saw_save_wr && !host_busy_i &&
@@ -829,8 +879,14 @@ module ngpc_cart_save #(
 							// was half erased raised no event yet -- and was
 							// published torn (review; MiSTer's mover treats a
 							// busy die the same way).
+							//
+							// Nor while a late delivery waits for its re-armed
+							// apply: a pass that started before the delivery
+							// would publish its unrestored image over the file
+							// that had just arrived, and the apply would then read
+							// the pass (review, FSM-2).
 							if (!stage_pending && flash_quiet && !host_busy_i &&
-							    !refused_q) begin
+							    !refused_q && !saw_save_wr) begin
 								stage_bank_o   <= build_bank;
 								image_has_data <= pass_has_data;
 							end else begin
@@ -887,12 +943,17 @@ module ngpc_cart_save #(
 							           end
 							           legacy <= (stage_rdata_i == MAGIC3_V2);
 							       end
+							// Another cartridge's CRC. For a delivered file that is a file
+							// this game cannot use: refused. For a STATE it is a leftover:
+							// the capture copies the committed bank, and a session with no
+							// file and no pass still holds whatever game last used the
+							// PSRAM. That state carries no save of this game -- no image.
 							5'd4:  if (stage_rdata_i != cart_crc32_i[15:0]) begin
-							           if (apply_ok) begin fail_kind <= F_HDR; fail_idx <= 6'd4; end
+							           if (apply_ok) begin fail_kind <= from_state ? F_NOIMG : F_HDR; fail_idx <= 6'd4; end
 							           apply_ok <= 1'b0;
 							       end
 							5'd5:  if (stage_rdata_i != cart_crc32_i[31:16]) begin
-							           if (apply_ok) begin fail_kind <= F_HDR; fail_idx <= 6'd5; end
+							           if (apply_ok) begin fail_kind <= from_state ? F_NOIMG : F_HDR; fail_idx <= 6'd5; end
 							           apply_ok <= 1'b0;
 							       end
 							5'd8:  img0[15:0]  <= stage_rdata_i;
@@ -1095,49 +1156,59 @@ module ngpc_cart_save #(
 					end else begin
 						if (in_apply) begin
 							if (apply_ok) begin
-								// Accepted. A state's image becomes the save: its
-								// bitmap replaces dirty, and it is committed where
-								// it was drained (it fit once, so staging may run
-								// again) -- unless the session is frozen, which no
-								// apply may unfreeze. A delivered file adds its
-								// blocks to whatever the session already dirtied.
+								// Accepted: the image becomes the save and its
+								// bitmap replaces dirty. A state's image is
+								// committed where it was drained (it fit once, so
+								// staging may run again) -- unless the session is
+								// frozen, which no state apply may undo.
+								//
+								// A delivered file is different: the boot apply read
+								// the COMMITTED bank, so that bank now holds a file
+								// that was read and applied, and a freeze left by an
+								// earlier apply that caught the same file half
+								// delivered is lifted (review, FSM-4). Blocks an
+								// unrestored session dirtied before a late delivery
+								// are dropped: they were the game's writes over a
+								// missing save, and the re-armed apply restarts the
+								// machine on the real one (review, FSM-3).
+								dirty0 <= img0;
+								dirty1 <= img1;
 								if (from_state) begin
-									dirty0 <= img0;
-									dirty1 <= img1;
 									if (!refused_q) begin
 										stage_bank_o  <= apply_bank;
 										pack_overflow <= 1'b0;
 									end
 								end else begin
-									dirty0 <= dirty0 | img0;
-									dirty1 <= dirty1 | img1;
+									refused_q <= 1'b0;
 								end
 								base_q <= 1'b1;
+							end else if (fail_kind == F_FROZEN) begin
+								// S11: a state captured while frozen. Nothing
+								// applied, the load goes ahead, the freeze returns.
+								refused_q <= 1'b1;
 							end else if (from_state) begin
 								// A refused state leaves flash, dirty and the
 								// committed bank as they were, and the load fails
-								// -- except a state that carried no image at all
-								// while nothing is dirty: it was taken before any
-								// save existed, and flash already matches it.
+								// -- except a state that carried no image of this
+								// game (no magic, or another cartridge's) while
+								// nothing is dirty: it was taken before any save
+								// existed, and flash already matches it.
 								if (!((fail_kind == F_NOIMG) && !(|dirty0 || |dirty1)))
 									apply_reject_o <= 1'b1;
 								// At a wake the state was the only copy of the
 								// save the session would get. Refusing it and
 								// then letting the cold-booted game stage would
 								// overwrite the file on the card; freeze instead.
-								if (((fail_kind == F_HDR) || (fail_kind == F_CRC)) &&
-								    !base_q && !(|dirty0 || |dirty1))
+								if (((fail_kind == F_HDR) || (fail_kind == F_CRC)) && wake_shaped)
 									refused_q <= 1'b1;
-							end else if ((fail_kind != F_NODELV) &&
-							             (apf_delivered ||
-							              !((fail_kind == F_HDR) && (fail_idx >= 6'd4)))) begin
+							end else if (fail_kind != F_NODELV) begin
 								// A delivered file this build cannot use -- a newer
 								// or older format, another dump, a damaged payload.
-								// It is still somebody's save: keep it exactly. A
-								// file from before a cartridge reload that fails
-								// only the cartridge CRC belongs to another game
-								// and is simply not this game's file (see
-								// pre_delivered).
+								// It is still somebody's save: keep it exactly. That
+								// includes a file from before a cartridge reload:
+								// the rc4 exemption for a cartridge-CRC mismatch
+								// there opened a path to overwriting a file from
+								// another dump of the same game (review, F5).
 								refused_q <= 1'b1;
 							end
 `ifdef NGPC_SAVE_DIAG
@@ -1147,6 +1218,7 @@ module ngpc_cart_save #(
 							                 (fail_kind == F_CRC)      ? 8'd3 :
 							                 (fail_kind == F_HDR)      ? 8'd4 :
 							                 (fail_kind == F_NODELV)   ? 8'd5 :
+							                 (fail_kind == F_FROZEN)   ? 8'd7 :
 							                                             8'd6};
 `endif
 							if (from_state) state_done_o <= 1'b1;

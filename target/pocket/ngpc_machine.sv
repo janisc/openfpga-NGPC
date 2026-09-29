@@ -28,7 +28,7 @@ module ngpc_machine
 	// machine rather than the framework's scaler.
 	input  wire [1:0]  opt_system,       // 0 = NGPC, 1 = Auto, 2 = NGP        (status[2:1])
 	input  wire        opt_language_jp,  //                                    (status[3])
-	input  wire        settings_ready,   // APF has written the persisted settings
+	input  wire        apf_reset_exit,   // APF Reset Exit (reset_n), synchronised
 	input  wire [2:0]  opt_palette,      // mono palette                       (status[16:14])
 	input  wire        opt_skip_anim,    // 1 = skip the BIOS eye-catch        (!status[19])
 	input  wire        opt_use_host_rtc, //                                    (!status[17])
@@ -97,6 +97,9 @@ module ngpc_machine
 	output wire        save_busy_state,  // cart-save engine busy (apply observer)
 	input  wire        draining,         // copier draining a state into staging
 	output wire        state_done,       // the state apply has finished
+	output wire        save_frozen,      // save engine frozen: stamp captures
+	input  wire        state_frozen,     // the state being loaded is frozen
+	input  wire        state_fail,       // the bridge reported a load failed
 	input  wire [15:0] stage_diag_drain, // drain beats, for the save header
 	input  wire        slots_settled,    // no loader region written for ~500 ms
 	input  wire [15:0] stage_diag_beats,
@@ -291,7 +294,11 @@ module ngpc_machine
 	wire auto_pwr = auto_pwr_pending_q && bios_setup_ready && launch_target_ready;
 
 	always @(posedge clk_sys) begin
-		if (hard_reset || cart_download_start) begin
+		// The machine reset clears a press too. Every savestate apply asserts it
+		// (boot_hold), and a press the settings gate delayed towards APF's
+		// Reset Exit could otherwise still be held when a wake restores the
+		// game -- which reads it as the power button and switches off (review).
+		if (hard_reset || cart_download_start || reset) begin
 			pwr_hold_q         <= 25'd0;
 			auto_pwr_pending_q <= 1'b0;
 		end else begin
@@ -307,6 +314,32 @@ module ngpc_machine
 	end
 
 	wire power_btn = pwr_pad || (pwr_hold_q != 25'd0);
+
+	// ---- settings gate begin ----
+	// The seed samples Language and Mono Palette the moment the BIOS reaches
+	// standby, and the automatic power-on follows one clock later. On the
+	// Pocket those values arrive over the bridge, and APF writes them just
+	// before its Reset Exit (0x0011). So the seed -- and with it the power-on
+	// -- waits for the first Reset Exit. The gate is sticky: a later Reset
+	// Enter never closes it, and menu Reset keeps it (power-up value only). If
+	// no Reset Exit ever comes, the BIOS gives up waiting after 2^27 clocks
+	// (~2.73 s) spent in standby -- counted in standby, not from
+	// configuration, so a slow load cannot use the fallback up before the BIOS
+	// even gets there (review).
+	reg        apf_run_seen_q  = 1'b0;
+	reg        settings_late_q = 1'b0;
+	reg [26:0] settings_wait_q = 27'd0;
+	reg        setup_ready_q   = 1'b0;
+
+	always @(posedge clk_sys) begin
+		setup_ready_q <= bios_setup_ready;
+		if (apf_reset_exit) apf_run_seen_q <= 1'b1;
+		if (!apf_run_seen_q && !settings_late_q && setup_ready_q)
+			{settings_late_q, settings_wait_q} <= {1'b0, settings_wait_q} + 28'd1;
+	end
+
+	wire settings_ready = apf_run_seen_q || settings_late_q;
+	// ---- settings gate end ----
 
 	//////////////////////////// BIOS setup seed /////////////////////////////
 
@@ -357,7 +390,7 @@ module ngpc_machine
 		// English, for the whole session, while "Reset to BIOS" -- which
 		// seeds again later -- showed the chosen language (issue #6). So the
 		// seed, and with it the automatic power-on, waits for APF to have
-		// finished writing them (settings_ready, core_top).
+		// finished writing them (settings_ready, above).
 		.setup_ready            (bios_setup_ready && settings_ready),
 		.mono                   (bios_mono_active),
 		.osd_language_japanese  (opt_language_jp),
@@ -660,6 +693,9 @@ module ngpc_machine
 		.host_busy_i     (host_busy),
 		.state_apply_i   (state_apply),
 		.draining_i      (draining),
+		.state_frozen_i  (state_frozen),
+		.state_fail_i    (state_fail),
+		.frozen_o        (save_frozen),
 		.save_slot_wr_i  (save_slot_wr),
 		.apply_reject_o  (apply_reject),
 		.state_done_o    (state_done),

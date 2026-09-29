@@ -646,30 +646,10 @@ module core_top (
 
   synch_3 settle_sync (slots_settled_74, slots_settled, clk_sys);
 
-  // APF writes the persisted interact settings (Language, Mono Palette, ...)
-  // at core load, just before its Reset Exit command (0x0011, reset_n). The
-  // BIOS setup seed must not run before they have arrived, or the game gets
-  // the power-up defaults for the whole session (issue #6); see
-  // ngpc_machine. Reset Exit is part of every core load, but in case a load
-  // ever comes without one, ~3 s after configuration the seed goes ahead
-  // anyway: late settings are better than a console that never powers on.
-  // A later Reset Enter (reset_n low) holds the seed again until its exit.
+  // APF's Reset Exit (0x0011), which follows the persisted interact settings
+  // at core load. ngpc_machine holds the BIOS setup seed for it (issue #6).
   wire       reset_n_s;
   synch_3 reset_n_sync (reset_n, reset_n_s, clk_sys);
-
-  reg        apf_run_seen = 1'b0;
-  reg        settings_timeout = 1'b0;
-  reg [27:0] settings_wait = 28'd0;
-
-  always @(posedge clk_sys) begin
-    if (reset_n_s) apf_run_seen <= 1'b1;
-    if (!apf_run_seen && !settings_timeout) begin
-      if (settings_wait == 28'd150_000_000) settings_timeout <= 1'b1;
-      else                                  settings_wait    <= settings_wait + 28'd1;
-    end
-  end
-
-  wire settings_ready = reset_n_s || (settings_timeout && !apf_run_seen);
 
   wire        stage_wr_bank;   // assigned beside the state copier below
 
@@ -948,6 +928,7 @@ module core_top (
   wire        mc_stage_current, mc_save_busy, mc_stage_bank;
   assign stage_wr_bank = sc_host_wr ? ~mc_stage_bank : mc_stage_bank;
   wire        mc_state_apply, mc_capture_hold, mc_state_done;
+  wire        mc_frozen, ss_load_frozen, ss_load_fail;
   wire [15:0] sc_diag_drain;
 
   ngpc_state_cart state_cart (
@@ -1023,6 +1004,9 @@ module core_top (
       .cart_load_req   (cs_load_req),
       .cart_load_done  (cs_load_done),
       .cart_load_error (cs_load_error),
+      .frozen_i        (mc_frozen),
+      .load_frozen_o   (ss_load_frozen),
+      .load_fail_o     (ss_load_fail),
       .cart_img_rd_addr(cs_img_rd_addr),
       .cart_img_rd_data(cs_img_rd_data),
 
@@ -1061,7 +1045,7 @@ module core_top (
 
       .opt_system      (opt_system_s),
       .opt_language_jp (opt_language_jp_s),
-      .settings_ready  (settings_ready),
+      .apf_reset_exit  (reset_n_s),
       .opt_palette     (opt_palette_s),
       .opt_skip_anim   (1'b0),
       .opt_use_host_rtc(apf_rtc_ready),
@@ -1119,6 +1103,9 @@ module core_top (
       .save_busy_state (mc_save_busy),
       .draining        (sc_draining),
       .state_done      (mc_state_done),
+      .save_frozen     (mc_frozen),
+      .state_frozen    (ss_load_frozen),
+      .state_fail      (ss_load_fail),
       .stage_diag_drain(sc_diag_drain),
       .slots_settled(slots_settled),
       .stage_diag_beats(stage_diag_beats),
