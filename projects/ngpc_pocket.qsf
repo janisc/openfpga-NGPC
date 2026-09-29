@@ -774,3 +774,31 @@ set_global_assignment -name PHYSICAL_SYNTHESIS_EFFORT NORMAL
 # (ingest beats/drops, applies, verdict, p2 writes). This investigation cost
 # a week for want of them in the field.
 set_global_assignment -name VERILOG_MACRO "NGPC_SAVE_DIAG=1"
+
+# ---- Area: slow, non-critical blocks are built for area ----
+# The device sits at 98-99% of its ALMs and the CPU's register file alone
+# swings by +-400 ALUTs between otherwise identical syntheses, so every
+# feature has been fighting for the last LABs. These blocks run at human
+# speed (save staging, savestate transport, APF commands, the cartridge
+# loader, the BIOS setup seed), none is on the failing CPU paths, and
+# building them for area freed ~600 ALUTs with the main clock's slack
+# unchanged or better (rc4 + this: -3.196 ns, 18,193 ALMs; rc3: -3.386 ns,
+# 18,312 ALMs). The savestate engine is deliberately NOT here: area mode
+# doubled it (799 -> 1524 ALUTs).
+#
+# The paths MUST be anchored at |apf_top|. Unanchored, Quartus accepts the
+# lines and silently applies nothing.
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|apf_top|core_top:ic|ngpc_machine:machine|ngpc_cart_save:cart_save"
+set_instance_assignment -name MUX_RESTRUCTURE ON -to "|apf_top|core_top:ic|ngpc_machine:machine|ngpc_cart_save:cart_save"
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|apf_top|core_top:ic|ngpc_savestate_bridge:savestate_bridge"
+set_instance_assignment -name MUX_RESTRUCTURE ON -to "|apf_top|core_top:ic|ngpc_savestate_bridge:savestate_bridge"
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|apf_top|core_top:ic|ngpc_state_cart:state_cart"
+set_instance_assignment -name MUX_RESTRUCTURE ON -to "|apf_top|core_top:ic|ngpc_state_cart:state_cart"
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|apf_top|core_top:ic|ngpc_stage_mem:stage_mem"
+set_instance_assignment -name MUX_RESTRUCTURE ON -to "|apf_top|core_top:ic|ngpc_stage_mem:stage_mem"
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|apf_top|core_top:ic|core_bridge_cmd:icb"
+set_instance_assignment -name MUX_RESTRUCTURE ON -to "|apf_top|core_top:ic|core_bridge_cmd:icb"
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|apf_top|core_top:ic|ngpc_machine:machine|ngp_cart_rom:cart_loader"
+set_instance_assignment -name MUX_RESTRUCTURE ON -to "|apf_top|core_top:ic|ngpc_machine:machine|ngp_cart_rom:cart_loader"
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|apf_top|core_top:ic|ngpc_machine:machine|ngp_setup_seed:setup_seed"
+set_instance_assignment -name MUX_RESTRUCTURE ON -to "|apf_top|core_top:ic|ngpc_machine:machine|ngp_setup_seed:setup_seed"
