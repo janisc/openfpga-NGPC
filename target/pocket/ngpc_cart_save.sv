@@ -234,9 +234,16 @@ module ngpc_cart_save #(
 	// GONE. One missed apply then costs the player everything, permanently
 	// (issue #3: a good save destroyed on the relaunch that failed to
 	// restore it, then frozen because an already-erased block is never
-	// erased again). So the claim also requires that some word we have
-	// moved this session -- staged out of flash, or applied into it -- was
-	// not erased. An all-0xFF image is indistinguishable from no save.
+	// erased again). So the claim also requires that the COMMITTED image --
+	// the one APF would write -- holds a word that is not erased. An
+	// all-0xFF image is indistinguishable from no save.
+	//
+	// The flag used to be sticky for the session: any non-erased word that
+	// had passed through counted. Issue #3 lost a save a second time that
+	// way -- after a failed restore the game wrote scratch data into a block
+	// and erased it again, and the empty image that followed still claimed
+	// the slot. Now each published pass and each accepted apply sets the
+	// flag from its own image, and nothing else touches it.
 	assign save_present_o = (|dirty0 || |dirty1) && image_has_data;
 
 	// ---- Block geometry -----------------------------------------------------
@@ -360,7 +367,8 @@ module ngpc_cart_save #(
 	reg        apply_bank;
 	reg        in_apply;
 	reg [19:0] save_wr_quiet;
-	reg        image_has_data;   // a non-erased word passed through this session
+	reg        image_has_data;   // the committed image holds a non-erased word
+	reg        pass_has_data;    // the image this pass is building does
 	reg  [4:0] state;
 
 	// Apply diagnostics, stamped into header words 22-24 of every staged save:
@@ -529,6 +537,7 @@ module ngpc_cart_save #(
 						geo_block    <= 6'd0;
 						pack_ptr     <= 16'd0;
 						crc_acc      <= 32'hFFFFFFFF;
+						pass_has_data <= 1'b0;
 						stage_pending <= flash_event;
 						state        <= S_STAGE_SCAN;
 					end else begin
@@ -573,7 +582,7 @@ module ngpc_cart_save #(
 				// a block boundary so each block decodes on its own terms.
 				S_STAGE_RD_W: begin
 					if (p2_done_i) begin
-						if (p2_rdata_i != 16'hFFFF) image_has_data <= 1'b1;
+						if (p2_rdata_i != 16'hFFFF) pass_has_data <= 1'b1;
 						if (p2_rdata_i == 16'hFFFF) begin
 							run_len <= run_len + 16'd1;
 							if (block_word + 16'd1 >= geo_words) begin
@@ -714,8 +723,12 @@ module ngpc_cart_save #(
 							// a flip mid-transfer would put half of one image and
 							// half of the other in the file. The pass is owed
 							// again and runs once the transfer is over.
-							if (!stage_pending && !host_busy_i) stage_bank_o <= build_bank;
-							else                                stage_pending <= 1'b1;
+							if (!stage_pending && !host_busy_i) begin
+								stage_bank_o   <= build_bank;
+								image_has_data <= pass_has_data;
+							end else begin
+								stage_pending <= 1'b1;
+							end
 							state <= S_FINISH;
 						end
 						else begin
@@ -802,6 +815,9 @@ module ngpc_cart_save #(
 							// walk itself follows dirty. A refusal undoes it below.
 							dirty0 <= img0;
 							dirty1 <= img1;
+							// A V2 file has no check pass: this is its write pass,
+							// and the image it writes decides the flag afresh.
+							if (!verify_pass) image_has_data <= 1'b0;
 						end
 					end else
 					if (block_dirty) begin
@@ -934,6 +950,9 @@ module ngpc_cart_save #(
 						// The decode has run end to end without touching flash.
 						verify_pass <= 1'b0;
 						if (~crc_acc == crc_want) begin
+							// Accepted: the write pass that follows commits this
+							// image, so the flag is decided by its words alone.
+							image_has_data <= 1'b0;
 							geo_die   <= 1'b0;
 							geo_block <= 6'd0;
 							pack_ptr  <= 16'd0;

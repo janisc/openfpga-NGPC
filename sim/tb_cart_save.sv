@@ -537,7 +537,10 @@ module tb_cart_save;
 		// and now a real save in another block must claim it again
 		g_block = 6'd10; #1;
 		sdram[(g_base>>1) + 3] = 16'hC0DE; sdram_gold[(g_base>>1) + 3] = 16'hC0DE;
-		flash_write(6'd2);
+		// Block 10, where the data went. This once reported block 2 -- a
+		// 64 KB block that cannot fit the slot -- and passed only because
+		// the old session-sticky flag was raised by reading it.
+		flash_write(6'd10);
 		run_pass(2000, 2000000);
 		if (!save_present) begin
 			errors = errors + 1; $display("   FAIL: real save did not claim the slot");
@@ -946,6 +949,99 @@ module tb_cart_save;
 		end else if (save_present) begin
 			errors = errors + 1; $display("   FAIL: an erased-only V2 file claimed the slot");
 		end else $display("   PASS (applied, dirty, but nothing to save: slot not claimed)");
+
+		// ---- R: data that came and went is not a save ---------------------
+		// Issue #3, second loss (v1.0.2, after a sleep/wake). The file on the
+		// card listed one block, erased, with the apply refused: the restore
+		// had failed, so the session never knew blocks 32/33, and the game
+		// used block 34 as scratch -- wrote into it, later erased it. The
+		// data flag was sticky for the session, so the words that passed
+		// through once still counted when the committed image held nothing,
+		// and the empty image overwrote the real save. The claim has to be
+		// about the image APF would write, not about the session's history.
+		$display("== R  a block written and then erased again does not claim the slot");
+		@(posedge clk);
+		cart_ready <= 0; slots_settled <= 0;
+		@(posedge clk); cart_replace <= 1;
+		@(posedge clk); cart_replace <= 0;
+		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hDEAD;   // restore fails: no file
+		@(posedge clk); cart_ready <= 1; slots_settled <= 1;
+		run_pass(4000, 4000000);
+		g_block = 6'd8; #1;
+		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = (i < 16) ? 16'h5C00 + i[15:0] : 16'hFFFF;
+		flash_write(6'd8);                          // scratch data lands
+		run_pass(4000, 4000000);
+		if (!save_present) begin
+			errors = errors + 1; $display("   FAIL: setup -- real data did not claim the slot");
+		end
+		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = 16'hFFFF;
+		flash_write(6'd8);                          // and is erased again
+		run_pass(4000, 4000000);
+		if (psram[BANK+8] !== 16'h0100) begin
+			errors = errors + 1; $display("   FAIL: committed bitmap %h, expected 0100", psram[BANK+8]);
+		end else if (save_present) begin
+			errors = errors + 1;
+			$display("   FAIL: an all-erased image claimed the slot because data had passed");
+			$display("         through earlier -- the real file on the card would be overwritten");
+		end else $display("   PASS (committed image is empty: slot not claimed)");
+
+		// ---- S: an accepted image carries its own verdict -----------------
+		// The same rule from the other side: after a session that had data,
+		// accepting a state whose image is all erased leaves an empty image
+		// committed, and that must not claim the slot either.
+		$display("== S  an accepted all-erased state image does not inherit the old claim");
+		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = (i < 16) ? 16'h5D00 + i[15:0] : 16'hFFFF;
+		flash_write(6'd8);
+		run_pass(4000, 4000000);
+		if (!save_present) begin
+			errors = errors + 1; $display("   FAIL: setup -- real data did not claim the slot");
+		end
+		bank_q = stage_bank;
+		SPARE = bank_q ? 0 : 32768;
+		// the state's image: same bitmap (block 8), payload one erased run
+		for (i = 0; i < 32768; i = i + 1) psram[SPARE + i] = psram[BANK + i];
+		g_block = 6'd8; #1;
+		psram[SPARE + 256] = 16'hFFFF;
+		psram[SPARE + 257] = g_words;
+		stamp_crc(SPARE);
+		@(posedge clk); state_apply <= 1;
+		@(posedge clk); state_apply <= 0;
+		run_pass(4000, 4000000);
+		if (apply_reject) begin
+			errors = errors + 1; $display("   FAIL: setup -- the state was refused");
+		end else if (save_present) begin
+			errors = errors + 1;
+			$display("   FAIL: an accepted all-erased image claimed the slot");
+		end else $display("   PASS (accepted, committed, nothing in it: slot not claimed)");
+
+		// ---- S2: the same for a V2 image ----------------------------------
+		// A V2 image has no check pass, so its write pass decides the flag in
+		// a different place. A state taken on 1.0.x carries a V2 image, and
+		// loading it after a session that had data is an ordinary thing to do.
+		$display("== S2 an accepted all-erased V2 state image does not inherit the old claim");
+		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = (i < 16) ? 16'h5E00 + i[15:0] : 16'hFFFF;
+		flash_write(6'd8);
+		run_pass(4000, 4000000);
+		if (!save_present) begin
+			errors = errors + 1; $display("   FAIL: setup -- real data did not claim the slot");
+		end
+		bank_q = stage_bank;
+		SPARE = bank_q ? 0 : 32768;
+		for (i = 0; i < 32768; i = i + 1) psram[SPARE + i] = 16'hFFFF;
+		for (i = 0; i < 256; i = i + 1) psram[SPARE + i] = 16'h0000;
+		psram[SPARE + 0] = 16'h4E47; psram[SPARE + 1] = 16'h5043;
+		psram[SPARE + 2] = 16'h5341; psram[SPARE + 3] = 16'h5632;   // "V2"
+		psram[SPARE + 4] = cart_crc[15:0]; psram[SPARE + 5] = cart_crc[31:16];
+		psram[SPARE + 8] = 16'h0100;                                 // block 8, erased
+		@(posedge clk); state_apply <= 1;
+		@(posedge clk); state_apply <= 0;
+		run_pass(4000, 4000000);
+		if (apply_reject) begin
+			errors = errors + 1; $display("   FAIL: setup -- the V2 state was refused");
+		end else if (save_present) begin
+			errors = errors + 1;
+			$display("   FAIL: an accepted all-erased V2 image claimed the slot");
+		end else $display("   PASS (accepted, committed, nothing in it: slot not claimed)");
 
 		if (errors == 0) $display("== ALL CART-SAVE SCENARIOS PASS");
 		else             $display("== %0d FAILURE(S)", errors);
