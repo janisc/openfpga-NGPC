@@ -235,6 +235,11 @@ module tb;
 		.cart_load_req   (cart_load_req),
 		.cart_load_done  (cart_load_done),
 		.cart_load_error (cart_load_error),
+		// rc5: never frozen here; the frozen layout and the failure pulse
+		// are covered by tb_rc5_loadpath with the real engine.
+		.frozen_i        (1'b0),
+		.load_frozen_o   (),
+		.load_fail_o     (),
 		.cart_img_rd_addr(cart_img_rd_addr),
 		.cart_img_rd_data(cart_img_rd_data),
 

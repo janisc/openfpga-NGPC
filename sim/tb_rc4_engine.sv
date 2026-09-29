@@ -50,9 +50,9 @@
 //             the file, delivered before the reload, is applied [S1, S3]
 //   S3-CRC-RELOAD5/4 the same (wrong) cartridge reloaded: the file delivered
 //             before the reload fails only the cartridge CRC (word 5, then
-//             word 4), so it is "no file": verdict 4, no freeze, the game's
-//             own save publishes; words 22/24 restart at cart_replace
-//             [S3 revised, S10]
+//             word 4). rc5: verdict 4 and the session FREEZES again, the
+//             committed bank stays the file; applies/p2 writes restart at
+//             cart_replace [S3 rc5, S1a, S10]
 //   S1a-MAGIC the same freeze for a magic refusal (word 2) [S1a]
 //   S1a-PAY   the same freeze for a payload-CRC refusal, flash untouched [S1a]
 //   S1a-PAY-RELOAD reload: the pre-reload file is refused on its payload
@@ -66,6 +66,8 @@
 //             delivered and dirty empty; the state image is refused ->
 //             apply_reject with state_done, one apply on the spare bank serves
 //             the pending boot apply too, and the session freezes [S1b, S7, S8]
+//             rc5: the cart-CRC variant is S6 "no image" now: a no-op accept,
+//             no freeze, verdict 6 at fail_idx 4 [S6 rc5]
 //   S1b-DIRTY mid-session (dirty nonempty): refused, no freeze [S1b, S4]
 //   S1b-BASE  an apply was accepted (dirty empty): refused, no freeze [S1b]
 //   S1b-EPOCH an accepted state, then cart_replace: no base any more, so a
@@ -73,7 +75,9 @@
 //   S2        stage_bank_o survives reset and cart_replace [S2]
 //   S3        delivery, then cart_replace, then cart_ready: accepted [S3, S10]
 //   S4a/S5b   a late re-armed boot apply with a dirty block the image lacks
-//             is accepted, dirty = union, and the next pass carries all [S4, S5]
+//             is accepted (S5: no coverage refusal for a boot apply). rc5:
+//             dirty = the image's bitmap, the session's block is dropped, and
+//             the next pass carries the file's blocks only [S4 rc5, S5]
 //   S4b       a refused state apply leaves dirty exactly as it was [S4, S7]
 //   S5a       coverage reject is a reject for a state: no freeze, no writes,
 //             apply_reject holds until the next apply [S5, S10]
@@ -92,10 +96,29 @@
 //   S9b       the review's race: a pass owed, a late delivery, host_busy
 //             falls before the re-arm -> no pass runs first; the re-armed
 //             apply restores the delivered blocks and the committed image
-//             carries them [S9, S4]
+//             carries them (rc5: and only them, dirty = the file's bitmap)
+//             [S9, S4 rc5]
 //   S10-18    header word 18 = diag_drain_i at stamping time [S10]
-//   S10-23    header word 23 for verdicts 1 (boot and state), 2, 3, 4 (tag,
-//             cart CRC word 5, word 4), 5 and 6 [S10]
+//   S10-23    header word 23 for verdicts 1 (boot and state), 2, 3, 4 (tag),
+//             5 and 6 (no magic; rc5: a state's cart CRC word 5 / word 4
+//             mismatch, fail_idx 5 / 4) [S10, S6 rc5]
+//
+// rc5 (rc5_spec.md). The engine gained state_frozen_i, state_fail_i and
+// frozen_o. This bench has no bridge, so state_frozen_i and state_fail_i are
+// tied low; the rc5 items they drive are in tb_rc5_engine.sv. Every
+// expectation that rc5 changed says "rc5" where it is checked:
+//   - S4: an accepted boot apply sets dirty to the image's bitmap; the rc4
+//     union is gone (S4a/S5b, S9b);
+//   - S3/S1a: a pre-reload file that fails only the cartridge CRC now
+//     freezes like any other refused delivery (S3-CRC-RELOAD5/4 invert);
+//   - S6: a state whose magic matches but whose cartridge CRC is another
+//     cartridge's is "no image" -- a no-op at a wake, not a freeze
+//     (S1b-WAKE-CRC), and verdict 6 rather than 4 (S10-23);
+//   - S10: header word 21 is {8'h05, cart_subcat} (check_committed);
+//   - S1: frozen_o is refused_q, so every frozen window also checks it.
+// Internals read: dut.dirty0 (predates rc4); dut.diag_verdict,
+// dut.diag_applies and dut.diag_p2wr only in S3-CRC-RELOAD*, where the
+// session is frozen and no header carrying them is ever staged.
 //
 // Run: wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc4_engine.sh
 
@@ -138,6 +161,7 @@ module tb_rc4_engine;
 
 	wire        boot_hold, busy, save_present, stage_current, stage_bank;
 	wire        apply_reject, state_done;
+	wire        frozen;                        // rc5: frozen_o = refused_q
 	wire        p2_req, p2_we;
 	wire [24:0] p2_addr;
 	wire [15:0] p2_wdata;
@@ -205,6 +229,12 @@ module tb_rc4_engine;
 		.host_busy_i     (apf_busy || draining),
 		.state_apply_i   (state_apply),
 		.draining_i      (draining),
+		// rc5: no bridge here. A state is never from a frozen session and no
+		// load is ever reported failed except through the engine's own
+		// apply_reject (tb_rc5_engine drives both).
+		.state_frozen_i  (1'b0),
+		.state_fail_i    (1'b0),
+		.frozen_o        (frozen),
 		.save_slot_wr_i  (save_slot_wr),
 		.apply_reject_o  (apply_reject),
 		.state_done_o    (state_done),
@@ -443,7 +473,9 @@ module tb_rc4_engine;
 			img[10] = bmp[47:32]; img[11] = bmp[63:48];
 			img[16] = BEATS;
 			img[19] = c[15:0]; img[20] = c[31:16];
-			img[21] = 16'h0001;
+			// rc5 S10: as an rc5 writer stamps it (the apply ignores word 21;
+			// this only lets check_committed accept a delivered file as-is)
+			img[21] = 16'h0501;
 		end
 	endtask
 
@@ -493,6 +525,9 @@ module tb_rc4_engine;
 				       psram[base+2], psram[base+3]))
 			if (psram[base+4] !== cart_crc[15:0] || psram[base+5] !== cart_crc[31:16])
 				`FAIL(("committed cart CRC %h%h, cartridge %h", psram[base+5], psram[base+4], cart_crc))
+			// rc5 S10: word 21 = {writer revision 8'h05, cart_subcat} (0x01 here)
+			if (psram[base+21] !== 16'h0501)
+				`FAIL(("committed word 21 = %h, expected 0501 (rc5 writer revision 05, subcat 01)", psram[base+21]))
 			hb = {psram[base+11], psram[base+10], psram[base+9], psram[base+8]};
 			if (hb !== bmp) `FAIL(("committed bitmap %h, expected %h", hb, bmp))
 			pk = 0; c = 32'hFFFFFFFF;
@@ -710,6 +745,9 @@ module tb_rc4_engine;
 			b0 = stage_bank; cb = cbase(0);
 			for (k = 0; k < BANK_W; k = k + 1) keep[k] = psram[cb + k];
 			w0 = eng_wr; f0 = flips; fc0 = frz_cur; fs0 = frz_sp;
+			// rc5 S1: frozen_o is refused_q, and the bridge stamps it into
+			// every capture
+			if (frozen !== 1'b1) `FAIL(("frozen: frozen_o = %b at the start of the frozen window", frozen))
 			frz_en = 1;
 			game_write(10, 8'h3A);
 			@(posedge clk);
@@ -736,6 +774,7 @@ module tb_rc4_engine;
 			if (frz_cur != fc0)
 				`FAIL(("frozen: stage_current low for %0d idle cycles", frz_cur - fc0))
 			if (save_present !== 1'b0) `FAIL(("frozen: save_present = %b", save_present))
+			if (frozen !== 1'b1) `FAIL(("frozen: frozen_o = %b at the end of the frozen window", frozen))
 		end
 	endtask
 
@@ -790,16 +829,19 @@ module tb_rc4_engine;
 	endtask
 
 	// ---- S3: a file for another cartridge, delivered before a reload -------
-	// Revised S3: a pre-reload delivery refused ONLY on the cartridge CRC
-	// (words 4-5) belongs to another game and reads as "no file" -- verdict
-	// 4, no freeze -- so the game's own saves stage and publish as usual.
+	// rc5 S3/S1(a): the rc4 exemption is gone. A pre-reload delivery refused
+	// on the cartridge CRC (words 4-5) is a refused delivery like any other:
+	// verdict 4 and the session FREEZES, so the committed bank -- the file --
+	// is what APF flushes. (rc4 read it as "no file": no freeze, and the
+	// game's own save published over it.)
 	// variant 1: word 5 differs; 4: word 4 differs.
 	task s3_crc_reload(input integer variant, input [5:0] fidx);
-		integer h0, p0, f0, n;
+		integer h0, p0, n;
 		reg b0;
 		begin
 			s1a_refuse(variant);                // delivered this epoch: refused, frozen
 			reload;                             // the same cartridge again
+			if (frozen !== 1'b0) `FAIL(("frozen_o = %b after cart_replace (S1: it clears the freeze)", frozen))
 			h0 = hdr_rd; p0 = p2wr; b0 = stage_bank;
 			boot_now;
 			n = p2wr - p0;
@@ -811,25 +853,32 @@ module tb_rc4_engine;
 			if (boot_hold !== 1'b0) `FAIL(("boot still held"))
 			if (save_present !== 1'b0) `FAIL(("another game's file claims the slot"))
 			if (stage_current !== 1'b1) `FAIL(("stage_current low while idle with nothing to stage"))
-			// Not frozen: the game's own save stages and publishes.
-			f0 = flips;
-			game_write(10, 8'h36);
-			wait_publish(f0);
-			if (save_present !== 1'b1) `FAIL(("the game's own save does not claim the slot"))
-			seeds_clear; exp_seed[10] = 8'h36;
-			check_committed(64'h400);
-			expect23(16'hFFFF, {2'b00, fidx, 8'd4}, "pre-reload file for another cartridge");
-			// S10: diag_applies and diag_p2wr restart at cart_replace; the
-			// refused apply before the reload does not count
-			if (hdr(22) !== 16'd1) `FAIL(("word 22 (applies since the reload) = %0d, expected 1", hdr(22)))
-			if (hdr(24) !== 16'd0) `FAIL(("word 24 (p2 writes of the last apply) = %0d, expected 0", hdr(24)))
+			// rc5: frozen. The frozen window writes flash and checks that no
+			// pass stages or publishes and the committed bank stays the file.
+			if (frozen !== 1'b1) `FAIL(("rc5 S3: the refused pre-reload file did not freeze the session"))
+			frozen_window;
+			if (bank_vs_deliv(0) != 0)
+				`FAIL(("the committed bank is no longer the delivered file (%0d words)", bank_vs_deliv(0)))
+			// rc5 S10: the verdict. Frozen, nothing is ever staged, so no header
+			// carries it: read the diagnostics the next header would stamp.
+			// diag_applies and diag_p2wr restart at cart_replace; the refused
+			// apply before the reload does not count.
+			if (dut.diag_verdict !== {2'b00, fidx, 8'd4})
+				`FAIL(("rc5: verdict word %h, expected %h (verdict 4 at fail_idx %0d, boot apply)",
+				       dut.diag_verdict, {2'b00, fidx, 8'd4}, fidx))
+			if (dut.diag_applies !== 16'd1)
+				`FAIL(("applies since the reload = %0d, expected 1", dut.diag_applies))
+			if (dut.diag_p2wr !== 16'd0)
+				`FAIL(("p2 writes of the last apply = %0d, expected 0", dut.diag_p2wr))
 		end
 	endtask
 
 	// ---- S1b: a state refused at wake, with no base, freezes the session ----
 	// variant 0: tag 'V3'; 1: cart CRC word 4; 2: payload CRC
+	// rc5: variant 1 is no longer a refusal. The magic matches and the
+	// cartridge CRC does not, which S6 now reads as "no image": a no-op here.
 	task s1b_wake(input integer variant);
-		integer h0, p0, s0, k;
+		integer h0, p0, s0, f0, k;
 		reg b0;
 		begin
 			fresh;
@@ -859,22 +908,38 @@ module tb_rc4_engine;
 			draining <= 0;
 			repeat (QUIET + 2000) @(posedge clk);
 			if (sd_cnt != s0 + 1) `FAIL(("state_done pulsed %0d times", sd_cnt - s0))
-			if (sd_rej !== 1'b1) `FAIL(("apply_reject = %b with state_done: the load would succeed", sd_rej))
-			if (apply_reject !== 1'b1) `FAIL(("apply_reject did not hold"))
 			if (hdr_rd != h0 + 1)
 				`FAIL(("%0d applies read a header; one state apply serves both (S8)", hdr_rd - h0))
 			else if (hdr_bank[h0 % 4096] !== ~b0)
 				`FAIL(("the state apply read the committed bank, not the spare"))
 			if (p2wr != p0) `FAIL(("%0d flash words written", p2wr - p0))
-			if (stage_bank !== b0) `FAIL(("the refused state changed stage_bank"))
-			if (dut.dirty0 !== 64'd0) `FAIL(("dirty %h after a refused state (S4: unchanged)", dut.dirty0))
+			if (stage_bank !== b0) `FAIL(("the %0s state changed stage_bank", (variant == 1) ? "no-image" : "refused"))
+			if (dut.dirty0 !== 64'd0) `FAIL(("dirty %h after the state (S4/S6: unchanged)", dut.dirty0))
 			if (boot_hold !== 1'b0) `FAIL(("boot still held"))
-			frozen_window;
-			for (k = 0; k < FILE_W; k = k + 1)
-				if (psram[cbase(0) + k] !== keep2[k]) begin
-					`FAIL(("committed bank changed at word %0d", k))
-					k = FILE_W;
-				end
+			if (variant == 1) begin
+				// rc5 S6: the magic matches but the cartridge CRC is another
+				// cartridge's -- a leftover image, "no image". Dirty is empty,
+				// so it is a no-op accept (verdict 6 at fail_idx 4) and it never
+				// freezes. rc4 refused it here and froze the session.
+				if (sd_rej !== 1'b0) `FAIL(("rc5 S6: apply_reject = %b with state_done: a no-op must load", sd_rej))
+				if (frozen !== 1'b0) `FAIL(("rc5 S6: another cartridge's state image froze the session"))
+				f0 = flips;
+				game_write(10, 8'h44);
+				wait_publish(f0);
+				if (save_present !== 1'b1) `FAIL(("rc5 S6: the game's own save does not claim the slot"))
+				seeds_clear; exp_seed[10] = 8'h44;
+				check_committed(64'h400);
+				expect23(16'hFFFF, 16'h8406, "rc5 S6: state for another cartridge, CRC word 4");
+			end else begin
+				if (sd_rej !== 1'b1) `FAIL(("apply_reject = %b with state_done: the load would succeed", sd_rej))
+				if (apply_reject !== 1'b1) `FAIL(("apply_reject did not hold"))
+				frozen_window;
+				for (k = 0; k < FILE_W; k = k + 1)
+					if (psram[cbase(0) + k] !== keep2[k]) begin
+						`FAIL(("committed bank changed at word %0d", k))
+						k = FILE_W;
+					end
+			end
 		end
 	endtask
 
@@ -1024,14 +1089,14 @@ module tb_rc4_engine;
 		end_scn;
 
 		// ---- S3-CRC-RELOAD: another game's file, from before the reload -------
-		// Revised S3: the same (wrong) cartridge reloaded. The file delivered
-		// before the reload fails only the cartridge CRC, so it is "no file":
-		// verdict 4, no freeze. Both CRC words, since the exception is for
-		// words 4-5.
-		begin_scn("S3-CRC-RELOAD5", "reload, pre-reload file fails only CRC word 5: verdict 4, no freeze");
+		// The same (wrong) cartridge reloaded. The file delivered before the
+		// reload fails only the cartridge CRC. rc4 read that as "no file";
+		// rc5 S3 removed the exemption, so it is refused and FREEZES (S1a).
+		// Both CRC words, since the old exemption covered words 4-5.
+		begin_scn("S3-CRC-RELOAD5", "rc5: reload, pre-reload file fails only CRC word 5: verdict 4, freezes");
 		s3_crc_reload(1, 6'd5);
 		end_scn;
-		begin_scn("S3-CRC-RELOAD4", "reload, pre-reload file fails only CRC word 4: verdict 4, no freeze");
+		begin_scn("S3-CRC-RELOAD4", "rc5: reload, pre-reload file fails only CRC word 4: verdict 4, freezes");
 		s3_crc_reload(4, 6'd4);
 		end_scn;
 
@@ -1126,7 +1191,7 @@ module tb_rc4_engine;
 		begin_scn("S1b-WAKE-TAG", "wake, no delivery, dirty empty: a V3 state is rejected and freezes");
 		s1b_wake(0);
 		end_scn;
-		begin_scn("S1b-WAKE-CRC", "wake, no delivery, dirty empty: a state for another cart (word 4)");
+		begin_scn("S1b-WAKE-CRC", "rc5: wake, no delivery, dirty empty: a state for another cart (word 4) is a no-op, no freeze");
 		s1b_wake(1);
 		end_scn;
 		begin_scn("S1b-WAKE-PAY", "wake, no delivery, dirty empty: a state with a damaged payload");
@@ -1296,8 +1361,12 @@ module tb_rc4_engine;
 		if (hdr(24) !== n[15:0]) `FAIL(("word 24 (p2 writes of the last apply) = %0d, the bench saw %0d", hdr(24), n))
 		end_scn;
 
-		// ---- S4a/S5b: a late boot apply keeps the session's own blocks --------
-		begin_scn("S4a/S5b", "a late re-armed boot apply missing a dirty block is accepted, dirty = union");
+		// ---- S4a/S5b: a late boot apply and the session's own blocks ----------
+		// rc5 S4: an accepted boot apply sets dirty to the image's bitmap. The
+		// rc4 union is gone: block 10, which the unrestored session dirtied
+		// before the late delivery, is dropped, and the re-armed apply restarts
+		// the machine (boot_hold) on the delivered save.
+		begin_scn("S4a/S5b", "rc5: a late re-armed boot apply missing a dirty block is accepted, dirty = the image's bitmap");
 		fresh;
 		psram_fill(16'hFEED);
 		sd_fill(8, 8'h00); sd_fill(9, 8'h00); sd_fill(10, 8'h00);
@@ -1311,19 +1380,33 @@ module tb_rc4_engine;
 		b0 = stage_bank; f0 = flips; h0 = hdr_rd; w0 = eng_wr;
 		deliver;                                 // late
 		wait_busy(QUIET + 4000);                 // the re-arm
+		if (boot_hold !== 1'b1) `FAIL(("rc5 S4: the re-armed apply does not hold the machine in reset"))
 		wait_idle(2000000);
 		if (hdr_rd != h0 + 1) `FAIL(("%0d re-armed applies read a header", hdr_rd - h0))
 		else if (hdr_bank[h0 % 4096] !== b0) `FAIL(("the re-armed apply read the spare bank"))
 		if (sd_bad(8, 8'h48) + sd_bad(9, 8'h49) != 0) `FAIL(("the delivered blocks were not applied"))
-		if (sd_bad(10, 8'h4A) != 0) `FAIL(("the session's own block 10 was touched"))
-		if (dut.dirty0 !== 64'h700) `FAIL(("dirty %h, expected 700 (S4: dirty | image)", dut.dirty0))
+		if (sd_bad(10, 8'h4A) != 0) `FAIL(("the session's own block 10 was touched (S4: the walk follows the image's bitmap)"))
+		if (dut.dirty0 !== 64'h300)
+			`FAIL(("rc5: dirty %h, expected 300 (S4: dirty := the image's bitmap, no union)", dut.dirty0))
 		if (stage_bank !== b0 || flips != f0) `FAIL(("stage_bank changed across the re-armed apply"))
 		if (eng_wr != w0) `FAIL(("a staging pass ran before the re-armed apply"))
-		game_write(10, 8'h4B);
+		if (frozen !== 1'b0) `FAIL(("frozen_o = %b after an accepted apply", frozen))
+		// rc5, from the ports: the next pass carries the file's blocks and not
+		// block 10. Any pass still owed from before the delivery runs first.
+		repeat (QUIET + 100) @(posedge clk);
+		wait_idle(2000000);
+		f0 = flips;
+		game_write(9, 8'h4B);
 		wait_publish(f0);
-		seeds_clear; exp_seed[8] = 8'h48; exp_seed[9] = 8'h49; exp_seed[10] = 8'h4B;
-		check_committed(64'h700);
+		seeds_clear; exp_seed[8] = 8'h48; exp_seed[9] = 8'h4B;
+		check_committed(64'h300);
 		if (save_present !== 1'b1) `FAIL(("save_present low"))
+		// block 10 comes back only when the game writes it again
+		f0 = flips;
+		game_write(10, 8'h4C);
+		wait_publish(f0);
+		seeds_clear; exp_seed[8] = 8'h48; exp_seed[9] = 8'h4B; exp_seed[10] = 8'h4C;
+		check_committed(64'h700);
 		end_scn;
 
 		// ---- S4b: a refused state leaves dirty alone ---------------------------
@@ -1547,7 +1630,7 @@ module tb_rc4_engine;
 		end_scn;
 
 		// ---- S9b: the review's race ----------------------------------------------
-		begin_scn("S9b", "pass owed + late delivery: the re-armed apply runs first, then the pass carries it");
+		begin_scn("S9b", "pass owed + late delivery: the re-armed apply runs first; rc5: the committed image is the file's blocks only");
 		fresh;
 		psram_fill(16'hFEED);
 		sd_fill(8, 8'h00); sd_fill(9, 8'h00); sd_fill(10, 8'h00);
@@ -1584,11 +1667,23 @@ module tb_rc4_engine;
 		wait_idle(2000000);
 		if (sd_bad(8, 8'h92) + sd_bad(9, 8'h93) != 0) `FAIL(("the delivered blocks were not restored"))
 		if (sd_bad(10, 8'h94) != 0) `FAIL(("the game's block 10 was touched"))
-		if (dut.dirty0 !== 64'h700) `FAIL(("dirty %h, expected 700", dut.dirty0))
-		wait_publish(f0);                        // the owed pass, after the apply
-		seeds_clear; exp_seed[8] = 8'h92; exp_seed[9] = 8'h93; exp_seed[10] = 8'h94;
-		check_committed(64'h700);
+		// rc5 S4: dirty := the file's bitmap; the game's block 10, written over
+		// the missing save before the delivery, is dropped (rc4: 700, union)
+		if (dut.dirty0 !== 64'h300) `FAIL(("rc5: dirty %h, expected 300 (S4: the image's bitmap, no union)", dut.dirty0))
+		// The pass owed from before the delivery may run now; whether it does
+		// or not, the committed image is the delivered file's blocks and only
+		// those (rc5; rc4 published 700 with block 10).
+		repeat (QUIET + 100) @(posedge clk);
+		wait_idle(2000000);
+		seeds_clear; exp_seed[8] = 8'h92; exp_seed[9] = 8'h93;
+		check_committed(64'h300);
 		if (save_present !== 1'b1) `FAIL(("save_present low"))
+		// and staging carries on from the restored save
+		f0 = flips;
+		game_write(9, 8'h95);
+		wait_publish(f0);
+		seeds_clear; exp_seed[8] = 8'h92; exp_seed[9] = 8'h95;
+		check_committed(64'h300);
 		if (bad_flip != bf0) `FAIL(("stage_bank changed while APF or a die was busy"))
 		end_scn;
 
@@ -1632,17 +1727,20 @@ module tb_rc4_engine;
 		f0 = flips; game_write(10, 8'hA6); wait_publish(f0);
 		expect23(16'hFFFF, 16'h8304, "state tag refused");
 
+		// rc5 S6: a state whose magic matches but whose cartridge CRC is
+		// another cartridge's is "no image": verdict 6 at fail_idx 5 / 4
+		// (rc4: verdict 4). Dirty is not empty here, so it is still a reject.
 		build_img(64'h500, TAG_V4, cart_crc); img[5] = ~img[5]; st_from_img;
 		state_load;
 		if (sd_rej !== 1'b1) `FAIL(("state for another cart (word 5) not rejected"))
 		f0 = flips; game_write(10, 8'hA7); wait_publish(f0);
-		expect23(16'hFFFF, 16'h8504, "state cart CRC word 5 refused");
+		expect23(16'hFFFF, 16'h8506, "rc5: state for another cart (CRC word 5): no image");
 
 		build_img(64'h500, TAG_V4, cart_crc); img[4] = ~img[4]; st_from_img;
 		state_load;
 		if (sd_rej !== 1'b1) `FAIL(("state for another cart (word 4) not rejected"))
 		f0 = flips; game_write(10, 8'hA8); wait_publish(f0);
-		expect23(16'hFFFF, 16'h8404, "state cart CRC word 4 refused");
+		expect23(16'hFFFF, 16'h8406, "rc5: state for another cart (CRC word 4): no image");
 
 		build_img(64'h500, TAG_V4, cart_crc); img[256] = img[256] ^ 16'h0100; st_from_img;
 		state_load;

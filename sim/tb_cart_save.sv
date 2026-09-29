@@ -49,6 +49,18 @@
 //   - S1: a delivered file that is refused freezes the session (K).
 //   - S4: a refused apply leaves dirty exactly as it was (O2).
 // The spec's own scenarios are in tb_rc4_engine.sv.
+//
+// rc5 (rc5_spec.md). The engine gained state_frozen_i, state_fail_i and
+// frozen_o. There is no bridge here, so the two inputs are tied low. None of
+// this bench's scenarios meets an rc5 behaviour change: no boot apply here
+// finds blocks already dirty (S4 union), no pre-reload file fails the
+// cartridge CRC (S3), no state image carries another cartridge's CRC (S6),
+// and no pass meets a late delivery (S9). The rc5 checks added, each marked
+// "rc5":
+//   - S10: header word 21 = {8'h05, cart_subcat} (A);
+//   - S1: frozen_o = refused_q: high while K's refused file is frozen (K2),
+//     low again after the new session that follows (L).
+// The rc5 scenarios are in tb_rc5_engine.sv.
 
 `timescale 1ns / 1ps
 `default_nettype none
@@ -79,6 +91,7 @@ module tb_cart_save;
 	wire [17:0] BANK = stage_bank ? 18'd32768 : 18'd0;
 	wire        apply_reject;
 	wire        state_done;                    // rc4: one pulse per state apply
+	wire        frozen;                        // rc5: frozen_o = refused_q
 	wire        p2_req, p2_we;
 	wire [24:0] p2_addr;
 	wire [15:0] p2_wdata;
@@ -153,6 +166,11 @@ module tb_cart_save;
 		// rc4: no copier in this bench, so nothing ever drains
 		.draining_i      (1'b0),
 		.diag_drain_i    (16'h0000),
+		// rc5: no bridge in this bench either: no state is from a frozen
+		// session and no load failure is reported
+		.state_frozen_i  (1'b0),
+		.state_fail_i    (1'b0),
+		.frozen_o        (frozen),
 		.save_slot_wr_i  (save_slot_wr),
 		.apply_reject_o  (apply_reject),
 		.state_done_o    (state_done),
@@ -442,6 +460,10 @@ module tb_cart_save;
 		end
 		if (psram[BANK+8] !== 16'h0500) begin   // dirty0 = blocks 8 and 10
 			errors = errors + 1; $display("   FAIL: bitmap %h expected 0500", psram[BANK+8]);
+		end
+		// rc5 S10: word 21 = {writer revision 8'h05, cart_subcat_i (01)}
+		if (psram[BANK+21] !== 16'h0501) begin
+			errors = errors + 1; $display("   FAIL: word 21 = %h, expected 0501 (rc5 writer revision)", psram[BANK+21]);
 		end
 		// payload: block 0 then block 2, in walk order
 		decode_payload;
@@ -806,6 +828,10 @@ module tb_cart_save;
 		// and stage_current stays high so a capture never waits on staging.
 		$display("== K2 the refused file is frozen against later flash writes");
 		n0 = errors;
+		// rc5 S1: frozen_o is refused_q
+		if (frozen !== 1'b1) begin
+			errors = errors + 1; $display("   FAIL: frozen_o = %b after the refused file", frozen);
+		end
 		bank_q = stage_bank;
 		for (i = 0; i < 32768; i = i + 1) keep[i] = imgK[imgK_cb + i];
 		keep[256 + 100] = keep[256 + 100] ^ 16'h0040;   // the file as delivered
@@ -844,6 +870,9 @@ module tb_cart_save;
 		if (stage_current !== 1'b1) begin
 			errors = errors + 1; $display("   FAIL: stage_current low while frozen and idle");
 		end
+		if (frozen !== 1'b1) begin                   // rc5 S1
+			errors = errors + 1; $display("   FAIL: frozen_o = %b while frozen", frozen);
+		end
 		if (errors == n0) $display("   PASS (nothing staged or published; the file APF flushes is the one it delivered)");
 
 		// ---- L: a pass torn by a flash write must not publish ------------
@@ -857,6 +886,10 @@ module tb_cart_save;
 		// garbage a refused file; the session is also frozen until then.
 		// "No file" is a new session.
 		fresh_session;
+		// rc5 S1: reset (and cart_replace) clear refused_q, and frozen_o with it
+		if (frozen !== 1'b0) begin
+			errors = errors + 1; $display("   FAIL: frozen_o = %b after a new session", frozen);
+		end
 		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hDEAD;
 		cart_ready <= 1; slots_settled <= 1;
 		run_pass(4000, 2000000);          // no-file boot: nothing to apply

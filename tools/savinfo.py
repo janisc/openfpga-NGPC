@@ -21,11 +21,16 @@ PAYLOAD_WORDS = 32256        # 0xFE00 less the header
 # {from_state, reserved, fail_idx[5:0], verdict[7:0]}; 1.0.2 and rc3 wrote
 # the bare verdict (high byte 0) with codes 0-3, where 2 meant "rejected".
 # The short labels go on the diagnostics line; codes 0-3 with a zero high
-# byte print exactly as they always did.
+# byte print exactly as they always did. Code 7 is new in 1.1.0-rc5.
 VERDICT_OLD = {0: 'none', 1: 'ACCEPTED', 2: 'REJECTED', 3: 'REFUSED (bad checksum)'}
 VERDICT_NEW = {0: 'none', 1: 'ACCEPTED', 2: 'REJECTED (coverage)',
                3: 'REFUSED (bad checksum)', 4: 'REFUSED (header)',
-               5: 'NOTHING DELIVERED', 6: 'NO IMAGE'}
+               5: 'NOTHING DELIVERED', 6: 'NO IMAGE', 7: 'FROZEN STATE'}
+
+# Header word 21 is {writer revision, catalogue sub-code}, on every build.
+# From 1.1.0-rc5 the high byte names the revision of the core that wrote
+# the file: 0x05 is rc5 (1.1.0). Every older writer left it 0.
+WRITER_RC5 = 0x05
 
 
 def geometry(size_code):
@@ -141,10 +146,24 @@ def last_apply(code, legacy, from_state, applies):
                     'already written flash')
         return ('NO IMAGE -- the delivered file is not a janisc.NGPC save (magic '
                 'mismatch); nothing was written')
+    if code == 7:
+        return ('FROZEN STATE -- savestate from a frozen session: nothing applied, '
+                'saving stays off; the savestate itself loaded, and flash was not touched')
     return 'verdict code %d is not known to this tool -- written by a newer core?' % code
 
 
-def diagnostics(w):
+def writer(rev):
+    """The high byte of header word 21 in plain language."""
+    if rev == 0:
+        return 'older writer (rev 0) -- 1.1.0-rc4 or earlier'
+    if rev == WRITER_RC5:
+        return 'written by 1.1.0-rc5 or later (rev %d)' % rev
+    if rev > WRITER_RC5:
+        return 'written by 1.1.0-rc5 or later (rev %d, newer than this tool knows)' % rev
+    return 'unknown writer revision %d -- no core writes it; the header may be damaged' % rev
+
+
+def diagnostics(w, rev=0):
     """Header words 16-18 and 22-24, as the save diagnostics build stamps them."""
     beats, drops, drain = w(16), w(17), w(18)
     applies, word23, p2wr = w(22), w(23), w(24)
@@ -154,7 +173,8 @@ def diagnostics(w):
     from_state = word23 >> 15
     # 1.0.2 and rc3 leave word 18 at 0 and the high byte of word 23 at 0,
     # and never write codes past 3. Anything else is 1.1.0-rc4 or later.
-    rc4 = drain != 0 or (word23 >> 8) != 0 or code > 3
+    # From rc5 the writer revision in word 21 says so outright.
+    rc4 = drain != 0 or (word23 >> 8) != 0 or code > 3 or rev >= WRITER_RC5
     label = VERDICT_NEW.get(code, '%d (word 23 = %04X)' % (code, word23)) if rc4 \
         else VERDICT_OLD.get(word23, word23)
     print('diagnostics     : ingest %d beats / %d drops | applies %d | verdict %s | flash writes %d' % (
@@ -209,6 +229,11 @@ def main(path):
         return 1
     print('magic           : ok (NGPCSAV%s%s)' % (
         version, '' if version == '4' else '  -- pre-1.1 layout, uncompressed'))
+    # Only a V4 file can carry a writer revision: rc5 writes nothing else,
+    # and pre-1.0 development builds left other values in word 21's high
+    # byte of their V2 files, which must not read as a newer writer.
+    rev = (w(21) >> 8) if version == '4' else 0
+    say('writer', writer(rev))
 
     title = bytes(b for i in range(25, 31) for b in (d[2 * i], d[2 * i + 1]))
     printable = ''.join(chr(c) if 32 <= c < 127 else '.' for c in title)
@@ -280,7 +305,7 @@ def main(path):
             'has data (%d%% written)' % (100 - chunk.count(0xFF) * 100 // max(len(chunk), 1))))
 
     if any(w(i) for i in (16, 17, 18, 22, 23, 24)):
-        diagnostics(w)
+        diagnostics(w, rev)
     else:
         print('diagnostics     : none recorded (build without save diagnostics)')
 

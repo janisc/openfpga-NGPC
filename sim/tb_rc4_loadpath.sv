@@ -308,6 +308,12 @@ module tb_rc4_loadpath;
 		.host_busy_i     (host_busy || sc_draining),
 		.state_apply_i   (state_apply),
 		.draining_i      (sc_draining),
+		// rc5 ports: this rc4 bench has no bridge, so no frozen state and
+		// no bridge-level failure ever reaches the engine here
+		// (tb_rc5_loadpath covers those with the real bridge).
+		.state_frozen_i  (1'b0),
+		.state_fail_i    (1'b0),
+		.frozen_o        (),
 		.save_slot_wr_i  (apf_wr),
 		.apply_reject_o  (apply_reject),
 		.state_done_o    (state_done),

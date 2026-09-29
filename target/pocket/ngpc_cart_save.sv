@@ -948,12 +948,20 @@ module ngpc_cart_save #(
 							// the capture copies the committed bank, and a session with no
 							// file and no pass still holds whatever game last used the
 							// PSRAM. That state carries no save of this game -- no image.
+							// For a state the CRC outranks the tag: another game's image in
+							// a format this build does not read is still another game's
+							// image, not this game's save (so the walk reads both CRC
+							// words even after a tag refusal, below).
 							5'd4:  if (stage_rdata_i != cart_crc32_i[15:0]) begin
-							           if (apply_ok) begin fail_kind <= from_state ? F_NOIMG : F_HDR; fail_idx <= 6'd4; end
+							           if (apply_ok || (from_state && fail_kind == F_HDR)) begin
+							               fail_kind <= from_state ? F_NOIMG : F_HDR; fail_idx <= 6'd4;
+							           end
 							           apply_ok <= 1'b0;
 							       end
 							5'd5:  if (stage_rdata_i != cart_crc32_i[31:16]) begin
-							           if (apply_ok) begin fail_kind <= from_state ? F_NOIMG : F_HDR; fail_idx <= 6'd5; end
+							           if (apply_ok || (from_state && fail_kind == F_HDR)) begin
+							               fail_kind <= from_state ? F_NOIMG : F_HDR; fail_idx <= 6'd5;
+							           end
 							           apply_ok <= 1'b0;
 							       end
 							5'd8:  img0[15:0]  <= stage_rdata_i;
@@ -982,7 +990,10 @@ module ngpc_cart_save #(
 							state        <= apply_ok ? S_APPLY_SCAN : S_FINISH;
 						end else begin
 							hdr_idx <= hdr_idx + 6'd1;
-							state   <= apply_ok ? S_APPLY_HDR : S_FINISH;
+							// A state keeps reading through the CRC words after a
+							// failure, so the CRC can reclassify a tag refusal.
+							state   <= (apply_ok || (from_state && hdr_idx < 6'd5))
+							           ? S_APPLY_HDR : S_FINISH;
 						end
 					end
 				end
