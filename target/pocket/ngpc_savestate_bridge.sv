@@ -311,6 +311,21 @@ module ngpc_savestate_bridge #(
 
 	synch_3 quiet_sync (blob_quiet_74, blob_quiet_s, clk_sys);
 
+	// Quiet is not complete. A transfer that stalls for longer than the quiet
+	// window -- or restarts from word 0 after XFER_ABANDONED -- passed the
+	// gate with part of the blob still stale, and the cart section behind
+	// the identity block was drained and applied as it stood (review). So a
+	// load also requires that THIS transfer reached the last word of the
+	// blob. Set by the write that completes it, cleared by the first write of
+	// the next transfer and when a load finishes. Stable by the time the load
+	// checks it (the quiet gate has held for 1.35 ms), so one synchronizer
+	// bit suffices.
+	localparam [14:0] BLOB_LOAD_WORDS = 15'd24680;   // savestate_size / 4
+	reg  blob_full_74 = 1'b0;
+	wire blob_full_s;
+
+	synch_3 full_sync (blob_full_74, blob_full_s, clk_sys);
+
 	// ---- APF side (clk_74a) -------------------------------------------------
 	//
 	// A plain window into the store. APF reads it after a save and writes it
@@ -355,8 +370,12 @@ module ngpc_savestate_bridge #(
 	// comparator. If the state size ever changes, HEADER_HI changes with it.
 	localparam [31:0] HEADER_HI = 32'hE020_0000;   // bswap32(8416)
 
-	reg  [14:0] wr_ptr;
-	reg  [25:0] xfer_idle;
+	// Power-up values made explicit. The hardware registers already start at
+	// zero; without these the simulation started the pointer at X, the very
+	// first transfer went nowhere, and the bench still passed on whatever the
+	// save had left in the store -- so it never exercised the write path.
+	reg  [14:0] wr_ptr    = 15'd0;
+	reg  [25:0] xfer_idle = 26'd0;
 	reg         prev_load_done_74;
 
 	wire        blob_wr_stb  = blob_sel && bridge_wr;
@@ -402,11 +421,14 @@ module ngpc_savestate_bridge #(
 		if (blob_wr_stb) begin
 			blob[b_addr]    <= bridge_wr_data;
 			wr_ptr          <= wr_at + 15'd1;
+			if (wr_at + 15'd1 >= BLOB_LOAD_WORDS) blob_full_74 <= 1'b1;
+			else if (burst_first)                 blob_full_74 <= 1'b0;
 		end else if ((load_done_74 && !prev_load_done_74)
 		             || xfer_idle == XFER_ABANDONED) begin
 			// The write branch wins on a write cycle, so the first word of a
 			// fresh transfer both lands at 0 and advances the pointer.
 			wr_ptr <= 15'd0;
+			if (load_done_74 && !prev_load_done_74) blob_full_74 <= 1'b0;
 		end
 
 		blob_q <= blob[b_addr];
@@ -553,13 +575,14 @@ module ngpc_savestate_bridge #(
 						3'd3: begin chk_crc <= a_q; seq_pa_addr <= ID_BASE + 15'd3; end
 						3'd4: chk_layout <= a_q;
 						default: begin
-							if (chk_magic == ID_MAGIC && chk_crc == cart_crc32
+							if (blob_full_s && chk_magic == ID_MAGIC && chk_crc == cart_crc32
 							    && chk_layout == ID_LAYOUT && a_q == ~cart_crc32) begin
 								cart_load_req <= 1'b1;
 								state         <= S_LOAD_CART;
 							end else begin
-								// Wrong cartridge, or a tail this build does not
-								// recognize. The machine has not been touched.
+								// Wrong cartridge, a tail this build does not
+								// recognize, or a transfer that never reached the
+								// end of the blob. The machine has not been touched.
 								load_busy_q <= 1'b0;
 								load_err_q  <= 1'b1;
 								state       <= S_DONE;

@@ -33,6 +33,22 @@
 //      magic and leave SDRAM untouched, boot_hold released.
 //   D  torn copy: a flash write to a block WHILE it is being staged must mark
 //      it pending again, and the next quiet pass must re-stage the new data.
+//
+// rc4 (rc4_spec.md). The engine gained draining_i, state_done_o and
+// diag_drain_i. There is no copier here, so draining_i is tied low and
+// diag_drain_i to a constant; state_done_o is counted against the
+// state_apply pulses the bench issues. Where the spec changed behaviour, the
+// stimulus or the check changed with it, and each place says "rc4":
+//   - S3: an APF delivery survives cart_replace (as the previous epoch's
+//     delivery) and only reset forgets it. A scenario that means "a new
+//     session with nothing delivered" now resets the engine as well
+//     (fresh_session), as a core restart does.
+//   - S2: stage_bank_o survives reset and cart_replace. APF's deliveries and
+//     the hand-built files go into the COMMITTED bank, wherever it is,
+//     instead of into bank 0.
+//   - S1: a delivered file that is refused freezes the session (K).
+//   - S4: a refused apply leaves dirty exactly as it was (O2).
+// The spec's own scenarios are in tb_rc4_engine.sv.
 
 `timescale 1ns / 1ps
 `default_nettype none
@@ -62,6 +78,7 @@ module tb_cart_save;
 	// Staging is double-banked; APF only ever sees the committed one.
 	wire [17:0] BANK = stage_bank ? 18'd32768 : 18'd0;
 	wire        apply_reject;
+	wire        state_done;                    // rc4: one pulse per state apply
 	wire        p2_req, p2_we;
 	wire [24:0] p2_addr;
 	wire [15:0] p2_wdata;
@@ -133,8 +150,12 @@ module tb_cart_save;
 		.die_busy_i     (die_busy),
 		.host_busy_i    (host_busy),
 		.state_apply_i   (state_apply),
+		// rc4: no copier in this bench, so nothing ever drains
+		.draining_i      (1'b0),
+		.diag_drain_i    (16'h0000),
 		.save_slot_wr_i  (save_slot_wr),
 		.apply_reject_o  (apply_reject),
+		.state_done_o    (state_done),
 		.stage_current_o (stage_current),
 		.slots_settled_i(slots_settled),
 		.save_present_o (save_present),
@@ -197,6 +218,59 @@ module tb_cart_save;
 			n = 0;
 			while (busy && n < fall_max) begin n = n + 1; @(posedge clk); end
 			if (busy) begin errors = errors + 1; $display("   FAIL: engine stuck busy"); end
+		end
+	endtask
+
+	// rc4 S3: a delivery survives cart_replace and only reset forgets it,
+	// so "a new session in which nothing has been delivered" is the core
+	// restarting (reset) and then the cartridge loading -- a cartridge reload
+	// alone now keeps whatever an earlier scenario delivered.
+	task fresh_session;
+		begin
+			@(posedge clk);
+			cart_ready <= 0; slots_settled <= 0;
+			reset <= 1;
+			repeat (4) @(posedge clk);
+			reset <= 0;
+			@(posedge clk); cart_replace <= 1;
+			@(posedge clk); cart_replace <= 0;
+			@(posedge clk);
+		end
+	endtask
+
+	// rc4 S2: the committed bank no longer returns to 0 on cart_replace or
+	// reset. A snapshot remembers which bank was committed when it was taken
+	// (imgA_cb, imgK_cb, in words), and a delivery puts that image into
+	// whichever bank is committed now, which is where APF writes.
+	integer imgA_cb = 0, imgK_cb = 0;
+
+	// rc4 S8: state_done_o pulses exactly once per state_apply_i pulse, with
+	// apply_reject_o valid in the same cycle.
+	integer sd_cnt = 0, sa_cnt = 0, eng_wr = 0;
+	reg     sd_rej = 0;
+	always @(posedge clk) begin
+		if (state_done === 1'b1) begin sd_cnt <= sd_cnt + 1; sd_rej <= apply_reject; end
+		if (st_req === 1'b1 && st_we === 1'b1) eng_wr <= eng_wr + 1;
+	end
+
+	task pulse_state_apply;
+		begin
+			@(posedge clk); state_apply <= 1;
+			@(posedge clk); state_apply <= 0;
+			sa_cnt = sa_cnt + 1;
+		end
+	endtask
+
+	task check_state_done;
+		begin
+			repeat (4) @(posedge clk);
+			if (sd_cnt !== sa_cnt) begin
+				errors = errors + 1;
+				$display("   FAIL: %0d state_done pulses for %0d state_apply pulses", sd_cnt, sa_cnt);
+			end else if (sd_rej !== apply_reject) begin
+				errors = errors + 1;
+				$display("   FAIL: apply_reject %b in the state_done cycle, %b after", sd_rej, apply_reject);
+			end
 		end
 	endtask
 
@@ -303,6 +377,7 @@ module tb_cart_save;
 	endtask
 
 	integer i, n0, n2, offB, SPARE;
+	integer B0;                      // rc4: the committed bank, in words
 	reg bank_q, hd_q;
 	reg [63:0] dirty_q;
 	reg [15:0] keep [0:32767];       // a copy of the committed bank
@@ -325,6 +400,11 @@ module tb_cart_save;
 
 		repeat (10) @(posedge clk);
 		reset <= 0;
+		// rc4 S2: reset no longer sets stage_bank_o, so its power-up value
+		// has to be 0 by itself.
+		if (stage_bank !== 1'b0) begin
+			errors = errors + 1; $display("   FAIL: stage_bank powers up %b, not 0", stage_bank);
+		end
 		// a fresh cart arrives and settles, with nothing staged for it.
 		// All DUT-facing stimulus uses <= at an edge: a blocking assign in the
 		// same timestep as a posedge races the DUT's sampling (scenario B lost
@@ -401,6 +481,7 @@ module tb_cart_save;
 		check_block(6'd8, 25'd0);
 		if (errors == 0) $display("   PASS (second pass carried the rewrite)");
 		for (i = 0; i < 131328; i = i + 1) begin imgA[i] = psram[i]; imgK[i] = psram[i]; end
+		imgA_cb = BANK; imgK_cb = BANK;
 
 		// ---- B: the boot-order race --------------------------------------
 		$display("== B  apply waits for slot delivery, then lands");
@@ -418,9 +499,10 @@ module tb_cart_save;
 		if (!busy && dut.apply_pending !== 1'b1) begin
 			errors = errors + 1; $display("   FAIL: apply consumed before delivery");
 		end
-		// "APF" now streams the save slot in, then everything settles
+		// "APF" now streams the save slot in, then everything settles.
+		// rc4 S2: into the committed bank, which cart_replace left alone.
 		@(posedge clk); host_busy <= 1; save_slot_wr <= 1;
-		for (i = 0; i < 131328; i = i + 1) psram[i] = imgA[i];
+		for (i = 0; i < 32768; i = i + 1) psram[BANK + i] = imgA[imgA_cb + i];
 		repeat (50) @(posedge clk);
 		save_slot_wr <= 0; host_busy <= 0;
 		repeat (20) @(posedge clk);
@@ -448,11 +530,10 @@ module tb_cart_save;
 
 		// ---- E: late save delivery re-arms the apply (issue #3) ----------
 		$display("== E  save slot arriving after the settle re-arms the apply");
-		@(posedge clk);
-		cart_ready <= 0; slots_settled <= 0;
-		@(posedge clk); cart_replace <= 1;
-		@(posedge clk); cart_replace <= 0;
-		@(posedge clk);
+		// rc4 S3: B's delivery would survive a cart_replace, and garbage
+		// that counts as delivered is a refused file (S1) -- not the
+		// "nothing has arrived yet" this scenario is about. A new session.
+		fresh_session;
 		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hFEED;   // nothing delivered
 		cart_ready <= 1;
 		slots_settled <= 1;               // the settle window LIES: it fired early
@@ -466,8 +547,9 @@ module tb_cart_save;
 		g_block = 6'd10; #1;
 		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = 16'h0BAD;
 		// the save slot NOW arrives -- late, after the settle already fired
+		// (rc4 S2: into the committed bank, which reset left alone)
 		@(posedge clk); host_busy <= 1; save_slot_wr <= 1;
-		for (i = 0; i < 131328; i = i + 1) psram[i] = imgA[i];
+		for (i = 0; i < 32768; i = i + 1) psram[BANK + i] = imgA[imgA_cb + i];
 		repeat (8) @(posedge clk);
 		save_slot_wr <= 0; host_busy <= 0;
 		// burst quiet (QUIET_CLOCKS=200) -> self-arm -> second apply
@@ -490,12 +572,14 @@ module tb_cart_save;
 		for (i = 0; i < 131328; i = i + 1) psram[i] = imgA[i];
 		psram[8] = 16'h0001; psram[32768+8] = 16'h0001;
 		for (i = 0; i < 262144; i = i + 1) sdram_gold[i] = sdram[i];   // must stay put
-		@(posedge clk); state_apply <= 1;
-		@(posedge clk); state_apply <= 0;
+		pulse_state_apply;
 		run_pass(2000, 200000);
+		check_state_done;                   // rc4 S8
 		if (!apply_reject) begin
 			errors = errors + 1; $display("   FAIL: reject flag not raised");
 		end
+		// unchanged under rc4: S5 (coverage) and S4 (a refusal leaves dirty)
+		// agree with what this always checked
 		if (dut.dirty0 !== 64'h500) begin
 			errors = errors + 1; $display("   FAIL: dirty bitmap changed to %h", dut.dirty0);
 		end
@@ -510,10 +594,10 @@ module tb_cart_save;
 		// overwrite a real save file on the card with 65 KB of erased flash --
 		// the amplifier that turned one missed apply into permanent data loss.
 		$display("== G  erased-only image must not claim the save slot");
-		@(posedge clk);
-		cart_ready <= 0; slots_settled <= 0;
-		@(posedge clk); cart_replace <= 1;
-		@(posedge clk); cart_replace <= 0;
+		// rc4 S3/S1: after a cart_replace alone the earlier delivery still
+		// counts, so this garbage would be a refused file and freeze the
+		// session. "No file at all" is a new session.
+		fresh_session;
 		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hDEAD;   // no file at all
 		@(posedge clk); cart_ready <= 1; slots_settled <= 1;
 		run_pass(2000, 2000000);         // no-file boot: rejects, stages nothing
@@ -552,11 +636,9 @@ module tb_cart_save;
 		// and a matching CRC. Measured on hardware: ingest 0 beats, verdict
 		// ACCEPTED, 16 KB written into a cartridge with no save of its own.
 		$display("== H  undelivered stale image must not be applied");
-		@(posedge clk);
-		cart_ready <= 0; slots_settled <= 0;
-		@(posedge clk); cart_replace <= 1;
-		@(posedge clk); cart_replace <= 0;
-		@(posedge clk);
+		// rc4 S3: only reset clears the delivery flag now, so an undelivered
+		// image is one left behind across a core restart.
+		fresh_session;
 		for (i = 0; i < 131328; i = i + 1) psram[i] = imgA[i];   // left behind
 		for (i = 0; i < 262144; i = i + 1) sdram_gold[i] = sdram[i];
 		cart_ready <= 1; slots_settled <= 1;                     // nothing delivered
@@ -620,24 +702,27 @@ module tb_cart_save;
 		@(posedge clk); cart_replace <= 1;
 		@(posedge clk); cart_replace <= 0;
 		@(posedge clk);
+		// rc4 S2: the file goes where APF puts it, the committed bank, which
+		// no longer returns to bank 0 on cart_replace.
+		B0 = BANK;
 		// give the two blocks known contents, then hand-build the V2 image
 		g_block = 6'd8; #1;
 		for (i = 0; i < g_words; i = i + 1) begin
 			sdram_gold[(g_base>>1) + i] = 16'h5500 + i[15:0];
-			psram[256 + i] = 16'h5500 + i[15:0];          // raw slot, block 8
+			psram[B0 + 256 + i] = 16'h5500 + i[15:0];     // raw slot, block 8
 		end
 		n0 = g_words;
 		g_block = 6'd10; #1;
 		for (i = 0; i < g_words; i = i + 1) begin
 			sdram_gold[(g_base>>1) + i] = 16'hAA00 + i[15:0];
-			psram[256 + n0 + i] = 16'hAA00 + i[15:0];     // raw slot, block 10
+			psram[B0 + 256 + n0 + i] = 16'hAA00 + i[15:0]; // raw slot, block 10
 		end
-		psram[0] = 16'h4E47; psram[1] = 16'h5043;
-		psram[2] = 16'h5341; psram[3] = 16'h5632;        // "V2"
-		psram[4] = cart_crc[15:0]; psram[5] = cart_crc[31:16];
-		psram[6] = 16'd0; psram[7] = 16'd0;
-		psram[8] = 16'h0500; psram[9] = 16'd0;           // blocks 8 and 10
-		for (i = 10; i < 32; i = i + 1) psram[i] = 16'd0;
+		psram[B0+0] = 16'h4E47; psram[B0+1] = 16'h5043;
+		psram[B0+2] = 16'h5341; psram[B0+3] = 16'h5632;  // "V2"
+		psram[B0+4] = cart_crc[15:0]; psram[B0+5] = cart_crc[31:16];
+		psram[B0+6] = 16'd0; psram[B0+7] = 16'd0;
+		psram[B0+8] = 16'h0500; psram[B0+9] = 16'd0;     // blocks 8 and 10
+		for (i = 10; i < 32; i = i + 1) psram[B0 + i] = 16'd0;
 		// the cartridge itself is blank: only the apply can fill it
 		g_block = 6'd8; #1;
 		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = 16'h0BAD;
@@ -680,9 +765,14 @@ module tb_cart_save;
 		@(posedge clk);
 		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hFEED;
 		cart_ready <= 1;
+		// rc4 S2: the file lands in the committed bank, wherever it is now.
+		// The old copy of the whole region relied on cart_replace resetting
+		// the bank to the one imgK was taken from; with J's pass in between
+		// the apply would have read the snapshot's OTHER, intact bank.
 		@(posedge clk); host_busy <= 1; save_slot_wr <= 1;
-		for (i = 0; i < 131328; i = i + 1) psram[i] = imgK[i];
-		psram[256 + 100] = psram[256 + 100] ^ 16'h0040;   // one bit of rot
+		B0 = BANK;
+		for (i = 0; i < 32768; i = i + 1) psram[B0 + i] = imgK[imgK_cb + i];
+		psram[B0 + 256 + 100] = psram[B0 + 256 + 100] ^ 16'h0040;   // one bit of rot
 		repeat (50) @(posedge clk);
 		save_slot_wr <= 0; host_busy <= 0;
 		repeat (20) @(posedge clk);
@@ -697,6 +787,8 @@ module tb_cart_save;
 		n2 = 0;
 		for (i = 0; i < 262144; i = i + 1) if (sdram[i] !== sdram_gold[i]) n2 = n2 + 1;
 		if (n2) begin errors = errors + 1; $display("   FAIL: %0d flash words written", n2); end
+		// rc4 S4: a refusal leaves dirty as it was -- empty at boot, so the
+		// check stands as it was.
 		if (dut.dirty0 !== 64'd0) begin
 			errors = errors + 1; $display("   FAIL: bitmap committed as %h", dut.dirty0);
 		end
@@ -705,6 +797,55 @@ module tb_cart_save;
 		end
 		if (errors == 0) $display("   PASS (refused; flash, bitmap and the file on the card all intact)");
 
+		// rc4 S1(a): not claiming the slot is not enough -- after a delivery
+		// APF flushes the committed bank whatever the claim says. A refused
+		// delivered file freezes the session: the game writes a save into
+		// block 10 and erases it again (issue #3's pattern), then scribbles
+		// on block 8, and no pass may start or publish, the committed bank
+		// stays the delivered file byte for byte, the slot stays unclaimed,
+		// and stage_current stays high so a capture never waits on staging.
+		$display("== K2 the refused file is frozen against later flash writes");
+		n0 = errors;
+		bank_q = stage_bank;
+		for (i = 0; i < 32768; i = i + 1) keep[i] = imgK[imgK_cb + i];
+		keep[256 + 100] = keep[256 + 100] ^ 16'h0040;   // the file as delivered
+		n2 = eng_wr;
+		g_block = 6'd10; #1;
+		for (i = 0; i < g_words; i = i + 1)
+			sdram[(g_base>>1) + i] = (i < 16) ? 16'h5C00 + i[15:0] : 16'hFFFF;
+		flash_write(6'd10);
+		@(posedge clk);
+		if (stage_current !== 1'b1) begin
+			errors = errors + 1; $display("   FAIL: stage_current low while frozen and idle");
+		end
+		repeat (2000) @(posedge clk);
+		if (busy) begin errors = errors + 1; $display("   FAIL: a pass started while frozen"); end
+		if (save_present) begin errors = errors + 1; $display("   FAIL: slot claimed while frozen"); end
+		// each wait below is long enough for a pass to run and publish,
+		// were one to start
+		repeat (80000) @(posedge clk);
+		for (i = 0; i < g_words; i = i + 1) sdram[(g_base>>1) + i] = 16'hFFFF;
+		flash_write(6'd10);
+		repeat (80000) @(posedge clk);
+		flash_write(6'd8);
+		repeat (80000) @(posedge clk);
+		if (eng_wr != n2) begin
+			errors = errors + 1; $display("   FAIL: %0d staging writes while frozen", eng_wr - n2);
+		end
+		if (stage_bank !== bank_q) begin
+			errors = errors + 1; $display("   FAIL: stage_bank changed while frozen");
+		end
+		offB = 0;
+		for (i = 0; i < 32768; i = i + 1) if (psram[BANK + i] !== keep[i]) offB = offB + 1;
+		if (offB) begin
+			errors = errors + 1; $display("   FAIL: %0d words of the delivered file changed", offB);
+		end
+		if (save_present) begin errors = errors + 1; $display("   FAIL: slot claimed while frozen"); end
+		if (stage_current !== 1'b1) begin
+			errors = errors + 1; $display("   FAIL: stage_current low while frozen and idle");
+		end
+		if (errors == n0) $display("   PASS (nothing staged or published; the file APF flushes is the one it delivered)");
+
 		// ---- L: a pass torn by a flash write must not publish ------------
 		// The encoder walks blocks in order and writes the header last, so a
 		// block dirtied AFTER the walk went past it lands in the bitmap but
@@ -712,11 +853,10 @@ module tb_cart_save;
 		// from the wrong offset. A checksum cannot see this: it would cover
 		// the broken image faithfully. The bank simply does not flip.
 		$display("== L  a pass torn by a mid-walk flash write does not publish");
-		@(posedge clk);
-		cart_ready <= 0; slots_settled <= 0;
-		@(posedge clk); cart_replace <= 1;
-		@(posedge clk); cart_replace <= 0;
-		@(posedge clk);
+		// rc4 S3/S1: K's delivery would survive a cart_replace and make this
+		// garbage a refused file; the session is also frozen until then.
+		// "No file" is a new session.
+		fresh_session;
 		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hDEAD;
 		cart_ready <= 1; slots_settled <= 1;
 		run_pass(4000, 2000000);          // no-file boot: nothing to apply
@@ -800,9 +940,9 @@ module tb_cart_save;
 		// block is already dirty, and an event would start a pass)
 		g_block = 6'd9; #1;
 		sdram[(g_base>>1) + 5] = 16'h7777;
-		@(posedge clk); state_apply <= 1;
-		@(posedge clk); state_apply <= 0;
+		pulse_state_apply;
 		run_pass(4000, 4000000);
+		check_state_done;                   // rc4 S8
 		if (apply_reject) begin errors = errors + 1; $display("   FAIL: refused a good state"); end
 		if (stage_bank === bank_q) begin
 			errors = errors + 1; $display("   FAIL: accepted state not committed (no flip)");
@@ -824,19 +964,20 @@ module tb_cart_save;
 		psram[SPARE + 256 + 3] = psram[SPARE + 256 + 3] ^ 16'h0100;
 		dirty_q = dut.dirty0; hd_q = dut.image_has_data;
 		for (i = 0; i < 262144; i = i + 1) sdram_gold[i] = sdram[i];
-		@(posedge clk); state_apply <= 1;
-		@(posedge clk); state_apply <= 0;
+		pulse_state_apply;
 		run_pass(4000, 4000000);
+		check_state_done;                   // rc4 S8
 		if (!apply_reject) begin errors = errors + 1; $display("   FAIL: damaged state accepted"); end
 		if (stage_bank !== bank_q) begin errors = errors + 1; $display("   FAIL: bank flipped"); end
 		n2 = 0;
 		for (i = 0; i < 32768; i = i + 1) if (psram[BANK + i] !== keep[i]) n2 = n2 + 1;
 		if (n2) begin errors = errors + 1; $display("   FAIL: committed image changed (%0d words)", n2); end
-		// The bitmap may grow to the refused file's (a superset: the reject
-		// check guarantees it); losing any of this session's blocks is the
-		// failure.
-		if ((dut.dirty0 & dirty_q) !== dirty_q) begin
-			errors = errors + 1; $display("   FAIL: bitmap %h lost blocks of %h", dut.dirty0, dirty_q);
+		// rc4 S4: a refusal leaves dirty EXACTLY as it was. This used to
+		// allow the bitmap to grow to the refused file's superset, because
+		// the old engine committed the image's bitmap at the header decide
+		// and let it stand after the checksum refused the file.
+		if (dut.dirty0 !== dirty_q) begin
+			errors = errors + 1; $display("   FAIL: bitmap %h after the refusal, was %h", dut.dirty0, dirty_q);
 		end
 		if (dut.image_has_data !== hd_q) begin
 			errors = errors + 1; $display("   FAIL: data flag changed by a refused image");
@@ -863,20 +1004,22 @@ module tb_cart_save;
 		if (g_words !== 16'd32768) begin
 			errors = errors + 1; $display("   FAIL: bench assumes block 0 is 64 KB (%0d words)", g_words);
 		end
+		// rc4 S2: the file goes into the committed bank, wherever it is.
+		B0 = BANK;
 		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'h5A5A;     // what lies past the file
-		for (i = 0; i < 32; i = i + 1) psram[i] = 16'd0;
-		psram[0] = 16'h4E47; psram[1] = 16'h5043;
-		psram[2] = 16'h5341; psram[3] = 16'h5632;                    // "V2"
-		psram[4] = cart_crc[15:0]; psram[5] = cart_crc[31:16];
-		psram[8] = 16'h0101;                                         // blocks 0 and 8
+		for (i = 0; i < 32; i = i + 1) psram[B0 + i] = 16'd0;
+		psram[B0+0] = 16'h4E47; psram[B0+1] = 16'h5043;
+		psram[B0+2] = 16'h5341; psram[B0+3] = 16'h5632;              // "V2"
+		psram[B0+4] = cart_crc[15:0]; psram[B0+5] = cart_crc[31:16];
+		psram[B0+8] = 16'h0101;                                      // blocks 0 and 8
 		for (i = 0; i < 32256; i = i + 1)                            // the file's payload
-			psram[256 + i] = (i % 64 == 0) ? (16'h3300 + i[15:0]) : 16'hFFFF;
-		for (i = 256; i < 512; i = i + 1) psram[i] = 16'h0000;       // header padding
+			psram[B0 + 256 + i] = (i % 64 == 0) ? (16'h3300 + i[15:0]) : 16'hFFFF;
+		for (i = 256; i < 512; i = i + 1) psram[B0 + i] = 16'h0000;  // header padding
 		for (i = 0; i < 262144; i = i + 1) sdram_gold[i] = sdram[i];
 		g_block = 6'd0; #1;
 		for (i = 0; i < 32768; i = i + 1) begin
 			sdram[(g_base>>1) + i] = 16'h0BAD;
-			sdram_gold[(g_base>>1) + i] = (i < 32256) ? psram[256 + i] : 16'h0BAD;
+			sdram_gold[(g_base>>1) + i] = (i < 32256) ? psram[B0 + 256 + i] : 16'h0BAD;
 		end
 		g_block = 6'd8; #1;
 		for (i = 0; i < g_words; i = i + 1) begin
@@ -901,10 +1044,9 @@ module tb_cart_save;
 		// a savestate or sleep waiting for it would hold the machine paused
 		// forever.
 		$display("== P  after an overflow, a capture still finds staging current");
-		@(posedge clk);
-		cart_ready <= 0; slots_settled <= 0;
-		@(posedge clk); cart_replace <= 1;
-		@(posedge clk); cart_replace <= 0;
+		// rc4 S3/S1: N's delivery survives a cart_replace, which would make
+		// this garbage a refused file and freeze staging. A new session.
+		fresh_session;
 		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hDEAD;
 		@(posedge clk); cart_ready <= 1; slots_settled <= 1;
 		run_pass(4000, 4000000);                   // no-file boot
@@ -931,13 +1073,15 @@ module tb_cart_save;
 		@(posedge clk); cart_replace <= 1;
 		@(posedge clk); cart_replace <= 0;
 		@(posedge clk);
+		// rc4 S2: the file goes into the committed bank, wherever it is.
+		B0 = BANK;
 		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hFFFF;
-		for (i = 0; i < 32; i = i + 1) psram[i] = 16'd0;
-		psram[0] = 16'h4E47; psram[1] = 16'h5043;
-		psram[2] = 16'h5341; psram[3] = 16'h5632;                    // "V2"
-		psram[4] = cart_crc[15:0]; psram[5] = cart_crc[31:16];
-		psram[8] = 16'h0100;                                         // block 8, erased
-		for (i = 32; i < 256; i = i + 1) psram[i] = 16'h0000;
+		for (i = 0; i < 32; i = i + 1) psram[B0 + i] = 16'd0;
+		psram[B0+0] = 16'h4E47; psram[B0+1] = 16'h5043;
+		psram[B0+2] = 16'h5341; psram[B0+3] = 16'h5632;              // "V2"
+		psram[B0+4] = cart_crc[15:0]; psram[B0+5] = cart_crc[31:16];
+		psram[B0+8] = 16'h0100;                                      // block 8, erased
+		for (i = 32; i < 256; i = i + 1) psram[B0 + i] = 16'h0000;
 		@(posedge clk); cart_ready <= 1; host_busy <= 1; save_slot_wr <= 1;
 		repeat (8) @(posedge clk);
 		save_slot_wr <= 0; host_busy <= 0;
@@ -960,10 +1104,10 @@ module tb_cart_save;
 		// and the empty image overwrote the real save. The claim has to be
 		// about the image APF would write, not about the session's history.
 		$display("== R  a block written and then erased again does not claim the slot");
-		@(posedge clk);
-		cart_ready <= 0; slots_settled <= 0;
-		@(posedge clk); cart_replace <= 1;
-		@(posedge clk); cart_replace <= 0;
+		// rc4 S3/S1: after Q's delivery a cart_replace alone would make this
+		// garbage a refused file and freeze the session. "No file" is a new
+		// session.
+		fresh_session;
 		for (i = 0; i < 131328; i = i + 1) psram[i] = 16'hDEAD;   // restore fails: no file
 		@(posedge clk); cart_ready <= 1; slots_settled <= 1;
 		run_pass(4000, 4000000);
@@ -1004,9 +1148,9 @@ module tb_cart_save;
 		psram[SPARE + 256] = 16'hFFFF;
 		psram[SPARE + 257] = g_words;
 		stamp_crc(SPARE);
-		@(posedge clk); state_apply <= 1;
-		@(posedge clk); state_apply <= 0;
+		pulse_state_apply;
 		run_pass(4000, 4000000);
+		check_state_done;                   // rc4 S8
 		if (apply_reject) begin
 			errors = errors + 1; $display("   FAIL: setup -- the state was refused");
 		end else if (save_present) begin
@@ -1033,9 +1177,9 @@ module tb_cart_save;
 		psram[SPARE + 2] = 16'h5341; psram[SPARE + 3] = 16'h5632;   // "V2"
 		psram[SPARE + 4] = cart_crc[15:0]; psram[SPARE + 5] = cart_crc[31:16];
 		psram[SPARE + 8] = 16'h0100;                                 // block 8, erased
-		@(posedge clk); state_apply <= 1;
-		@(posedge clk); state_apply <= 0;
+		pulse_state_apply;
 		run_pass(4000, 4000000);
+		check_state_done;                   // rc4 S8
 		if (apply_reject) begin
 			errors = errors + 1; $display("   FAIL: setup -- the V2 state was refused");
 		end else if (save_present) begin
@@ -1043,6 +1187,12 @@ module tb_cart_save;
 			$display("   FAIL: an accepted all-erased V2 image claimed the slot");
 		end else $display("   PASS (accepted, committed, nothing in it: slot not claimed)");
 
+		// rc4 S8: state_done only for state applies, once each
+		repeat (4) @(posedge clk);
+		if (sd_cnt !== sa_cnt) begin
+			errors = errors + 1;
+			$display("== FAIL: %0d state_done pulses for %0d state_apply pulses", sd_cnt, sa_cnt);
+		end
 		if (errors == 0) $display("== ALL CART-SAVE SCENARIOS PASS");
 		else             $display("== %0d FAILURE(S)", errors);
 		$finish;

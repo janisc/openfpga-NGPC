@@ -28,6 +28,7 @@ module ngpc_machine
 	// machine rather than the framework's scaler.
 	input  wire [1:0]  opt_system,       // 0 = NGPC, 1 = Auto, 2 = NGP        (status[2:1])
 	input  wire        opt_language_jp,  //                                    (status[3])
+	input  wire        settings_ready,   // APF has written the persisted settings
 	input  wire [2:0]  opt_palette,      // mono palette                       (status[16:14])
 	input  wire        opt_skip_anim,    // 1 = skip the BIOS eye-catch        (!status[19])
 	input  wire        opt_use_host_rtc, //                                    (!status[17])
@@ -94,6 +95,9 @@ module ngpc_machine
 	output wire        stage_current,    // stager parked, image current
 	output wire        stage_bank,       // committed staging bank
 	output wire        save_busy_state,  // cart-save engine busy (apply observer)
+	input  wire        draining,         // copier draining a state into staging
+	output wire        state_done,       // the state apply has finished
+	input  wire [15:0] stage_diag_drain, // drain beats, for the save header
 	input  wire        slots_settled,    // no loader region written for ~500 ms
 	input  wire [15:0] stage_diag_beats,
 	input  wire [15:0] stage_diag_drops,
@@ -344,7 +348,17 @@ module ngpc_machine
 	(
 		.clk                    (clk_sys),
 		.reset                  (reset),
-		.setup_ready            (bios_setup_ready),
+		// The seed samples Language and Mono Palette the moment the BIOS
+		// reaches standby, and the automatic power-on follows one clock
+		// later -- after that the game is running and nothing re-seeds until
+		// the next standby. On MiSTer the menu values exist from the first
+		// cycle; on the Pocket they arrive over the bridge, and they can
+		// arrive after standby. The game then read the power-up default,
+		// English, for the whole session, while "Reset to BIOS" -- which
+		// seeds again later -- showed the chosen language (issue #6). So the
+		// seed, and with it the automatic power-on, waits for APF to have
+		// finished writing them (settings_ready, core_top).
+		.setup_ready            (bios_setup_ready && settings_ready),
 		.mono                   (bios_mono_active),
 		.osd_language_japanese  (opt_language_jp),
 		.osd_palette            (opt_palette),
@@ -645,13 +659,16 @@ module ngpc_machine
 
 		.host_busy_i     (host_busy),
 		.state_apply_i   (state_apply),
+		.draining_i      (draining),
 		.save_slot_wr_i  (save_slot_wr),
 		.apply_reject_o  (apply_reject),
+		.state_done_o    (state_done),
 		.stage_current_o (stage_current),
 		.stage_bank_o    (stage_bank),
 		.slots_settled_i (slots_settled),
 		.diag_beats_i    (stage_diag_beats),
 		.diag_drops_i    (stage_diag_drops),
+		.diag_drain_i    (stage_diag_drain),
 
 		.boot_hold_o     (overlay_boot_hold),
 		.save_present_o  (save_present_o),

@@ -7,13 +7,25 @@ Paste the output into a bug report. It says which cartridge the save
 belongs to, which flash blocks it carries, whether those blocks contain
 real data or only erased flash, whether the file's own checksum still
 matches, and -- on builds with the save diagnostics enabled -- what the
-core's own counters recorded.
+core's own counters recorded, including how the last apply of a save
+into the cartridge ended and whether it came from a savestate load.
 """
 import sys
+import textwrap
 import zlib
 
 HDR_BYTES = 0x200
 PAYLOAD_WORDS = 32256        # 0xFE00 less the header
+
+# Header word 23 on a diagnostics build. From 1.1.0-rc4 it is
+# {from_state, reserved, fail_idx[5:0], verdict[7:0]}; 1.0.2 and rc3 wrote
+# the bare verdict (high byte 0) with codes 0-3, where 2 meant "rejected".
+# The short labels go on the diagnostics line; codes 0-3 with a zero high
+# byte print exactly as they always did.
+VERDICT_OLD = {0: 'none', 1: 'ACCEPTED', 2: 'REJECTED', 3: 'REFUSED (bad checksum)'}
+VERDICT_NEW = {0: 'none', 1: 'ACCEPTED', 2: 'REJECTED (coverage)',
+               3: 'REFUSED (bad checksum)', 4: 'REFUSED (header)',
+               5: 'NOTHING DELIVERED', 6: 'NO IMAGE'}
 
 
 def geometry(size_code):
@@ -66,6 +78,110 @@ def unpack_v3(payload, sizes):
                 blk.extend([0xFFFF] * max(run, 1))
         out.append(b''.join(v.to_bytes(2, 'little') for v in blk[:words]))
     return out, p, True
+
+
+def say(label, text):
+    """One labelled line, continued under the value column if it is long."""
+    lines = textwrap.wrap(text, 82, break_on_hyphens=False) or ['']
+    print('%-16s: %s' % (label, lines[0]))
+    for more in lines[1:]:
+        print(' ' * 18 + more)
+
+
+def header_field(idx):
+    """What the header word the apply stopped at holds."""
+    if idx <= 2:
+        return 'magic'
+    if idx == 3:
+        return 'format tag'
+    if idx <= 5:
+        return 'ROM CRC32'
+    if idx <= 7:
+        return 'ROM size'
+    if idx <= 15:
+        return 'block bitmap'
+    if idx in (19, 20):
+        return 'payload checksum'
+    return 'not a checked field'
+
+
+def last_apply(code, legacy, from_state, applies):
+    """The verdict in plain language. legacy: nothing in the file shows it
+    came from 1.1.0-rc4 or later, so only what the old codes meant is said."""
+    if code == 0:
+        if applies == 0:
+            return ('none yet -- nothing has been applied since the core started '
+                    'or the cartridge was replaced')
+        return ('no verdict recorded -- a core before 1.1.0-rc4 leaves this when '
+                'the apply stops early in the header (nothing delivered, or the '
+                'magic, format or ROM CRC did not match); nothing was written')
+    if code == 1:
+        if legacy:
+            return ('ACCEPTED -- the save matched this cartridge; the flash writes '
+                    'count shows how much of it was written')
+        return 'ACCEPTED -- the save matched this cartridge and was written into its flash'
+    if code == 2:
+        if legacy:
+            return 'REJECTED -- the core turned this save down and wrote nothing into flash'
+        return ("REJECTED -- the savestate's save lacks a block this session had "
+                'already written, so the load failed; flash was not touched')
+    if code == 3:
+        return ('REFUSED -- the payload checksum did not match (the image is damaged), '
+                'so none of it reached flash')
+    if code == 4:
+        return ("REFUSED -- the header's format tag or ROM CRC does not match this "
+                'core and cartridge; nothing was written')
+    if code == 5:
+        return ('NOTHING DELIVERED -- the Pocket delivered no save file this session, '
+                'so there was nothing to restore')
+    if code == 6:
+        if from_state:
+            return ('NO IMAGE -- the savestate was taken while no save was staged; '
+                    'flash was not touched, and the load fails if this session had '
+                    'already written flash')
+        return ('NO IMAGE -- the delivered file is not a janisc.NGPC save (magic '
+                'mismatch); nothing was written')
+    return 'verdict code %d is not known to this tool -- written by a newer core?' % code
+
+
+def diagnostics(w):
+    """Header words 16-18 and 22-24, as the save diagnostics build stamps them."""
+    beats, drops, drain = w(16), w(17), w(18)
+    applies, word23, p2wr = w(22), w(23), w(24)
+    code = word23 & 0xFF
+    fail_idx = (word23 >> 8) & 0x3F
+    reserved = (word23 >> 14) & 1
+    from_state = word23 >> 15
+    # 1.0.2 and rc3 leave word 18 at 0 and the high byte of word 23 at 0,
+    # and never write codes past 3. Anything else is 1.1.0-rc4 or later.
+    rc4 = drain != 0 or (word23 >> 8) != 0 or code > 3
+    label = VERDICT_NEW.get(code, '%d (word 23 = %04X)' % (code, word23)) if rc4 \
+        else VERDICT_OLD.get(word23, word23)
+    print('diagnostics     : ingest %d beats / %d drops | applies %d | verdict %s | flash writes %d' % (
+        beats, drops, applies, label, p2wr))
+
+    # Word 16 counts every write into staging: the Pocket's delivery and the
+    # savestate copier's drains alike. Word 18 counts the drains alone.
+    delivery = (beats - drain) & 0xFFFF
+    if drain > beats:
+        note = '  (16-bit counters wrapped)'
+    elif not rc4:
+        note = '  (cores before 1.1.0-rc4 count drains as delivery)'
+    else:
+        note = ''
+    print('ingest split    : delivery %d beats | drain %d beats%s' % (delivery, drain, note))
+
+    # Where the last apply came from is only recorded from 1.1.0-rc4 on.
+    origin = '' if code == 0 else 'savestate load: ' if from_state \
+        else 'boot or late delivery: ' if rc4 else ''
+    text = origin + last_apply(code, not rc4, from_state, applies)
+    if reserved:
+        text += ' (word 23 has its reserved bit set -- a newer core?)'
+    say('last apply', text)
+    # Where the apply stopped. Index 0 is a real place for "no image" (the
+    # magic) but means "not applicable" for the checks past the header.
+    if rc4 and (code in (4, 6) or (code in (2, 3) and fail_idx)):
+        say('failed check', 'header word %d (%s)' % (fail_idx, header_field(fail_idx)))
 
 
 def main(path):
@@ -163,11 +279,8 @@ def main(path):
             die, b, n, 'ERASED (no data)' if erased else
             'has data (%d%% written)' % (100 - chunk.count(0xFF) * 100 // max(len(chunk), 1))))
 
-    if any(w(i) for i in (16, 17, 22, 23, 24)):
-        print('diagnostics     : ingest %d beats / %d drops | applies %d | verdict %s | flash writes %d' % (
-            w(16), w(17), w(22),
-            {0: 'none', 1: 'ACCEPTED', 2: 'REJECTED', 3: 'REFUSED (bad checksum)'}
-            .get(w(23), w(23)), w(24)))
+    if any(w(i) for i in (16, 17, 18, 22, 23, 24)):
+        diagnostics(w)
     else:
         print('diagnostics     : none recorded (build without save diagnostics)')
 

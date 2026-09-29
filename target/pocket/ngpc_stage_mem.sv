@@ -154,7 +154,6 @@ module ngpc_stage_mem
 	wire [21:0] host_rd_word = {5'd0, active_bank_i, host_rd_addr_i[15:1]};
 	wire [21:0] eng_word     = eng_addr_i[22:1];
 
-	assign eng_ready_o = !ps_busy && !ps_write_en && !ps_read_en && !host_pending;
 
 	// ---- Host write skid FIFO ----------------------------------------------
 	//
@@ -174,6 +173,15 @@ module ngpc_stage_mem
 	wire        skid_empty = (skid_wp == skid_rp);
 	wire        skid_full  = (skid_fill == 10'd511);
 	assign host_wr_ready_o = (skid_fill < 10'd508);
+
+	// The engine (and the copier on its port) samples ready and raises a
+	// one-cycle request the cycle after. A host beat promoted from the skid,
+	// or a host read, in that same cycle took the PSRAM first and the request
+	// was simply never served -- the walk then waited for a done that could
+	// not come (review). Ready is therefore withheld while the host has
+	// anything queued or arriving; the host path keeps its priority.
+	assign eng_ready_o = !ps_busy && !ps_write_en && !ps_read_en && !host_pending &&
+	                     skid_empty && !host_rd_i;
 
 	always @(posedge clk) begin
 		if (reset) begin

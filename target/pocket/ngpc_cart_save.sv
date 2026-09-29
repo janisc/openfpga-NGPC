@@ -110,10 +110,17 @@ module ngpc_cart_save #(
 	// background staging stands aside.
 	input  wire        host_busy_i,
 
-	// Savestate restore: the copier has rewritten staging with the state's
-	// embedded image; re-arm the boot apply for it. Same validation, same
-	// hold, same bitmap restore as at power-on.
+	// Savestate restore: the copier has drained the state's embedded image
+	// into the SPARE bank; request an apply of it. The request is queued, so
+	// a pulse that lands while another apply runs -- or in the very cycle
+	// one starts -- is served by the next one instead of being lost.
 	input  wire        state_apply_i,
+
+	// The copier is draining a state's image into the spare bank. A boot
+	// apply must not start under it: it would take the pending apply the
+	// state needs and read the committed bank while the state's image is
+	// still arriving in the other one.
+	input  wire        draining_i,
 
 	// APF is writing the save slot's staging region this cycle. Watching
 	// the delivery directly is what makes the apply self-healing: if the
@@ -126,8 +133,17 @@ module ngpc_cart_save #(
 	// are dirty right now, and the original ROM bytes for those blocks
 	// exist nowhere on the device. Loading such a state would silently
 	// leave them un-rewound, so the load is rejected instead -- explicit
-	// limits over haunted edge cases.
+	// limits over haunted edge cases. It is raised for EVERY refused state
+	// image now, not only for a bitmap that misses dirty blocks: a state whose
+	// flash could not be restored must not have its machine state restored
+	// over flash that was never rewound (review, and issue #3's wake path).
 	output reg         apply_reject_o,
+
+	// One pulse when an apply that was started for a state request has
+	// finished, accepted or refused; apply_reject_o is valid with it. The
+	// copier used to take busy falling as completion, and two chained
+	// applies leave busy low for exactly one cycle in between.
+	output reg         state_done_o,
 
 	// APF has delivered every data slot: no loader region has seen a bridge
 	// write for a long settle window. The apply MUST wait for this. Slots
@@ -142,6 +158,10 @@ module ngpc_cart_save #(
 	// words 16-18 of every staged save so the flushed file carries them out.
 	input  wire [15:0] diag_beats_i,
 	input  wire [15:0] diag_drops_i,
+	// How many of those beats were the copier draining a savestate's image
+	// rather than APF delivering the file. Without it a file cannot say
+	// which of the two arrived -- which is what left issue #3 ambiguous.
+	input  wire [15:0] diag_drain_i,
 
 
 	// ---- Machine control ---------------------------------------------------
@@ -223,8 +243,10 @@ module ngpc_cart_save #(
 	// this too, and on wake from sleep the boot apply is pending until the
 	// slots settle. A drain that runs first goes to the spare bank and the
 	// apply then takes the state's image, which is the right outcome.
+	//
+	// A frozen session (refused_q) stages nothing either, for the same reason.
 	assign stage_current_o = (state == S_IDLE) && cart_ready_i &&
-	                         (!stage_pending || pack_overflow);
+	                         (!stage_pending || pack_overflow || refused_q);
 
 	// A SAVE MUST CONTAIN SOMETHING. A dirty bit alone is not a save: a game
 	// that merely erases a block during startup -- Card Fighters does exactly
@@ -244,7 +266,14 @@ module ngpc_cart_save #(
 	// and erased it again, and the empty image that followed still claimed
 	// the slot. Now each published pass and each accepted apply sets the
 	// flag from its own image, and nothing else touches it.
-	assign save_present_o = (|dirty0 || |dirty1) && image_has_data;
+	//
+	// None of that is enough on its own, because the claim is not what
+	// decides the flush: core_top can only ever RAISE the slot's size in
+	// APF's table, and after a delivery APF holds the file's own size there
+	// anyway. What APF writes back at exit is simply the committed bank. So
+	// the real protection is refused_q below, which keeps that bank exactly
+	// as delivered once a file has been refused.
+	assign save_present_o = (|dirty0 || |dirty1) && image_has_data && !refused_q;
 
 	// ---- Block geometry -----------------------------------------------------
 
@@ -265,8 +294,14 @@ module ngpc_cart_save #(
 		.words_o     (geo_words)
 	);
 
+	// A stage walks the live dirty bitmap; an apply walks the IMAGE's bitmap,
+	// so the live one is only replaced once the apply is known to be good.
+	// Committing the image's bitmap up front -- the old way -- left a refused
+	// image's bitmap in dirty, and could not express a boot apply that keeps
+	// blocks the unrestored session had already dirtied.
 	wire block_dirty = geo_valid &&
-		(geo_die ? dirty1[geo_block] : dirty0[geo_block]);
+		(geo_die ? (in_apply ? img1[geo_block] : dirty1[geo_block])
+		         : (in_apply ? img0[geo_block] : dirty0[geo_block]));
 	// Linear cartridge byte address, die1 starting at 2 MiB -- the mapping
 	// ngp_cart_overlay_mover uses.
 	wire [24:0] block_base_addr = {geo_die ? 4'd1 : 4'd0, geo_base};
@@ -315,7 +350,48 @@ module ngpc_cart_save #(
 	// that has no save of its own. Measured on hardware the moment empty
 	// captures stopped creating files: ingest 0 beats, verdict ACCEPTED,
 	// 16 KB restored from nothing. No delivery means there is no file.
-	reg        save_delivered;
+	//
+	// Only APF's own delivery counts now; a state's image needs no such
+	// proof -- the copier drained it moments ago.
+	//
+	// A cartridge reload (cart_replace) starts a new cartridge epoch. A file
+	// delivered BEFORE it is still tried (pre_delivered): an order with the
+	// save ahead of the cartridge, or a cartridge re-sent after it, used to
+	// make the file that had already arrived look undelivered, and the game
+	// then ran -- and saved -- over unrestored flash (review). But it is only
+	// trusted as far as it matches: if a different game was loaded, the old
+	// game's file fails the CRC, and that must read as "no file", not as a
+	// refused file that freezes the new game's saving. Reset forgets both.
+	reg        apf_delivered;
+	reg        pre_delivered;
+
+	// FAIL CLOSED. Set when a delivered file is refused, or when a state's
+	// image is refused before the session has any save state of its own (a
+	// wake). From then on nothing may change what APF writes back: no pass
+	// publishes, no state commits a bank, no claim. APF then flushes the
+	// committed bank as it was delivered -- the file on the card comes back
+	// byte for byte. Without it, the game's next flash write built an image
+	// from unrestored flash and APF wrote THAT over the file it could not
+	// read: issue #3, reproduced on hardware by starting 1.0.2 on a file
+	// from a newer build. MiSTer's metadata_fault is the same rule.
+	reg        refused_q;
+	// The session has a save state of its own: some apply was accepted. A
+	// refused state image only freezes the session when this is clear and
+	// nothing is dirty -- the shape of a wake, where the state was the only
+	// copy the session was going to get.
+	reg        base_q;
+	// A state request not yet served (state_apply_i), and whether the apply
+	// now running serves one (from_state, below).
+	reg        state_req;
+	// Why the running apply was refused, and at which header word.
+	localparam [2:0] F_NONE   = 3'd0;
+	localparam [2:0] F_NODELV = 3'd1;   // boot apply, nothing delivered
+	localparam [2:0] F_NOIMG  = 3'd2;   // no image: magic mismatch
+	localparam [2:0] F_HDR    = 3'd3;   // tag or cartridge CRC mismatch
+	localparam [2:0] F_CRC    = 3'd4;   // payload checksum mismatch
+	localparam [2:0] F_COVER  = 3'd5;   // state bitmap omits dirty blocks
+	reg  [2:0] fail_kind;
+	reg  [5:0] fail_idx;
 	// Staging is double-banked. A pass rebuilds the WHOLE image into the
 	// spare bank and flips only when it is complete, so APF can never read
 	// a half-built image and a pass cut short leaves the last good one
@@ -354,9 +430,7 @@ module ngpc_cart_save #(
 	reg  [3:0] crc_cnt;
 	reg  [4:0] crc_ret;
 	// The apply's first pass through the decode: read everything, write
-	// nothing. from_state says the apply came from a savestate restore,
-	// where a refusal must NOT clear the live dirty bitmap -- flash was
-	// left untouched, so this session's blocks really are still dirty.
+	// nothing. from_state says the running apply serves a savestate restore.
 	reg        verify_pass;
 	reg        from_state;
 	// The bank the apply reads. At boot and on a late delivery that is the
@@ -372,11 +446,16 @@ module ngpc_cart_save #(
 	reg  [4:0] state;
 
 	// Apply diagnostics, stamped into header words 22-24 of every staged save:
-	// how many applies ran since reset, the last apply's verdict (1 = header
-	// accepted, 2 = rejected), and how many p2 writes COMPLETED during the
-	// last apply. Delivery is proven complete on hardware and the header
-	// provably passes, yet the game sees unchanged flash -- these words say
-	// whether the writes themselves are being acknowledged.
+	// how many applies ran since reset, the last apply's outcome, and how many
+	// p2 writes COMPLETED during the last apply.
+	//
+	// Word 23 is {from_state, 0, fail_idx[5:0], verdict[7:0]}. Verdicts:
+	// 0 none yet, 1 accepted, 2 state refused (bitmap omits dirty blocks),
+	// 3 refused (payload checksum), 4 refused (tag or cartridge CRC, at
+	// fail_idx), 5 nothing delivered, 6 no image (magic, at fail_idx). The
+	// verdict is written when the outcome is known; the old one was written
+	// only at the end of the header walk, so every early refusal read as
+	// "none" -- the single most confusing word in issue #3's file.
 	reg [15:0] diag_applies;
 	reg [15:0] diag_verdict;
 	reg [15:0] diag_p2wr;
@@ -413,8 +492,9 @@ module ngpc_cart_save #(
 			6'd15: hdr_word = dirty1[63:48];
 			6'd16: hdr_word = diag_beats_i;
 			6'd17: hdr_word = diag_drops_i;
-			// 18 retired: high-water read zero through every test; drops
-			// alone detect an overrun.
+			// 18: the drain's share of word 16. (It once held a skid
+			// high-water mark that read zero through every test.)
+			6'd18: hdr_word = diag_drain_i;
 			// The packed payload's CRC32, final by the time the header is
 			// written because the payload is written first.
 			6'd19: hdr_word = ~crc_acc[15:0];
@@ -436,9 +516,17 @@ module ngpc_cart_save #(
 		endcase
 	end
 
+	// Stage-bank power-up value. It is deliberately NOT reset: a menu Reset
+	// or Reset to BIOS drives the same reset as a PLL relock, and putting the
+	// committed bank back to 0 then pointed APF's exit flush at whatever the
+	// other bank held -- an older image (review, savefix regression). A new
+	// core launch reconfigures the FPGA and starts from here anyway.
+	initial stage_bank_o = 1'b0;
+
 	always @(posedge clk) begin
-		p2_req_o    <= 1'b0;
-		stage_req_o <= 1'b0;
+		p2_req_o     <= 1'b0;
+		stage_req_o  <= 1'b0;
+		state_done_o <= 1'b0;
 
 		// Flash reports are taken at all times, including mid-copy: a block
 		// written while it is being staged is marked pending again, so the torn
@@ -466,23 +554,18 @@ module ngpc_cart_save #(
 			apply_pending <= 1'b1;
 			apply_ok      <= 1'b0;
 			image_has_data <= 1'b0;
-			save_delivered <= 1'b0;
-			stage_bank_o   <= 1'b0;
 			pack_overflow  <= 1'b0;
 			verify_pass    <= 1'b0;
 			from_state     <= 1'b0;
+			state_req      <= 1'b0;
+			refused_q      <= 1'b0;
+			base_q         <= 1'b0;
 			in_apply       <= 1'b0;
 			apply_reject_o <= 1'b0;
 			saw_save_wr   <= 1'b0;
 			save_wr_quiet <= 20'd0;
 		end else begin
-			if (state_apply_i) begin
-				// A savestate restore writes the staged image itself, through
-				// the copier rather than through APF, so it is delivery too.
-				apply_pending  <= 1'b1;
-				save_delivered <= 1'b1;
-				from_state     <= 1'b1;
-			end
+			if (state_apply_i) state_req <= 1'b1;
 
 			// Save-slot delivery seen after the apply started means the apply
 			// ran too early (or mid-delivery): once the burst goes quiet,
@@ -490,7 +573,7 @@ module ngpc_cart_save #(
 			// boot never trips this -- delivery fully precedes the settled
 			// apply, so saw_save_wr is clear by the time the apply starts.
 			if (save_slot_wr_i) begin
-				save_delivered <= 1'b1;
+				apf_delivered <= 1'b1;
 				saw_save_wr   <= 1'b1;
 				save_wr_quiet <= 20'd0;
 			end else if (save_wr_quiet != QUIET_CLOCKS) begin
@@ -504,23 +587,35 @@ module ngpc_cart_save #(
 
 			case (state)
 				S_IDLE: begin
-					if (cart_ready_i && apply_pending) begin
+					if (cart_ready_i && (apply_pending || state_req)) begin
 						// Hold the machine in reset from cartridge-ready until
 						// the apply has run, and do not run the apply until APF
 						// has finished delivering slots -- the save slot streams
 						// AFTER the cartridge, so at this moment it is still in
 						// flight. The hold covers the wait, so the BIOS and the
 						// game still only ever observe restored flash.
+						//
+						// A boot apply also waits out a savestate drain: the
+						// state's image is on its way into the spare bank and
+						// its request will follow. One apply of the state then
+						// serves both -- the state is what the machine is about
+						// to become, so it is the flash that has to match.
 						boot_hold_o <= 1'b1;
 						busy_o      <= 1'b1;
-						if (slots_settled_i) begin
+						if (slots_settled_i && (state_req || !draining_i)) begin
 							apply_pending <= 1'b0;
+							// A request arriving in this very cycle is not the
+							// one being served: keep it for the next apply.
+							state_req     <= state_apply_i;
+							from_state    <= state_req;
+							apply_bank    <= state_req ? ~stage_bank_o : stage_bank_o;
 							apply_reject_o <= 1'b0;
 							saw_save_wr   <= 1'b0;
 							hdr_idx <= 6'd0;
 							apply_ok      <= 1'b1;
+							fail_kind     <= F_NONE;
+							fail_idx      <= 6'd0;
 							in_apply      <= 1'b1;
-							apply_bank    <= from_state ? ~stage_bank_o : stage_bank_o;
 `ifdef NGPC_SAVE_DIAG
 							diag_applies  <= diag_applies + 16'd1;
 							diag_verdict  <= 16'd0;
@@ -529,8 +624,13 @@ module ngpc_cart_save #(
 							state         <= S_APPLY_HDR;
 						end
 					end else if (cart_ready_i && stage_pending && !pack_overflow &&
-					             !host_busy_i &&
+					             !refused_q && !saw_save_wr && !host_busy_i &&
 					             quiet == QUIET_CLOCKS) begin
+						// No pass while a late delivery waits for its re-armed
+						// apply: host_busy falls ~10 ms after the last beat and
+						// the re-arm fires ~20 ms after it, and a pass in that
+						// gap published the running game's unrestored flash
+						// over the file that had just arrived (review).
 						boot_hold_o <= 1'b0;
 						busy_o       <= 1'b1;
 						geo_die      <= 1'b0;
@@ -723,7 +823,14 @@ module ngpc_cart_save #(
 							// a flip mid-transfer would put half of one image and
 							// half of the other in the file. The pass is owed
 							// again and runs once the transfer is over.
-							if (!stage_pending && !host_busy_i) begin
+							//
+							// Nor while a die is busy: an erase reports itself
+							// only when it completes, so a block copied while it
+							// was half erased raised no event yet -- and was
+							// published torn (review; MiSTer's mover treats a
+							// busy die the same way).
+							if (!stage_pending && flash_quiet && !host_busy_i &&
+							    !refused_q) begin
 								stage_bank_o   <= build_bank;
 								image_has_data <= pass_has_data;
 							end else begin
@@ -750,20 +857,44 @@ module ngpc_cart_save #(
 
 				S_APPLY_HDR_W: begin
 					if (stage_done_i) begin
+						// The first failing check is the one recorded. apply_ok is
+						// registered, so the walk reads one more word before it
+						// leaves; the `apply_ok &&` keeps that word from
+						// overwriting the reason.
 						case (hdr_idx)
 							// Nothing delivered this session means no save file exists,
 							// whatever the staging region happens to still contain.
-							5'd0:  if ((stage_rdata_i != MAGIC0) || !save_delivered)
+							5'd0:  if (!from_state && !apf_delivered && !pre_delivered) begin
+							           if (apply_ok) begin fail_kind <= F_NODELV; fail_idx <= 6'd0; end
 							           apply_ok <= 1'b0;
-							5'd1:  if (stage_rdata_i != MAGIC1) apply_ok <= 1'b0;
-							5'd2:  if (stage_rdata_i != MAGIC2) apply_ok <= 1'b0;
+							       end else if (stage_rdata_i != MAGIC0) begin
+							           if (apply_ok) begin fail_kind <= F_NOIMG; fail_idx <= 6'd0; end
+							           apply_ok <= 1'b0;
+							       end
+							5'd1:  if (stage_rdata_i != MAGIC1) begin
+							           if (apply_ok) begin fail_kind <= F_NOIMG; fail_idx <= 6'd1; end
+							           apply_ok <= 1'b0;
+							       end
+							5'd2:  if (stage_rdata_i != MAGIC2) begin
+							           if (apply_ok) begin fail_kind <= F_NOIMG; fail_idx <= 6'd2; end
+							           apply_ok <= 1'b0;
+							       end
 							5'd3:  begin
 							           if ((stage_rdata_i != MAGIC3) &&
-							               (stage_rdata_i != MAGIC3_V2)) apply_ok <= 1'b0;
+							               (stage_rdata_i != MAGIC3_V2)) begin
+							               if (apply_ok) begin fail_kind <= F_HDR; fail_idx <= 6'd3; end
+							               apply_ok <= 1'b0;
+							           end
 							           legacy <= (stage_rdata_i == MAGIC3_V2);
 							       end
-							5'd4:  if (stage_rdata_i != cart_crc32_i[15:0])  apply_ok <= 1'b0;
-							5'd5:  if (stage_rdata_i != cart_crc32_i[31:16]) apply_ok <= 1'b0;
+							5'd4:  if (stage_rdata_i != cart_crc32_i[15:0]) begin
+							           if (apply_ok) begin fail_kind <= F_HDR; fail_idx <= 6'd4; end
+							           apply_ok <= 1'b0;
+							       end
+							5'd5:  if (stage_rdata_i != cart_crc32_i[31:16]) begin
+							           if (apply_ok) begin fail_kind <= F_HDR; fail_idx <= 6'd5; end
+							           apply_ok <= 1'b0;
+							       end
 							5'd8:  img0[15:0]  <= stage_rdata_i;
 							5'd9:  img0[31:16] <= stage_rdata_i;
 							5'd10: img0[47:32] <= stage_rdata_i;
@@ -787,9 +918,6 @@ module ngpc_cart_save #(
 							// always was; a V3 file is decoded once with the writes
 							// held off before any of it reaches flash.
 							verify_pass  <= apply_ok && !legacy;
-`ifdef NGPC_SAVE_DIAG
-							diag_verdict <= apply_ok ? 16'd1 : 16'd2;
-`endif
 							state        <= apply_ok ? S_APPLY_SCAN : S_FINISH;
 						end else begin
 							hdr_idx <= hdr_idx + 6'd1;
@@ -799,22 +927,22 @@ module ngpc_cart_save #(
 				end
 
 				S_APPLY_SCAN: begin
-					// First cycle after the header: commit or reject. dirty is
-					// only overwritten once the staged bitmap is known to cover
-					// every block that is dirty right now; at boot dirty is
-					// empty, so boot applies can never reject.
+					// First cycle after the header. A STATE's image must cover
+					// every block that is dirty right now, because rewinding
+					// flash to the state needs the state's copy of each: the
+					// original ROM bytes of a dirtied block exist nowhere on the
+					// device. A delivered file is the save itself, so a boot
+					// apply never refuses on coverage -- blocks the unrestored
+					// session already dirtied simply stay dirty (S_FINISH).
 					if (apply_decide) begin
 						apply_decide <= 1'b0;
-						if (|(dirty0 & ~img0) || |(dirty1 & ~img1)) begin
-							apply_reject_o <= 1'b1;
+						if (from_state && (|(dirty0 & ~img0) || |(dirty1 & ~img1))) begin
 							apply_ok       <= 1'b0;
+							fail_kind      <= F_COVER;
+							fail_idx       <= 6'd0;
 							verify_pass    <= 1'b0;
 							state          <= S_FINISH;
 						end else begin
-							// Committed before the checksum is known because the
-							// walk itself follows dirty. A refusal undoes it below.
-							dirty0 <= img0;
-							dirty1 <= img1;
 							// A V2 file has no check pass: this is its write pass,
 							// and the image it writes decides the flag afresh.
 							if (!verify_pass) image_has_data <= 1'b0;
@@ -958,42 +1086,70 @@ module ngpc_cart_save #(
 							pack_ptr  <= 16'd0;
 							state     <= S_APPLY_SCAN;
 						end else begin
-							// Refuse the whole file. At boot the bitmap was empty
-							// before the header committed it, so putting it back
-							// empty is exact, and it leaves the slot unclaimed --
-							// which is what keeps APF from overwriting the file.
-							// After a savestate restore the bitmap covered this
-							// session's blocks and the file's are a superset of
-							// them; flash was never touched, so the extra blocks
-							// only stage what flash already holds. It stays.
-							// image_has_data was never raised by the check pass,
-							// so a refused image cannot make the slot claim itself.
-							apply_ok       <= 1'b0;
-							apply_reject_o <= 1'b1;
-							if (!from_state) begin
-								dirty0         <= 64'd0;
-								dirty1         <= 64'd0;
-								image_has_data <= 1'b0;
-							end
-							in_apply       <= 1'b0;
-							from_state     <= 1'b0;
-`ifdef NGPC_SAVE_DIAG
-							diag_verdict <= 16'd3;
-`endif
-							boot_hold_o <= 1'b0;
-							busy_o      <= 1'b0;
-							quiet       <= 20'd0;
-							state       <= S_IDLE;
+							// Refuse the whole file: nothing reached flash. The
+							// outcome is settled with the other refusals below.
+							apply_ok  <= 1'b0;
+							fail_kind <= F_CRC;
+							fail_idx  <= 6'd0;
 						end
 					end else begin
 						if (in_apply) begin
-							// An accepted savestate image is committed where it
-							// was drained, and it fit once, so staging may run
-							// again. A refused one leaves the committed bank alone.
-							if (from_state && apply_ok) begin
-								stage_bank_o  <= apply_bank;
-								pack_overflow <= 1'b0;
+							if (apply_ok) begin
+								// Accepted. A state's image becomes the save: its
+								// bitmap replaces dirty, and it is committed where
+								// it was drained (it fit once, so staging may run
+								// again) -- unless the session is frozen, which no
+								// apply may unfreeze. A delivered file adds its
+								// blocks to whatever the session already dirtied.
+								if (from_state) begin
+									dirty0 <= img0;
+									dirty1 <= img1;
+									if (!refused_q) begin
+										stage_bank_o  <= apply_bank;
+										pack_overflow <= 1'b0;
+									end
+								end else begin
+									dirty0 <= dirty0 | img0;
+									dirty1 <= dirty1 | img1;
+								end
+								base_q <= 1'b1;
+							end else if (from_state) begin
+								// A refused state leaves flash, dirty and the
+								// committed bank as they were, and the load fails
+								// -- except a state that carried no image at all
+								// while nothing is dirty: it was taken before any
+								// save existed, and flash already matches it.
+								if (!((fail_kind == F_NOIMG) && !(|dirty0 || |dirty1)))
+									apply_reject_o <= 1'b1;
+								// At a wake the state was the only copy of the
+								// save the session would get. Refusing it and
+								// then letting the cold-booted game stage would
+								// overwrite the file on the card; freeze instead.
+								if (((fail_kind == F_HDR) || (fail_kind == F_CRC)) &&
+								    !base_q && !(|dirty0 || |dirty1))
+									refused_q <= 1'b1;
+							end else if ((fail_kind != F_NODELV) &&
+							             (apf_delivered ||
+							              !((fail_kind == F_HDR) && (fail_idx >= 6'd4)))) begin
+								// A delivered file this build cannot use -- a newer
+								// or older format, another dump, a damaged payload.
+								// It is still somebody's save: keep it exactly. A
+								// file from before a cartridge reload that fails
+								// only the cartridge CRC belongs to another game
+								// and is simply not this game's file (see
+								// pre_delivered).
+								refused_q <= 1'b1;
 							end
+`ifdef NGPC_SAVE_DIAG
+							diag_verdict <= {from_state, 1'b0, fail_idx,
+							                 apply_ok                  ? 8'd1 :
+							                 (fail_kind == F_COVER)    ? 8'd2 :
+							                 (fail_kind == F_CRC)      ? 8'd3 :
+							                 (fail_kind == F_HDR)      ? 8'd4 :
+							                 (fail_kind == F_NODELV)   ? 8'd5 :
+							                                             8'd6};
+`endif
+							if (from_state) state_done_o <= 1'b1;
 							in_apply   <= 1'b0;
 							from_state <= 1'b0;
 						end
@@ -1006,6 +1162,16 @@ module ngpc_cart_save #(
 
 				default: state <= S_IDLE;
 			endcase
+		end
+
+		// A cartridge reload moves this epoch's delivery into the previous
+		// one; reset forgets both (see pre_delivered).
+		if (reset) begin
+			apf_delivered <= 1'b0;
+			pre_delivered <= 1'b0;
+		end else if (cart_replace_i) begin
+			apf_delivered <= 1'b0;
+			pre_delivered <= apf_delivered | pre_delivered;
 		end
 	end
 

@@ -388,12 +388,21 @@ module tb;
 				end
 			end
 			@(posedge clk_74a); bridge_rd <= 0; bridge_addr <= 32'hF8000000;
+			// Words the engine never writes (word 0) read back as X from an
+			// uninitialised simulation RAM; the device's block RAM powers up
+			// as zeros, so that is what APF would read and write back.
+			for (k = 0; k < WORDS; k = k + 1)
+				if (^image[k] === 1'bx) image[k] = 32'd0;
 		end
 	endtask
 
 	// One write strobe. In lag mode the ADDRESS presented is the previous
 	// strobe's word address (the measured APF behavior); the first strobe of a
 	// burst therefore carries the pre-burst address.
+	// How many words a write burst carries. WORDS normally; S9 stops short to
+	// model a transfer that has not finished when the load is checked.
+	integer burst_limit = WORDS;
+
 	task apf_write_burst(input integer lag, input integer gap,
 	                     input integer stall_at, input integer stall_len,
 	                     input integer foreign_first);
@@ -407,7 +416,7 @@ module tb;
 				repeat (6) @(posedge clk_74a);
 			end
 			@(posedge clk_74a);
-			for (k = 0; k < WORDS; k = k + 1) begin
+			for (k = 0; k < burst_limit; k = k + 1) begin
 				if (k == stall_at && stall_len > 0) repeat (stall_len) @(posedge clk_74a);
 				if (lag) a = (k == 0) ? 32'hF8000050 : (BLOBBASE | ((k-1)*4));
 				else     a = BLOBBASE | (k*4);
@@ -590,6 +599,43 @@ module tb;
 				end else $display("   PASS (load failed, machine untouched)");
 			end
 		end
+
+		// S9: the transfer stops short of the end of the blob -- the identity
+		// block has landed, most of the cart section has not. The quiet gate
+		// alone let this through (review); the completeness check must
+		// reject it before the copier or the engine start.
+		begin : s9
+			integer ok, i, still;
+			$display("== S9 incomplete transfer is rejected          ");
+			machine_init;
+			apf_save(0);
+			machine_corrupt;
+			saw_load_req = 0;
+			burst_limit = 20000;
+			apf_write_burst(1, 8, -1, 0, 0);
+			burst_limit = WORDS;
+			apf_load(ok);
+			if (ok) begin
+				$display("   FAIL: an incomplete blob was loaded");
+				errors = errors + 1;
+			end else begin
+				still = 1;
+				for (i = 0; i < 64; i = i + 1)
+					if (mem0[i] !== 8'hFF) still = 0;
+				if (internals[0] !== 64'hDEADBEEF_DEADBEEF) still = 0;
+				if (saw_load_req) begin
+					$display("   FAIL: rejected only after the cart copier was started");
+					errors = errors + 1;
+				end else if (!still) begin
+					$display("   FAIL: rejected but the machine was modified");
+					errors = errors + 1;
+				end else $display("   PASS (rejected, machine untouched, copier idle)");
+			end
+		end
+
+		// S10: a complete transfer right after a rejected short one loads
+		// normally -- the rejection must not leave the store stuck.
+		scenario("S10 full transfer after a short one      ", 1,  8,  -1,     0,     0,      0,     1);
 
 		if (errors == 0) $display("== ALL SCENARIOS MATCHED EXPECTATIONS");
 		else             $display("== %0d SCENARIO(S) DEVIATED", errors);
