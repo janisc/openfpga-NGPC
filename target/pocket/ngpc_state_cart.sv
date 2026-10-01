@@ -57,7 +57,9 @@ module ngpc_state_cart #(
 	input  wire        sc_rd_done,
 	input  wire [15:0] sc_rd_data,
 	output wire        sc_rd_active,   // core_top muxes the port while high
-	output wire        draining_o,     // drain owns staging: host-busy this
+	output wire        draining_o,     // drain in progress: the engine's draining_i
+	                                   // keeps passes and publishes out (rc6: no
+	                                   // longer ORed into host_busy)
 
 	// ---- staging write (host skid path, delivery-identical) ----------------
 	input  wire        sc_host_ready,     // skid backpressure
@@ -131,6 +133,9 @@ module ngpc_state_cart #(
 			capturing <= 1'b0;
 			draining  <= 1'b0;
 			diag_drain_o <= 16'd0;
+			// The bridge's load stamp takes address 1 as "the drain began";
+			// a reset that cut a drain right there must not leave it parked.
+			cart_img_rd_addr <= 14'd0;
 		end else begin
 			if (sc_host_wr) diag_drain_o <= diag_drain_o + 16'd1;
 
@@ -142,7 +147,7 @@ module ngpc_state_cart #(
 						st        <= I_CUR_WAIT;
 					end else if (cart_load_req) begin
 						// draining rises only when the drain starts. Raised
-						// here it made the engine's host_busy high, so a pass
+						// here it blocked the engine's passes, so a pass
 						// the game had just made owed could never run, the
 						// stager never became current, and this wait never
 						// ended: a Load State within ~20 ms of a flash write
@@ -162,9 +167,10 @@ module ngpc_state_cart #(
 				end
 
 				// The drain overwrites staging, so the stager must not be
-				// mid-walk; once draining_o raises host-busy it cannot start
-				// another one either. Until then an owed pass is free to run
-				// and publish, which is what makes the stager current.
+				// mid-walk; once draining_o is up the engine's draining_i gates
+				// stop it starting or publishing another. Until then an owed
+				// pass is free to run and publish, which is what makes the
+				// stager current.
 				I_DR_WAIT: begin
 					if (stage_current_i) begin
 						draining <= 1'b1;
@@ -267,10 +273,11 @@ module ngpc_state_cart #(
 				// The apply holds the machine itself (boot_hold) and validates
 				// the staged header before writing a single flash word. A blob
 				// with no cart data fails the magic and applies nothing, which
-				// is the cartless-state semantic -- accepted only while no
-				// flash is dirty. Any other refusal fails the load, so the
-				// bridge never restores a machine over flash it could not
-				// rewind.
+				// is the cartless-state semantic -- accepted while no flash is
+				// dirty, or while the session holds no save and only erased,
+				// already-published blocks (rc6, R1). Any other refusal fails
+				// the load, so the bridge never restores a machine over flash
+				// it could not rewind.
 				I_APPLY_RUN: begin
 					if (state_done_i) begin
 						cart_load_done  <= 1'b1;

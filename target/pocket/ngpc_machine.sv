@@ -86,7 +86,8 @@ module ngpc_machine
 	input  wire        stage_ready,
 	input  wire        stage_done,
 	input  wire [15:0] stage_rdata,
-	input  wire        host_busy,        // APF is moving the slot
+	input  wire        host_busy,        // staging host port busy (APF or drain), ~10 ms tail
+	input  wire        host_rd,          // APF's read strobe on the staging port
 	input  wire        state_apply,      // savestate restore: apply staged image
 	input  wire        save_slot_wr,     // APF writing the save slot now
 	output wire        apply_reject,     // load refused: bitmap omits dirty blocks
@@ -94,7 +95,7 @@ module ngpc_machine
 	input  wire        suppress_cart_strap, // reset boots cartless: BIOS menu
 	output wire        stage_current,    // stager parked, image current
 	output wire        stage_bank,       // committed staging bank
-	output wire        save_busy_state,  // cart-save engine busy (apply observer)
+	output wire        save_busy_state,  // the save engine holds the machine (boot_hold)
 	input  wire        draining,         // copier draining a state into staging
 	output wire        state_done,       // the state apply has finished
 	output wire        save_frozen,      // save engine frozen: stamp captures
@@ -691,6 +692,7 @@ module ngpc_machine
 		.die_busy_i      (cart_die_busy),
 
 		.host_busy_i     (host_busy),
+		.host_rd_i       (host_rd),
 		.state_apply_i   (state_apply),
 		.draining_i      (draining),
 		.state_frozen_i  (state_frozen),
@@ -728,7 +730,10 @@ module ngpc_machine
 		.stage_rdata_i   (stage_rdata)
 	);
 
-	assign save_busy_state = save_busy;
+	// Read only by the savestate bridge's load diagnostic (rc6): whether a
+	// load arrived while the boot apply still held the machine. busy_o is also
+	// high during every background staging pass, so it is the hold itself.
+	assign save_busy_state = overlay_boot_hold;
 
 	//////////////////////////// Savestates //////////////////////////////////
 	//

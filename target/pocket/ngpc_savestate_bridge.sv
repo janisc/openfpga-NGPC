@@ -114,6 +114,11 @@ module ngpc_savestate_bridge #(
 	// wake-shaped session on it, since a failed wake cold-boots the game
 	// without its save.
 	output wire        load_fail_o,
+	// The save engine holds the machine (its boot_hold). Diagnostic only: read
+	// at the identity check, it says whether the load arrived while the boot
+	// apply still held the machine -- an early wake load -- or after it had
+	// released it. Nothing decides on it.
+	input  wire        save_busy_i,
 	input  wire [13:0] cart_img_rd_addr,
 	output wire [31:0] cart_img_rd_data,
 
@@ -496,6 +501,36 @@ module ngpc_savestate_bridge #(
 	reg        prev_start, prev_load, prev_ss_busy;
 	reg        saw_loading;      // the engine accepted the header this run
 
+	// ---- Load diagnostic (rc6), read by no gate ------------------------
+	//
+	// How the last savestate load of this session ended, stamped at every
+	// capture into pad word 8419 -- a word no load path reads (the engine
+	// uses 0..8417, the identity block 8420..8423, the cart section 8424 on).
+	// A failed wake cold-boots without a message and freezes the save engine,
+	// so the next Memory or sleep state is the only place its verdict can
+	// survive. The decision logic below is unchanged by any of it. A menu
+	// Reset clears the record, like every other bridge register.
+	//   [31:24] 8'hD1 tag        [23:20] loads since reset (saturating)
+	//   [19] ran: the gate and the copier passed, the engine was started
+	//   [18] ok: the engine accepted the blob (load_ok)
+	//   [17:13] the identity terms as the gate saw them, 1 = passed:
+	//           {blob_full, magic, crc, layout 2/3, ~crc}
+	//   [12] the state was captured frozen (layout 3)
+	//   [11] drained: the copier's drain began (it always reads word 1)
+	//   [10] held: the save engine held the machine at the check -- the load
+	//        arrived while the boot apply was still waiting at startup
+	//   [9:0] 0
+	// Reading it: a clear identity bit names the gate that refused; all five
+	// passed but not drained is the copier's timeout; drained but not ran is
+	// the apply refusing the image; ran but not ok is the engine refusing its
+	// header; ran and ok is a restore -- a cold start after it came later.
+	localparam [14:0] PAD_DIAG = 15'd8419;
+	reg  [3:0] dg_loads;
+	reg  [4:0] dg_chk;
+	reg        dg_ran, dg_drained, dg_held;
+	wire [31:0] dg_word = {8'hD1, dg_loads, dg_ran, load_ok_q, dg_chk,
+	                       load_frozen_o, dg_drained, dg_held, 10'd0};
+
 	always @(posedge clk_sys) begin
 		ss_save    <= 1'b0;
 		ss_load    <= 1'b0;
@@ -516,6 +551,11 @@ module ngpc_savestate_bridge #(
 			load_ack_q   <= 1'b0; load_busy_q  <= 1'b0;
 			load_ok_q    <= 1'b0; load_err_q   <= 1'b0;
 			load_frozen_o <= 1'b0;
+			dg_loads     <= 4'd0;
+			dg_chk       <= 5'd0;
+			dg_ran       <= 1'b0;
+			dg_drained   <= 1'b0;
+			dg_held      <= 1'b0;
 		end else begin
 			case (state)
 				S_IDLE: begin
@@ -536,6 +576,11 @@ module ngpc_savestate_bridge #(
 						load_err_q    <= 1'b0;
 						load_frozen_o <= 1'b0;
 						saw_loading   <= 1'b0;
+						if (dg_loads != 4'hF) dg_loads <= dg_loads + 4'd1;
+						dg_chk        <= 5'd0;
+						dg_ran        <= 1'b0;
+						dg_drained    <= 1'b0;
+						dg_held       <= 1'b0;
 						state         <= S_LOAD_WAIT;
 					end
 				end
@@ -548,20 +593,22 @@ module ngpc_savestate_bridge #(
 					end
 				end
 
-				// The engine is idle again; write the identity block, then let
-				// APF start reading. Four words, one per cycle.
+				// The engine is idle again; write the identity block and the
+				// load diagnostic, then let APF start reading. Five words, one
+				// per cycle.
 				S_SAVE_STAMP: begin
 					seq_pa_sel  <= 1'b1;
 					seq_pa_we   <= 1'b1;
-					seq_pa_addr <= ID_BASE + id_cnt[1:0];
-					case (id_cnt[1:0])
-						2'd0:    seq_pa_din <= ID_MAGIC;
-						2'd1:    seq_pa_din <= cart_crc32;
-						2'd2:    seq_pa_din <= frozen_i ? ID_LAYOUT_FROZEN : ID_LAYOUT;
-						default: seq_pa_din <= ~cart_crc32;
+					seq_pa_addr <= id_cnt[2] ? PAD_DIAG : ID_BASE + id_cnt[1:0];
+					case (id_cnt)
+						3'd0:    seq_pa_din <= ID_MAGIC;
+						3'd1:    seq_pa_din <= cart_crc32;
+						3'd2:    seq_pa_din <= frozen_i ? ID_LAYOUT_FROZEN : ID_LAYOUT;
+						3'd3:    seq_pa_din <= ~cart_crc32;
+						default: seq_pa_din <= dg_word;
 					endcase
 					id_cnt <= id_cnt + 3'd1;
-					if (id_cnt == 3'd3) begin
+					if (id_cnt == 3'd4) begin
 						cart_save_req <= 1'b1;
 						state         <= S_SAVE_CART;
 					end
@@ -599,6 +646,12 @@ module ngpc_savestate_bridge #(
 						3'd3: begin chk_crc <= a_q; seq_pa_addr <= ID_BASE + 15'd3; end
 						3'd4: chk_layout <= a_q;
 						default: begin
+							// The same terms, kept apart for the diagnostic.
+							dg_chk  <= {blob_full_s, chk_magic == ID_MAGIC,
+							            chk_crc == cart_crc32,
+							            chk_layout == ID_LAYOUT || chk_layout == ID_LAYOUT_FROZEN,
+							            a_q == ~cart_crc32};
+							dg_held <= save_busy_i;
 							if (blob_full_s && chk_magic == ID_MAGIC && chk_crc == cart_crc32
 							    && (chk_layout == ID_LAYOUT || chk_layout == ID_LAYOUT_FROZEN)
 							    && a_q == ~cart_crc32) begin
@@ -657,6 +710,9 @@ module ngpc_savestate_bridge #(
 				S_LOAD_CART: begin
 					seq_pa_sel  <= 1'b1;
 					seq_pa_addr <= CART_BASE + {1'b0, cart_img_rd_addr};
+					// Every drain reads word 1; a copier timeout never moves the
+					// address from the last drain's end or its power-up zero.
+					if (cart_img_rd_addr == 14'd1) dg_drained <= 1'b1;
 					if (cart_load_done) begin
 						if (cart_load_error) begin
 							// The apply refused the image (a newer save's blocks
@@ -667,6 +723,7 @@ module ngpc_savestate_bridge #(
 							state       <= S_DONE;
 						end else begin
 							ss_load <= 1'b1;
+							dg_ran  <= 1'b1;
 							state   <= S_LOAD_RUN;
 						end
 					end

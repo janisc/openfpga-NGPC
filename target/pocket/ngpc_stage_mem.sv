@@ -54,7 +54,8 @@ module ngpc_stage_mem
 	// and the registered one behind it. Without it the drain outruns the
 	// PSRAM on contention and drops words -- silently, in release builds.
 	output wire        host_wr_ready_o,
-	output wire        host_busy_o,      // a slot transfer is in progress
+	output wire        host_busy_o,      // any host-port beat (APF slot transfer or
+	                                     // the copier's drain), ~10 ms tail
 
 	// Ingestion diagnostics, stamped into the staged save's header so every
 	// flushed .sav carries them off the device: how many host write beats
@@ -172,7 +173,12 @@ module ngpc_stage_mem
 	wire [9:0]  skid_fill = skid_wp - skid_rp;
 	wire        skid_empty = (skid_wp == skid_rp);
 	wire        skid_full  = (skid_fill == 10'd511);
-	assign host_wr_ready_o = (skid_fill < 10'd508);
+	// The copier (the only client that watches ready) is held at a shallow
+	// fill, so APF -- which cannot be back-pressured -- always finds room in
+	// the skid. At < 508 a drain kept it at 508-511 for the whole transfer,
+	// and any APF burst during it overflowed into diag_drops (rc6, L3). The
+	// drain's pace is the PSRAM's either way.
+	assign host_wr_ready_o = (skid_fill[9:5] == 5'd0);
 
 	// The engine (and the copier on its port) samples ready and raises a
 	// one-cycle request the cycle after. A host beat promoted from the skid,
@@ -213,27 +219,45 @@ module ngpc_stage_mem
 	reg        eng_active;
 	reg        eng_active_rd;
 
+	// An APF read has taken the pending slot in this data_unloader window.
+	reg        host_rd_served;
+	wire       host_rd_claim = host_rd_i && !host_rd_served;
+
 	always @(posedge clk) begin
 		ps_write_en <= 1'b0;
 		ps_read_en  <= 1'b0;
 		eng_done_o  <= 1'b0;
 
 		if (reset) begin
-			host_pending <= 1'b0;
-			eng_active   <= 1'b0;
-			skid_rp      <= 10'd0;
+			host_pending   <= 1'b0;
+			eng_active     <= 1'b0;
+			skid_rp        <= 10'd0;
+			host_rd_served <= 1'b0;
 		end else begin
-			// Drain the write skid into the pending slot; reads keep their
-			// direct path (the flush is sedately paced and proven on hardware).
-			if (!host_pending && !skid_empty) begin
-				host_pending      <= 1'b1;
-				host_pending_rd   <= 1'b0;
-				{host_pending_addr, host_pending_data} <= skid[skid_rp[8:0]];
-				skid_rp           <= skid_rp + 10'd1;
-			end else if (host_rd_i) begin
-				host_pending      <= 1'b1;
-				host_pending_rd   <= 1'b1;
-				host_pending_addr <= host_rd_word;
+			// The pending slot is loaded only while it is empty. An APF read
+			// claims it ahead of the skid, once per data_unloader window
+			// (read_en is held 32 clocks and sampled at the end; the read is
+			// done in ~21 at worst, core_top READ_MEM_CLOCK_DELAY). The old
+			// "else if (host_rd_i)" reloaded the slot on every cycle of the
+			// window -- over a popped write still waiting in it, which was then
+			// lost without a count (rc6, L1). This must ship with the state
+			// commit's host wait (ngpc_cart_save, L2): a flush overlapping a
+			// drain used to cost drain beats, so the load failed and nothing
+			// changed; now the drain survives, and without L2 its commit could
+			// land in the middle of that flush.
+			if (!host_rd_i) host_rd_served <= 1'b0;
+			if (!host_pending) begin
+				if (host_rd_claim) begin
+					host_pending      <= 1'b1;
+					host_pending_rd   <= 1'b1;
+					host_pending_addr <= host_rd_word;
+					host_rd_served    <= 1'b1;
+				end else if (!skid_empty) begin
+					host_pending      <= 1'b1;
+					host_pending_rd   <= 1'b0;
+					{host_pending_addr, host_pending_data} <= skid[skid_rp[8:0]];
+					skid_rp           <= skid_rp + 10'd1;
+				end
 			end
 
 			if (!ps_busy && !ps_write_en && !ps_read_en) begin

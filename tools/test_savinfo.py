@@ -11,7 +11,9 @@ the 1.1.0-rc4 word 23 decode for every verdict code, the split of the
 ingest count into delivery and savestate drain, and from 1.1.0-rc5 the
 writer revision in the high byte of word 21 and verdict 7 (a savestate
 from a frozen session). Groups F and G pin the rc5 additions and that
-everything an rc4 tool printed is still printed, line for line.
+everything an rc4 tool printed is still printed, line for line. Group H pins
+rc6: writer revision 6, the staging check in word 23 bit 14, and sleep
+states / Memories (.sta) with the load diagnostic in pad word 8419.
 
 Prints PASS/FAIL per scenario and a final "== ALL ... PASS" or
 "== N FAILURE(S)" line; exits non-zero on any failure.
@@ -225,18 +227,169 @@ def old_diag_line(beats, drops, applies, verdict, p2wr):
 # ---------------------------------------------------------------- rc5
 
 # The phrases the rc5 specification (tools/savinfo.py [rc5]) asks for.
-SPEC_RC5 = 'written by 1.1.0-rc5 or later'
+SPEC_RC5 = 'written by 1.1.0-rc5'
 SPEC_OLD = 'older writer (rev 0)'
 SPEC_V7 = 'savestate from a frozen session: nothing applied, saving stays off'
 
 WRITER_OLD = 'writer          : older writer (rev 0) -- 1.1.0-rc4 or earlier'
-WRITER_RC5 = 'writer          : written by 1.1.0-rc5 or later (rev 5)'
+WRITER_RC5 = 'writer          : written by 1.1.0-rc5 (rev 5)'
 FROZEN_TEXT = ('FROZEN STATE -- savestate from a frozen session: nothing applied, saving stays off; '
                'the savestate itself loaded, and flash was not touched')
 OLD_CORE_NOTE = '(cores before 1.1.0-rc4 count drains as delivery)'
 
 # Title bytes of a save written before 1.0.2: uninitialised staging, not text.
 GARBLED = bytes([0x53, 0x52, 0xD1, 0x55, 0x55, 0x0D, 0xD5, 0x54, 0x55, 0x59, 0x54, 0x59])
+
+
+# ---------------------------------------------------------------- rc6
+
+WRITER_RC6 = 'writer          : written by 1.1.0-rc6 or later (rev 6)'
+STA_OFF = 592                  # the Pocket's header before the core's blob
+STA_WORDS = 24680              # the core's blob, 32-bit words
+DG_TAG = 0xD1
+
+
+def dg(loads=1, ran=1, ok=1, chk=0x1F, frozen=0, drained=1, held=0):
+    """Pad word 8419 as the rc6 bridge stamps it."""
+    return ((DG_TAG << 24) | (loads << 20) | (ran << 19) | (ok << 18) | (chk << 13) |
+            (frozen << 12) | (drained << 11) | (held << 10))
+
+
+def make_sta(tmp, name, diag, layout=2, crc=ROM_CRC, check=None, extra=0):
+    """A sleep state or Memory: the identity block at 8420, the load
+    diagnostic at 8419, and a V4 save image at 8424 as the copier stores it
+    (each 32-bit word byte-reversed against the .sav's order)."""
+    sav, _, _ = make_v4(tmp, name + '.img', diag_words(word23=0x0001), w21=word21(6))
+    img = open(sav, 'rb').read()
+    blob = bytearray(4 * STA_WORDS)
+    def put(i, v):
+        blob[4 * i:4 * i + 4] = (v & 0xFFFFFFFF).to_bytes(4, 'big')
+    put(8419, diag)
+    put(8420, 0x4E475053)
+    put(8421, crc)
+    put(8422, layout)
+    put(8423, (crc ^ 0xFFFFFFFF) if check is None else check)
+    for i in range(len(img) // 4):
+        blob[4 * (8424 + i):4 * (8424 + i) + 4] = img[4 * i:4 * i + 4][::-1]
+    path = os.path.join(tmp, name)
+    with open(path, 'wb') as f:
+        f.write(b'\x01SPA' + b'\x00' * (STA_OFF - 4) + bytes(blob) + b'\x00' * (4 + extra))
+    return path
+
+
+def rc6_additions(tmp):
+    boot = 'boot or late delivery: '
+
+    # ---- H1-H4: writer revision 6 and the staging check -----------------
+    s = Scenario('H1', 'rev 6: "rc6 or later", staging check clean, no reserved-bit note')
+    path, _, _ = make_v4(tmp, 'h1.sav', diag_words(word23=0x0001), w21=word21(6))
+    rc, out, err = run(path)
+    tool_ok(s, rc, err)
+    s.eq(line(out, 'writer'), WRITER_RC6, 'writer line')
+    s.eq(field(out, 'staging check'), 'clean', 'staging check')
+    s.check('reserved bit' not in (field(out, 'last apply') or ''), 'reserved-bit note on a rev 6 file')
+    s.check((field(out, 'last apply') or '').startswith(boot + 'ACCEPTED'), 'last apply %r' % field(out, 'last apply'))
+    s.done()
+
+    s = Scenario('H2', 'rev 6, word 23 bit 14 set: staging check FLAGGED, verdict decode unaffected')
+    path, _, _ = make_v4(tmp, 'h2.sav', diag_words(word23=0x4001), w21=word21(6))
+    rc, out, err = run(path)
+    tool_ok(s, rc, err)
+    s.has(field(out, 'staging check'), 'FLAGGED', 'staging check')
+    s.has(field(out, 'staging check'), 'hardware fault', 'staging check')
+    s.check('reserved bit' not in (field(out, 'last apply') or ''), 'reserved-bit note on a rev 6 file')
+    s.check((field(out, 'last apply') or '').startswith(boot + 'ACCEPTED'), 'last apply %r' % field(out, 'last apply'))
+    s.eq(line(out, 'failed check'), None, 'failed check line')
+    s.done()
+
+    s = Scenario('H3', 'rev 5, word 23 bit 14 set: the rc5 reserved-bit note, no staging check line')
+    path, _, _ = make_v4(tmp, 'h3.sav', diag_words(word23=0x4001), w21=word21(5))
+    rc, out, err = run(path)
+    tool_ok(s, rc, err)
+    s.has(field(out, 'last apply'), '(word 23 has its reserved bit set -- a newer core?)', 'last apply')
+    s.eq(line(out, 'staging check'), None, 'staging check line')
+    s.done()
+
+    s = Scenario('H4', 'rev 6, word 23 = C306: savestate load, NO IMAGE at word 3, staging FLAGGED')
+    path, _, _ = make_v4(tmp, 'h4.sav', diag_words(word23=0xC306), w21=word21(6))
+    rc, out, err = run(path)
+    tool_ok(s, rc, err)
+    s.check((field(out, 'last apply') or '').startswith('savestate load: NO IMAGE'),
+            'last apply %r' % field(out, 'last apply'))
+    s.has(line(out, 'failed check'), 'header word 3 (format tag)', 'failed check')
+    s.has(field(out, 'staging check'), 'FLAGGED', 'staging check')
+    s.done()
+
+    # ---- H5-H16: sleep states and Memories ------------------------------
+    cases = [
+        ('H5', 'pad word 0 (a core before rc6): not recorded', 0,
+         'not recorded -- this state was written by a core before 1.1.0-rc6', None),
+        ('H6', 'no load in the session: none', dg(loads=0, ran=0, ok=0, chk=0, drained=0),
+         'none -- no savestate load since the core started or was last reset from the menu', None),
+        ('H7', 'identity refused on the cartridge CRC', dg(ran=0, ok=0, chk=0b11011, drained=0),
+         'REFUSED at the identity check (failed: the cartridge (ROM CRC)); the machine was not touched',
+         'arrived after startup, with the game already running'),
+        ('H8', 'identity refused: short transfer and a bad check word',
+         dg(ran=0, ok=0, chk=0b01110, drained=0),
+         'REFUSED at the identity check (failed: the transfer reached the end of the savestate, '
+         'the identity check word); the machine was not touched', None),
+        ('H9', 'every identity term passed but nothing drained: copier timeout',
+         dg(ran=0, ok=0, drained=0),
+         'FAILED -- the copier timed out waiting for the save engine; nothing was restored', None),
+        ('H10', 'drained but not started: the apply refused the image', dg(ran=0, ok=0),
+         "REFUSED -- the save engine refused the state's save image; nothing was restored "
+         '(a Memory reports "Loading failed", a wake starts the game over)', None),
+        ('H11', 'started but not accepted: the engine refused the header', dg(ok=0),
+         'REFUSED -- the savestate engine refused the machine-state header, so the machine '
+         'was not restored; the save image had already been applied to flash', None),
+        ('H12', 'restored, early (the boot apply still held the machine)', dg(held=1),
+         'RESTORED -- flash and machine state; a cold start after this came from something '
+         'later, such as a power-off',
+         'arrived while the core was still starting up (the boot apply held the machine)'),
+        ('H13', 'restored, frozen, 15 loads (saturated)', dg(loads=15, frozen=1),
+         'RESTORED -- machine state only: the state was captured while saving was off, so '
+         'flash was left as it was and saving stays off', None),
+        ('H14', 'unknown tag: said so, not decoded', 0xD2000000 | (dg() & 0xFFFFFF),
+         'unknown diagnostic word D21FE800 -- written by a newer core?', None),
+    ]
+    for sid, what, word, want, timing in cases:
+        s = Scenario(sid, 'sleep state: ' + what)
+        path = make_sta(tmp, sid.lower() + '.sta', word)
+        rc, out, err = run(path)
+        tool_ok(s, rc, err)
+        s.has(line(out, 'size'), 'a sleep state or Memory', 'size line')
+        s.eq(line(out, 'layout'), 'layout          : 2 (normal)', 'layout line')
+        s.eq(field(out, 'last load'), want, 'last load')
+        if timing:
+            s.eq(field(out, 'load timing'), timing, 'load timing')
+        if sid == 'H13':
+            s.eq(field(out, 'loads before it'),
+                 '15 or more savestate load(s) since the core started or was last reset '
+                 'from the menu', 'loads line')
+        # The embedded save image is decoded like a .sav, underneath.
+        s.eq(sum(1 for ln in out if ln.startswith('writer ')), 1, 'writer lines')
+        s.eq(line(out, 'writer'), WRITER_RC6, 'embedded image writer')
+        s.check(any(ln.startswith('payload checksum:') and ln.endswith(' ok') for ln in out),
+                'embedded payload checksum not ok')
+        s.check(out and out[-1].startswith('VERDICT: looks like a real save'), 'verdict %r' % out[-1:])
+        s.done()
+
+    s = Scenario('H15', 'sleep state: layout 3 (frozen) and a damaged identity check word')
+    path = make_sta(tmp, 'h15.sta', dg(), layout=3, check=0x12345678)
+    rc, out, err = run(path)
+    tool_ok(s, rc, err)
+    s.has(field(out, 'layout'), '3 -- captured while saving was off', 'layout')
+    s.has(line(out, 'ROM CRC32'), 'identity check word MISMATCH', 'ROM CRC32 line')
+    s.done()
+
+    s = Scenario('H16', 'a Memory (extra bytes after the blob) reads like a sleep state')
+    path = make_sta(tmp, 'h16.sta', dg(held=0), extra=52760)
+    rc, out, err = run(path)
+    tool_ok(s, rc, err)
+    s.has(line(out, 'size'), 'a sleep state or Memory', 'size line')
+    s.eq(field(out, 'last load'), 'RESTORED -- flash and machine state; a cold start after this '
+         'came from something later, such as a power-off', 'last load')
+    s.done()
 
 
 def rc5_writer_and_frozen(tmp):
@@ -266,10 +419,10 @@ def rc5_writer_and_frozen(tmp):
 
     split = [
         # id,    word 21, catalogue suffix, writer phrase
-        ('F3a', 0x05FF, '0067-FF', 'written by 1.1.0-rc5 or later (rev 5)'),
-        ('F3b', 0x0500, '0067-00', 'written by 1.1.0-rc5 or later (rev 5)'),
+        ('F3a', 0x05FF, '0067-FF', 'written by 1.1.0-rc5 (rev 5)'),
+        ('F3b', 0x0500, '0067-00', 'written by 1.1.0-rc5 (rev 5)'),
         ('F3c', 0x00FF, '0067-FF', 'older writer (rev 0)'),
-        ('F3d', 0xFF05, '0067-05', 'written by 1.1.0-rc5 or later (rev 255'),
+        ('F3d', 0xFF05, '0067-05', 'written by 1.1.0-rc6 or later (rev 255'),
     ]
     for sid, w21, cat, phrase in split:
         s = Scenario(sid, 'word 21 = %04X: high byte is the writer, low byte the catalogue sub-code' % w21)
@@ -280,13 +433,13 @@ def rc5_writer_and_frozen(tmp):
         s.has(line(out, 'writer'), phrase, 'writer line')
         s.done()
 
-    for sid, rev in (('F4a', 6), ('F4b', 255)):
-        s = Scenario(sid, 'writer revision %d: rc5 or later, and the tool says it is newer than it knows' % rev)
+    for sid, rev in (('F4a', 7), ('F4b', 255)):
+        s = Scenario(sid, 'writer revision %d: rc6 or later, and the tool says it is newer than it knows' % rev)
         path, _, _ = make_v4(tmp, 'f4.sav', diag_words(word23=0x0001), w21=word21(rev))
         rc, out, err = run(path)
         tool_ok(s, rc, err)
         s.eq(line(out, 'writer'),
-             'writer          : written by 1.1.0-rc5 or later (rev %d, newer than this tool knows)' % rev,
+             'writer          : written by 1.1.0-rc6 or later (rev %d, newer than this tool knows)' % rev,
              'writer line')
         # Newer than rc5 is also later than rc4: the rc4 decode applies.
         s.eq(line(out, 'ingest split'), 'ingest split    : delivery 32512 beats | drain 0 beats',
@@ -828,6 +981,7 @@ def main():
 
         rc5_writer_and_frozen(tmp)
         rc4_output_unchanged(tmp)
+        rc6_additions(tmp)
 
     total = passes + failures
     if failures:

@@ -22,7 +22,7 @@
 //   engine  frozen_o      -> bridge frozen_i                        [rc5]
 //   bridge  load_frozen_o -> engine state_frozen_i                  [rc5]
 //   bridge  load_fail_o   -> engine state_fail_i                    [rc5]
-//   copier  draining_o    -> engine draining_i, and ORed into host_busy_i
+//   copier  draining_o    -> engine draining_i (rc6: no longer ORed into host_busy_i)
 //   copier  state_apply_o -> engine state_apply_i; state_done_o/apply_reject_o
 //           and stage_current_o back; diag_drain_o -> diag_drain_i
 //   copier  hold_o        -> the machine's pause request (capture_hold)
@@ -378,6 +378,7 @@ module tb_rc5_loadpath;
 		.frozen_i        (frozen),
 		.load_frozen_o   (load_frozen),
 		.load_fail_o     (load_fail),
+		.save_busy_i     (busy),
 		.cart_img_rd_addr(br_img_rd_addr),
 		.cart_img_rd_data(br_img_rd_data),
 
@@ -414,7 +415,7 @@ module tb_rc5_loadpath;
 	wire        eng_ready;
 	reg         eng_done = 0;
 	reg  [15:0] eng_rdata = 0;
-	wire        host_ready, host_busy;
+	wire        host_ready, host_busy, stage_host_ready;
 	reg  [15:0] diag_beats = 0, diag_drops = 0;
 
 	ngpc_cart_save #(
@@ -436,7 +437,8 @@ module tb_rc5_loadpath;
 		.event1_i        (1'b0),
 		.block1_i        (6'd0),
 		.die_busy_i      (die_busy),
-		.host_busy_i     (host_busy || sc_draining),
+		.host_busy_i     (host_busy),
+		.host_rd_i       (1'b0),         // no APF flush read modelled here
 		.state_apply_i   (sc_state_apply),
 		.draining_i      (sc_draining),
 		.state_frozen_i  (load_frozen),
@@ -514,10 +516,18 @@ module tb_rc5_loadpath;
 	                                     : cs_st_addr;
 	wire [15:0] eng_wdata = cs_st_wdata;
 
-	wire        host_wr   = apf_wr || sc_host_wr;
-	wire [24:0] host_addr = sc_host_wr ? sc_host_addr : apf_addr;
-	wire [15:0] host_data = sc_host_wr ? sc_host_data : apf_data;
-	wire        host_bank = sc_host_wr ? ~stage_bank : stage_bank;
+	// core_top's rc6 write-port arbiter (L3): APF takes the cycle, a clashing
+	// drain beat is replayed on the next one and the copier is held off.
+	reg         sc_replay = 1'b0;
+	wire        sc_beat   = sc_host_wr || sc_replay;
+	wire        sc_go     = sc_beat && !(apf_wr === 1'b1);
+	always @(posedge clk_sys) sc_replay <= !reset && sc_beat && (apf_wr === 1'b1);
+	wire        host_wr   = (apf_wr === 1'b1) || sc_beat;
+	wire [24:0] host_addr = sc_go ? sc_host_addr : apf_addr;
+	wire [15:0] host_data = sc_go ? sc_host_data : apf_data;
+	wire        host_bank = sc_go ? ~stage_bank : stage_bank;
+	assign      host_ready = stage_host_ready && !sc_replay &&
+	                         !(sc_host_wr && (apf_wr === 1'b1));
 
 	// Each access (engine or host) holds the memory PS_LAT clocks. A pending
 	// engine request is served before the skid (M1: a request issued the
@@ -530,7 +540,7 @@ module tb_rc5_loadpath;
 	wire [7:0] skid_fill  = skid_wp - skid_rp;
 	wire       skid_empty = (skid_fill == 8'd0);
 	wire       skid_full  = (skid_fill == SKID_DEPTH);
-	assign     host_ready = (skid_fill < SKID_DEPTH - 3);
+	assign     stage_host_ready = (skid_fill < SKID_DEPTH - 3);
 	reg  [3:0] ps_cnt = 0;
 	reg        ps_eng = 0;
 	wire       ps_idle = (ps_cnt == 4'd0);
@@ -1591,10 +1601,10 @@ module tb_rc5_loadpath;
 		chk_flash("the delivered save was not restored");
 		later_save_publishes(9, 8'h33);
 		if (hdr(8) !== 16'h0700) `FAIL(("(setup) published bitmap %h, want 0700", hdr(8)))
-		if (hdr(21) !== 16'h0501) `FAIL(("S10: published word 21 = %h, want 0501 (rev 05, subcat 01)", hdr(21)))
+		if (hdr(21) !== 16'h0601) `FAIL(("S10: published word 21 = %h, want 0601 (rev 06, subcat 01)", hdr(21)))
 		machine_init(8'h14);
 		capture(32'd2, CRC_A);
-		if (secw(21) !== 16'h0501) `FAIL(("S10: captured image word 21 = %h, want 0501", secw(21)))
+		if (secw(21) !== 16'h0601) `FAIL(("S10: captured image word 21 = %h, want 0601", secw(21)))
 		for (i = 0; i < 16384; i = i + 1) bl2_gold[i] = gold[32'h3C000 + i];
 		blob_keep(B_L2, 8'h14);
 		// the game saves over it: that is what a load has to rewind

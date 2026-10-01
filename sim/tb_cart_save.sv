@@ -57,7 +57,7 @@
 // cartridge CRC (S3), no state image carries another cartridge's CRC (S6),
 // and no pass meets a late delivery (S9). The rc5 checks added, each marked
 // "rc5":
-//   - S10: header word 21 = {8'h05, cart_subcat} (A);
+//   - S10: header word 21 = {8'h06, cart_subcat} (A; rc6);
 //   - S1: frozen_o = refused_q: high while K's refused file is frozen (K2),
 //     low again after the new session that follows (L).
 // The rc5 scenarios are in tb_rc5_engine.sv.
@@ -162,6 +162,7 @@ module tb_cart_save;
 		.block1_i       (6'd0),
 		.die_busy_i     (die_busy),
 		.host_busy_i    (host_busy),
+		.host_rd_i      (1'b0),          // no APF flush read modelled here
 		.state_apply_i   (state_apply),
 		// rc4: no copier in this bench, so nothing ever drains
 		.draining_i      (1'b0),
@@ -461,9 +462,9 @@ module tb_cart_save;
 		if (psram[BANK+8] !== 16'h0500) begin   // dirty0 = blocks 8 and 10
 			errors = errors + 1; $display("   FAIL: bitmap %h expected 0500", psram[BANK+8]);
 		end
-		// rc5 S10: word 21 = {writer revision 8'h05, cart_subcat_i (01)}
-		if (psram[BANK+21] !== 16'h0501) begin
-			errors = errors + 1; $display("   FAIL: word 21 = %h, expected 0501 (rc5 writer revision)", psram[BANK+21]);
+		// rc6 S10: word 21 = {writer revision 8'h06, cart_subcat_i (01)}
+		if (psram[BANK+21] !== 16'h0601) begin
+			errors = errors + 1; $display("   FAIL: word 21 = %h, expected 0601 (rc6 writer revision)", psram[BANK+21]);
 		end
 		// payload: block 0 then block 2, in walk order
 		decode_payload;

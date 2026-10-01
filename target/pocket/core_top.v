@@ -589,6 +589,7 @@ module core_top (
   wire [15:0] stage_diag_beats, stage_diag_drops;
 
   wire        stage_host_wr;
+  wire        stage_host_ready;
   wire [27:0] stage_host_wr_addr;
   wire [15:0] stage_host_wr_data;
 
@@ -670,7 +671,7 @@ module core_top (
       .host_rd_data_o(stage_host_rd_data),
 
       .host_busy_o(host_busy),
-      .host_wr_ready_o(sc_host_ready),
+      .host_wr_ready_o(stage_host_ready),
       .diag_beats_o(stage_diag_beats),
       .diag_drops_o(stage_diag_drops),
 
@@ -820,12 +821,10 @@ module core_top (
   wire [27:0] cart_wr_addr = {4'd0, bios_addr_raw[23:0]};
   wire [15:0] cart_wr_data = bios_data_raw;
 
-  // The save slot's writes, demuxed off the same stream. The [24:0] slice is
-  // the byte offset within the slot, since bit 25 is the region select.
-  assign stage_host_wr      = (bios_wr_raw && ld_is_save) || sc_host_wr;
-  assign stage_host_wr_addr = sc_host_wr ? {3'd0, sc_host_addr}
-                                         : {3'd0, bios_addr_raw[24:0]};
-  assign stage_host_wr_data = sc_host_wr ? sc_host_data : bios_data_raw;
+  // The save slot's writes, demuxed off the same stream, share the staging
+  // port with the state copier's drain: see the arbiter beside the copier
+  // below. The [24:0] slice is the byte offset within the slot, since bit 25
+  // is the region select.
 
   // ----------------------------------------------------------------------
   //  Controls
@@ -926,7 +925,27 @@ module core_top (
   wire [24:0] sc_host_addr;
   wire [15:0] sc_host_data;
   wire        mc_stage_current, mc_save_busy, mc_stage_bank;
-  assign stage_wr_bank = sc_host_wr ? ~mc_stage_bank : mc_stage_bank;
+
+  // One host write port serves two writers: APF delivering the save slot
+  // (into the committed bank) and the copier draining a state's image (into
+  // the spare bank). An APF beat and a copier beat in the same cycle used to
+  // lose the APF beat outright -- data_loader cannot retry (rc6, L3). APF now
+  // always takes the cycle; the copier's beat is replayed on the next one
+  // (its address and data hold until it issues again) and it is shown not
+  // ready meanwhile. Address, data and bank all switch on sc_go, so a beat is
+  // never one writer's data in the other writer's bank.
+  wire        apf_save_wr = bios_wr_raw && ld_is_save;
+  reg         sc_replay   = 1'b0;
+  wire        sc_beat     = sc_host_wr || sc_replay;
+  wire        sc_go       = sc_beat && !apf_save_wr;
+  always @(posedge clk_sys) sc_replay <= !reset_in && sc_beat && apf_save_wr;
+  assign stage_host_wr      = apf_save_wr || sc_beat;
+  assign stage_host_wr_addr = sc_go ? {3'd0, sc_host_addr}
+                                    : {3'd0, bios_addr_raw[24:0]};
+  assign stage_host_wr_data = sc_go ? sc_host_data : bios_data_raw;
+  assign stage_wr_bank      = sc_go ? ~mc_stage_bank : mc_stage_bank;
+  assign sc_host_ready      = stage_host_ready && !sc_replay &&
+                              !(sc_host_wr && apf_save_wr);
   wire        mc_state_apply, mc_capture_hold, mc_state_done;
   wire        mc_frozen, ss_load_frozen, ss_load_fail;
   wire [15:0] sc_diag_drain;
@@ -1007,6 +1026,7 @@ module core_top (
       .frozen_i        (mc_frozen),
       .load_frozen_o   (ss_load_frozen),
       .load_fail_o     (ss_load_fail),
+      .save_busy_i     (mc_save_busy),   // diagnostic only (rc6)
       .cart_img_rd_addr(cs_img_rd_addr),
       .cart_img_rd_data(cs_img_rd_data),
 
@@ -1090,7 +1110,10 @@ module core_top (
       .stage_ready(stage_ready),
       .stage_done (stage_done),
       .stage_rdata(stage_rdata),
-      .host_busy  (host_busy || sc_draining),
+      // The staging host port alone: the engine takes sc_draining on its own
+      // input, and its state commit must not wait on it (rc6, L2).
+      .host_busy  (host_busy),
+      .host_rd    (stage_host_rd),
       .state_apply     (mc_state_apply),
       // APF-origin save-slot writes only; the copier's own drain rides
       // the same mux and must not look like a delivery.

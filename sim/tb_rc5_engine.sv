@@ -36,7 +36,7 @@
 //
 // SCENARIOS (spec items in brackets; every scenario also checks S8's one
 // state_done per state_apply and S1's frozen_o == refused_q)
-//   S10-21    header word 21 = {8'h05, cart_subcat} in every staged header,
+//   S10-21    header word 21 = {8'h06, cart_subcat} in every staged header,
 //             for two subcat values; both builds [S10 rc5]
 //   S6x-W4 / -W5 / -W45 a wake (nothing delivered, dirty empty, boot apply
 //             pending): a state whose magic matches but whose cart CRC is
@@ -230,8 +230,9 @@ module tb_rc5_engine;
 		.event1_i        (1'b0),
 		.block1_i        (6'd0),
 		.die_busy_i      (die_busy),
-		// core_top: .host_busy(host_busy || sc_draining)
-		.host_busy_i     (apf_busy || draining),
+		// core_top (rc6): .host_busy(host_busy); the drain is draining_i
+		.host_busy_i     (apf_busy),
+		.host_rd_i       (1'b0),         // no APF flush read modelled here
 		.state_apply_i   (state_apply),
 		.draining_i      (draining),
 		.state_frozen_i  (state_frozen),
@@ -566,9 +567,9 @@ module tb_rc5_engine;
 				       psram[base+2], psram[base+3]))
 			if (psram[base+4] !== cart_crc[15:0] || psram[base+5] !== cart_crc[31:16])
 				`FAIL(("committed cart CRC %h%h, cartridge %h", psram[base+5], psram[base+4], cart_crc))
-			if (psram[base+21] !== {8'h05, cart_subcat})
-				`FAIL(("committed word 21 = %h, expected %h (S10: writer revision 05, subcat)",
-				       psram[base+21], {8'h05, cart_subcat}))
+			if (psram[base+21] !== {8'h06, cart_subcat})
+				`FAIL(("committed word 21 = %h, expected %h (S10: writer revision 06, subcat)",
+				       psram[base+21], {8'h06, cart_subcat}))
 			hb = {psram[base+11], psram[base+10], psram[base+9], psram[base+8]};
 			if (hb !== bmp) `FAIL(("committed bitmap %h, expected %h", hb, bmp))
 			pk = 0; c = 32'hFFFFFFFF;
@@ -1234,17 +1235,17 @@ module tb_rc5_engine;
 `endif
 
 		// ---- S10-21: the writer revision ----------------------------------------
-		begin_scn("S10-21", "header word 21 = {8'h05, cart_subcat} in every staged header");
+		begin_scn("S10-21", "header word 21 = {8'h06, cart_subcat} in every staged header");
 		fresh;
 		psram_fill(16'hFEED);
 		boot_now;
 		publishes(8'h21);
-		if (hdr(21) !== 16'h0501) `FAIL(("word 21 = %h, expected 0501", hdr(21)))
+		if (hdr(21) !== 16'h0601) `FAIL(("word 21 = %h, expected 0601", hdr(21)))
 		seeds_clear; exp_seed[10] = 8'h21;
 		check_committed(64'h400);
 		@(posedge clk); cart_subcat <= 8'h7E;
 		publishes(8'h22);
-		if (hdr(21) !== 16'h057E) `FAIL(("word 21 = %h, expected 057E", hdr(21)))
+		if (hdr(21) !== 16'h067E) `FAIL(("word 21 = %h, expected 067E", hdr(21)))
 		@(posedge clk); cart_subcat <= 8'h01;
 		end_scn;
 

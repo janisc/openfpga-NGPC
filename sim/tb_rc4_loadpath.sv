@@ -7,7 +7,7 @@
 // QUIET_CLOCKS and DR_WAIT_TIMEOUT are shrunk by parameter.
 //
 // Wiring (core_top.v / ngpc_machine.sv, rc4):
-//   copier draining_o     -> engine draining_i, and ORed into host_busy_i
+//   copier draining_o     -> engine draining_i (rc6: no longer ORed into host_busy_i)
 //   engine state_done_o   -> copier state_done_i
 //   engine apply_reject_o -> copier apply_reject_i
 //   engine stage_current_o-> copier stage_current_i
@@ -161,7 +161,7 @@ module tb_rc4_loadpath;
 	wire        eng_ready;
 	reg         eng_done = 0;
 	reg  [15:0] eng_rdata = 0;
-	wire        host_ready, host_busy;
+	wire        host_ready, host_busy, stage_host_ready;
 	reg  [15:0] diag_beats = 0, diag_drops = 0;
 
 	wire        eng_req   = sc_rd_active ? sc_rd_req : cs_st_req;
@@ -170,10 +170,18 @@ module tb_rc4_loadpath;
 	                                     : cs_st_addr;
 	wire [15:0] eng_wdata = cs_st_wdata;
 
-	wire        host_wr   = apf_wr || sc_host_wr;
-	wire [24:0] host_addr = sc_host_wr ? sc_host_addr : apf_addr;
-	wire [15:0] host_data = sc_host_wr ? sc_host_data : apf_data;
-	wire        host_bank = sc_host_wr ? ~stage_bank : stage_bank;
+	// core_top's rc6 write-port arbiter (L3): APF takes the cycle, a clashing
+	// drain beat is replayed on the next one and the copier is held off.
+	reg         sc_replay = 1'b0;
+	wire        sc_beat   = sc_host_wr || sc_replay;
+	wire        sc_go     = sc_beat && !(apf_wr === 1'b1);
+	always @(posedge clk) sc_replay <= !reset && sc_beat && (apf_wr === 1'b1);
+	wire        host_wr   = (apf_wr === 1'b1) || sc_beat;
+	wire [24:0] host_addr = sc_go ? sc_host_addr : apf_addr;
+	wire [15:0] host_data = sc_go ? sc_host_data : apf_data;
+	wire        host_bank = sc_go ? ~stage_bank : stage_bank;
+	assign      host_ready = stage_host_ready && !sc_replay &&
+	                         !(sc_host_wr && (apf_wr === 1'b1));
 
 	// ---- staging PSRAM model -------------------------------------------------
 	// One memory, two banks of 32K words. Each access (engine or host) holds
@@ -187,7 +195,7 @@ module tb_rc4_loadpath;
 	wire [7:0] skid_fill  = skid_wp - skid_rp;
 	wire       skid_empty = (skid_fill == 8'd0);
 	wire       skid_full  = (skid_fill == SKID_DEPTH);
-	assign     host_ready = (skid_fill < SKID_DEPTH - 3);
+	assign     stage_host_ready = (skid_fill < SKID_DEPTH - 3);
 	reg  [3:0] ps_cnt = 0;
 	reg        ps_eng = 0;
 	wire       ps_idle = (ps_cnt == 4'd0);
@@ -305,7 +313,8 @@ module tb_rc4_loadpath;
 		.event1_i        (1'b0),
 		.block1_i        (6'd0),
 		.die_busy_i      (die_busy),
-		.host_busy_i     (host_busy || sc_draining),
+		.host_busy_i     (host_busy),
+		.host_rd_i       (1'b0),         // no APF flush read modelled here
 		.state_apply_i   (state_apply),
 		.draining_i      (sc_draining),
 		// rc5 ports: this rc4 bench has no bridge, so no frozen state and

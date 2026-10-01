@@ -240,6 +240,7 @@ module tb;
 		.frozen_i        (1'b0),
 		.load_frozen_o   (),
 		.load_fail_o     (),
+		.save_busy_i     (1'b0),
 		.cart_img_rd_addr(cart_img_rd_addr),
 		.cart_img_rd_data(cart_img_rd_data),
 

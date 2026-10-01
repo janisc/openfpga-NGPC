@@ -114,7 +114,7 @@
 //   - S6: a state whose magic matches but whose cartridge CRC is another
 //     cartridge's is "no image" -- a no-op at a wake, not a freeze
 //     (S1b-WAKE-CRC), and verdict 6 rather than 4 (S10-23);
-//   - S10: header word 21 is {8'h05, cart_subcat} (check_committed);
+//   - S10: header word 21 is {8'h06, cart_subcat} (check_committed; rc6);
 //   - S1: frozen_o is refused_q, so every frozen window also checks it.
 // Internals read: dut.dirty0 (predates rc4); dut.diag_verdict,
 // dut.diag_applies and dut.diag_p2wr only in S3-CRC-RELOAD*, where the
@@ -225,8 +225,9 @@ module tb_rc4_engine;
 		.event1_i        (1'b0),
 		.block1_i        (6'd0),
 		.die_busy_i      (die_busy),
-		// core_top: .host_busy(host_busy || sc_draining)
-		.host_busy_i     (apf_busy || draining),
+		// core_top (rc6): .host_busy(host_busy); the drain is draining_i
+		.host_busy_i     (apf_busy),
+		.host_rd_i       (1'b0),         // no APF flush read modelled here
 		.state_apply_i   (state_apply),
 		.draining_i      (draining),
 		// rc5: no bridge here. A state is never from a frozen session and no
@@ -525,9 +526,9 @@ module tb_rc4_engine;
 				       psram[base+2], psram[base+3]))
 			if (psram[base+4] !== cart_crc[15:0] || psram[base+5] !== cart_crc[31:16])
 				`FAIL(("committed cart CRC %h%h, cartridge %h", psram[base+5], psram[base+4], cart_crc))
-			// rc5 S10: word 21 = {writer revision 8'h05, cart_subcat} (0x01 here)
-			if (psram[base+21] !== 16'h0501)
-				`FAIL(("committed word 21 = %h, expected 0501 (rc5 writer revision 05, subcat 01)", psram[base+21]))
+			// rc6 S10: word 21 = {writer revision 8'h06, cart_subcat} (0x01 here)
+			if (psram[base+21] !== 16'h0601)
+				`FAIL(("committed word 21 = %h, expected 0601 (rc6 writer revision 06, subcat 01)", psram[base+21]))
 			hb = {psram[base+11], psram[base+10], psram[base+9], psram[base+8]};
 			if (hb !== bmp) `FAIL(("committed bitmap %h, expected %h", hb, bmp))
 			pk = 0; c = 32'hFFFFFFFF;

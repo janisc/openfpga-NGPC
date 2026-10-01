@@ -106,9 +106,17 @@ module ngpc_cart_save #(
 	input  wire  [1:0] die_busy_i,
 
 	// ---- Host activity -----------------------------------------------------
-	// While APF is moving the slot in or out it owns the staging region, and
-	// background staging stands aside.
+	// The staging region's host port is busy: APF moving the slot in or out,
+	// or the copier's drain writes, with a ~10 ms tail (ngpc_stage_mem's
+	// host_busy_o). Background staging stands aside for it and for
+	// draining_i. It must NOT carry draining_i itself: the state commit in
+	// S_FINISH waits on this alone, and draining falls only on the
+	// state_done that same step raises (rc6, L2).
 	input  wire        host_busy_i,
+	// APF's read strobe on the staging port (data_unloader read_en, a clk_sys
+	// register). host_busy_i follows a read one clock late, so the bank
+	// flips also look at the strobe itself (rc6).
+	input  wire        host_rd_i,
 
 	// Savestate restore: the copier has drained the state's embedded image
 	// into the SPARE bank; request an apply of it. The request is queued, so
@@ -296,6 +304,42 @@ module ngpc_cart_save #(
 	// session will get. A refusal or failure in this shape freezes.
 	wire wake_shaped = !base_q && !(|dirty0 || |dirty1);
 
+	// Program or erase? flash_die reports both with the same event, but not
+	// with the same busy time: a program is a read-modify-write of ~350 ns
+	// (~17 clk_sys), an erase is paced at 75 clk_sys per word, so even the
+	// smallest block (8 KB) is busy >= 307,200 clocks. A 12-bit count of the
+	// busy window, saturating at 4095 (~83 us), sits orders of magnitude from
+	// both. The count restarts when busy rises and is cleared by the event,
+	// so an event without a busy window of its own reads as a program -- the
+	// safe side, which only refuses. This is a property of OUR flash model,
+	// not of real chips: software emulators model no busy time at all, and no
+	// game depends on it. If flash_die's ERASE_WORD_PERIOD or its program path
+	// ever changes, revisit the threshold.
+	reg  [11:0] busy_cnt0 = 12'd0, busy_cnt1 = 12'd0;
+	reg   [1:0] busy_prev = 2'b00;
+	reg         prog_since_publish = 1'b0;
+	wire        prog_event = (event0_i && !(&busy_cnt0)) || (event1_i && !(&busy_cnt1));
+
+	// A session with no save of its own and nothing that could become one:
+	// no file delivered (this epoch or before a reload), no apply accepted,
+	// the committed image holds no data, and nothing was PROGRAMMED since it
+	// was published -- only erased -- and no pass was abandoned by an
+	// overflow. A state that carries no image of this game may load over such
+	// flash: there is no data there for the restored machine to depend on, and
+	// no file to lose. A sleep or Memory taken before a save-less session's
+	// first flash write embeds whatever the committed bank still held from an
+	// earlier session; the loading session has usually run the BIOS power-up
+	// erase by then, and without this the load was refused after boot_hold had
+	// already reset the game (rc6, R1; 1.0.2 always loaded such a state).
+	//
+	// It asks about programs, not about stage_pending: an erase that the
+	// flash-idle guard (S_IDLE) let finish reports while the drain blocks
+	// every pass, so its block is always still pending when the state is
+	// decided -- and an erased block is exactly what this allows (review).
+	wire saveless_erased = !apf_delivered && !pre_delivered && !base_q &&
+	                       !image_has_data && !prog_since_publish && !pack_overflow;
+
+
 	// ---- Block geometry -----------------------------------------------------
 
 	reg        geo_die;
@@ -471,7 +515,8 @@ module ngpc_cart_save #(
 	// how many applies ran since reset, the last apply's outcome, and how many
 	// p2 writes COMPLETED during the last apply.
 	//
-	// Word 23 is {from_state, 0, fail_idx[5:0], verdict[7:0]}. Verdicts:
+	// Word 23 is {from_state, wr_drain, fail_idx[5:0], verdict[7:0]}, where
+	// wr_drain (rc6) is diag_wr_drain below. Verdicts:
 	// 0 none yet, 1 accepted, 2 state refused (bitmap omits dirty blocks),
 	// 3 refused (payload checksum), 4 refused (tag or cartridge CRC, at
 	// fail_idx), 5 nothing delivered, 6 no image (magic, at fail_idx). The
@@ -481,6 +526,18 @@ module ngpc_cart_save #(
 	reg [15:0] diag_applies;
 	reg [15:0] diag_verdict;
 	reg [15:0] diag_p2wr;
+	// Sticky: this engine issued a staging write while the copier was
+	// draining. No RTL path does -- a pass can neither start nor run while
+	// draining -- so a set bit points at hardware, not at the design. It is
+	// stamped into word 23 bit 14, written after words 16-18 in every header
+	// walk, so a stray header write like issue T7's (word 18 = a live drain
+	// count) carries it out in the same header (rc6).
+	reg        diag_wr_drain = 1'b0;
+
+	// host_busy_i one clock late, for the state commit's wait (rc6, L2). All
+	// its inputs are registered in ngpc_stage_mem; the flop keeps the S_FINISH
+	// enable cone short.
+	reg        slot_busy_q = 1'b0;
 
 	reg [15:0] block_word;      // position within the block being copied
 	reg [15:0] xfer_data;       // the word in flight
@@ -522,10 +579,11 @@ module ngpc_cart_save #(
 			6'd19: hdr_word = ~crc_acc[15:0];
 			6'd20: hdr_word = ~crc_acc[31:16];
 			// High byte: the writer revision, so a file says which build
-			// wrote it. 0x05 = 1.1.0-rc5 and later; older writers left 0.
-			6'd21: hdr_word = {8'h05, cart_subcat_i};
+			// wrote it. 0x05 = 1.1.0-rc5, 0x06 = 1.1.0-rc6 and later; older
+			// writers left 0.
+			6'd21: hdr_word = {8'h06, cart_subcat_i};
 			6'd22: hdr_word = diag_applies;
-			6'd23: hdr_word = diag_verdict;
+			6'd23: hdr_word = {diag_verdict[15], diag_wr_drain, diag_verdict[13:0]};
 			6'd24: hdr_word = diag_p2wr;
 			// The cartridge's own header identity, 12 ASCII characters of title
 			// plus the catalogue numbers, so the file is self-describing.
@@ -564,10 +622,28 @@ module ngpc_cart_save #(
 		if (flash_quiet && quiet != QUIET_CLOCKS) quiet <= quiet + 20'd1;
 		else if (!flash_quiet)                    quiet <= 20'd0;
 
+		slot_busy_q <= host_busy_i;
+
+		busy_prev <= die_busy_i;
+		if (event0_i)                          busy_cnt0 <= 12'd0;
+		else if (die_busy_i[0] && !busy_prev[0]) busy_cnt0 <= 12'd1;
+		else if (die_busy_i[0] && !(&busy_cnt0)) busy_cnt0 <= busy_cnt0 + 12'd1;
+		if (event1_i)                          busy_cnt1 <= 12'd0;
+		else if (die_busy_i[1] && !busy_prev[1]) busy_cnt1 <= 12'd1;
+		else if (die_busy_i[1] && !(&busy_cnt1)) busy_cnt1 <= busy_cnt1 + 12'd1;
+
+		// The session state below is reset-scoped, and that is only safe
+		// because reset_in resets the cartridge loader too: after a menu Reset
+		// ngp_cart_rom holds no image (image_bytes 0, no dies), so no flash
+		// the old session wrote can be staged again. A change that keeps the
+		// cartridge across a menu Reset must move dirty, image_has_data,
+		// base_q, refused_q and the delivery flags to the cart_replace epoch.
 		if (reset || cart_replace_i) begin
 			diag_applies  <= 16'd0;
 			diag_verdict  <= 16'd0;
 			diag_p2wr     <= 16'd0;
+			diag_wr_drain <= 1'b0;
+			prog_since_publish <= 1'b0;
 			state         <= S_IDLE;
 			boot_hold_o   <= 1'b0;
 			busy_o        <= 1'b0;
@@ -600,6 +676,10 @@ module ngpc_cart_save #(
 		end else begin
 			if (state_apply_i) state_req <= 1'b1;
 
+`ifdef NGPC_SAVE_DIAG
+			if (stage_req_o && stage_we_o && draining_i) diag_wr_drain <= 1'b1;
+`endif
+
 			// S1(c): a savestate load that failed before this engine could
 			// refuse anything (identity, incomplete blob, copier timeout)
 			// still leaves a wake without its save. Same rule as a refusal.
@@ -625,7 +705,21 @@ module ngpc_cart_save #(
 
 			case (state)
 				S_IDLE: begin
-					if (cart_ready_i && (apply_pending || state_req)) begin
+					// A state request in a running session (no boot apply pending:
+					// a Memory, or a wake load that came after the boot apply)
+					// takes the machine only once both dies are idle. boot_hold
+					// resets the cartridge, and an erase or program cut by it
+					// reports no completion: the block was left half-written,
+					// neither dirty nor restored. Waiting lets it finish and report,
+					// so the apply's coverage check sees the block -- restored if
+					// the state carries it, refused if not (rc6). The dies go idle
+					// between the game's commands, so the wait is one operation
+					// long: a save the game makes of several operations can still
+					// be cut between them, as a reset at that moment would cut it.
+					// A wake load inside the boot hold is held already and never
+					// waits.
+					if (cart_ready_i && (apply_pending ||
+					                     (state_req && die_busy_i == 2'b00))) begin
 						// Hold the machine in reset from cartridge-ready until
 						// the apply has run, and do not run the apply until APF
 						// has finished delivering slots -- the save slot streams
@@ -675,7 +769,7 @@ module ngpc_cart_save #(
 						end
 					end else if (cart_ready_i && stage_pending && !pack_overflow &&
 					             !refused_q && !saw_save_wr && !host_busy_i &&
-					             quiet == QUIET_CLOCKS) begin
+					             !draining_i && quiet == QUIET_CLOCKS) begin
 						// No pass while a late delivery waits for its re-armed
 						// apply: host_busy falls ~10 ms after the last beat and
 						// the re-arm fires ~20 ms after it, and a pass in that
@@ -886,9 +980,10 @@ module ngpc_cart_save #(
 							// that had just arrived, and the apply would then read
 							// the pass (review, FSM-2).
 							if (!stage_pending && flash_quiet && !host_busy_i &&
-							    !refused_q && !saw_save_wr) begin
+							    !host_rd_i && !draining_i && !refused_q && !saw_save_wr) begin
 								stage_bank_o   <= build_bank;
 								image_has_data <= pass_has_data;
+								prog_since_publish <= 1'b0;
 							end else begin
 								stage_pending <= 1'b1;
 							end
@@ -1164,6 +1259,19 @@ module ngpc_cart_save #(
 							fail_kind <= F_CRC;
 							fail_idx  <= 6'd0;
 						end
+					end else if (in_apply && from_state && apply_ok && !refused_q &&
+					             (slot_busy_q || host_rd_i)) begin
+						// An accepted state is committed by flipping stage_bank_o,
+						// and APF reads the slot per 16-bit word from the live
+						// committed bank: a flush straddling the flip would write a
+						// file of two images, refused at the next launch. The pass
+						// publish already waits for the host port; the commit now
+						// does too, for at most its ~10 ms tail (rc6, L2). The wait
+						// is on the host port alone -- draining falls only on the
+						// state_done raised below, so waiting on it would never end.
+						// host_busy reaches slot_busy_q two clocks after a read
+						// starts, so the read strobe itself holds those two.
+						// Refusals and boot applies commit nothing and never wait.
 					end else begin
 						if (in_apply) begin
 							if (apply_ok) begin
@@ -1203,8 +1311,12 @@ module ngpc_cart_save #(
 								// -- except a state that carried no image of this
 								// game (no magic, or another cartridge's) while
 								// nothing is dirty: it was taken before any save
-								// existed, and flash already matches it.
-								if (!((fail_kind == F_NOIMG) && !(|dirty0 || |dirty1)))
+								// existed, and flash already matches it. The same
+								// holds while the session has no save and only
+								// erased, published blocks (saveless_erased, rc6
+								// R1): nothing there for the machine to lose.
+								if (!((fail_kind == F_NOIMG) &&
+								      (!(|dirty0 || |dirty1) || saveless_erased)))
 									apply_reject_o <= 1'b1;
 								// At a wake the state was the only copy of the
 								// save the session would get. Refusing it and
@@ -1245,6 +1357,8 @@ module ngpc_cart_save #(
 
 				default: state <= S_IDLE;
 			endcase
+
+			if (prog_event) prog_since_publish <= 1'b1;
 		end
 
 		// A cartridge reload moves this epoch's delivery into the previous

@@ -9,6 +9,11 @@ real data or only erased flash, whether the file's own checksum still
 matches, and -- on builds with the save diagnostics enabled -- what the
 core's own counters recorded, including how the last apply of a save
 into the cartridge ended and whether it came from a savestate load.
+
+It also reads a sleep state (System/user_sleepstate.sta) or a Memory
+(Memories/Save States/janisc.NGPC/*.sta): the cartridge it belongs to,
+how the last savestate load of that session ended (from 1.1.0-rc6), and
+the save image the state carries, decoded like a .sav.
 """
 import sys
 import textwrap
@@ -18,7 +23,8 @@ HDR_BYTES = 0x200
 PAYLOAD_WORDS = 32256        # 0xFE00 less the header
 
 # Header word 23 on a diagnostics build. From 1.1.0-rc4 it is
-# {from_state, reserved, fail_idx[5:0], verdict[7:0]}; 1.0.2 and rc3 wrote
+# {from_state, reserved, fail_idx[5:0], verdict[7:0]}; from 1.1.0-rc6 the
+# reserved bit is the staging check (see diagnostics). 1.0.2 and rc3 wrote
 # the bare verdict (high byte 0) with codes 0-3, where 2 meant "rejected".
 # The short labels go on the diagnostics line; codes 0-3 with a zero high
 # byte print exactly as they always did. Code 7 is new in 1.1.0-rc5.
@@ -29,8 +35,19 @@ VERDICT_NEW = {0: 'none', 1: 'ACCEPTED', 2: 'REJECTED (coverage)',
 
 # Header word 21 is {writer revision, catalogue sub-code}, on every build.
 # From 1.1.0-rc5 the high byte names the revision of the core that wrote
-# the file: 0x05 is rc5 (1.1.0). Every older writer left it 0.
+# the file: 0x05 is rc5, 0x06 is rc6 and later. Every older writer left it 0.
 WRITER_RC5 = 0x05
+WRITER_RC6 = 0x06
+
+# A savestate file (.sta): the Pocket's own header, then the core's blob as
+# big-endian 32-bit words. The identity block and the load diagnostic sit
+# between the engine's machine state and the embedded save image.
+BLOB_OFF = 592
+PAD_DIAG = 8419
+ID_BASE = 8420
+CART_BASE = 8424
+CART_WORDS = 16256
+ID_MAGIC = 0x4E475053          # "NGPS"
 
 
 def geometry(size_code):
@@ -157,9 +174,11 @@ def writer(rev):
     if rev == 0:
         return 'older writer (rev 0) -- 1.1.0-rc4 or earlier'
     if rev == WRITER_RC5:
-        return 'written by 1.1.0-rc5 or later (rev %d)' % rev
-    if rev > WRITER_RC5:
-        return 'written by 1.1.0-rc5 or later (rev %d, newer than this tool knows)' % rev
+        return 'written by 1.1.0-rc5 (rev %d)' % rev
+    if rev == WRITER_RC6:
+        return 'written by 1.1.0-rc6 or later (rev %d)' % rev
+    if rev > WRITER_RC6:
+        return 'written by 1.1.0-rc6 or later (rev %d, newer than this tool knows)' % rev
     return 'unknown writer revision %d -- no core writes it; the header may be damaged' % rev
 
 
@@ -195,17 +214,119 @@ def diagnostics(w, rev=0):
     origin = '' if code == 0 else 'savestate load: ' if from_state \
         else 'boot or late delivery: ' if rc4 else ''
     text = origin + last_apply(code, not rc4, from_state, applies)
-    if reserved:
+    if reserved and rev < WRITER_RC6:
         text += ' (word 23 has its reserved bit set -- a newer core?)'
     say('last apply', text)
     # Where the apply stopped. Index 0 is a real place for "no image" (the
     # magic) but means "not applicable" for the checks past the header.
     if rc4 and (code in (4, 6) or (code in (2, 3) and fail_idx)):
         say('failed check', 'header word %d (%s)' % (fail_idx, header_field(fail_idx)))
+    # From rc6, bit 14 is set if the save engine ever wrote to staging while
+    # a savestate was being loaded. No logic in the core does that.
+    if rev >= WRITER_RC6:
+        if reserved:
+            say('staging check', 'FLAGGED -- the save engine wrote to its staging memory while '
+                'a savestate was loading. No logic in the core does that, so this points at a '
+                'hardware fault. Please keep this file and report it.')
+        else:
+            say('staging check', 'clean')
 
 
 def main(path):
     d = open(path, 'rb').read()
+    if len(d) != 65024 and is_savestate(d):
+        return savestate(path, d)
+    return decode_sav(d, path)
+
+
+def blob_word(d, i):
+    return int.from_bytes(d[BLOB_OFF + 4 * i:BLOB_OFF + 4 * i + 4], 'big')
+
+
+def is_savestate(d):
+    return (len(d) >= BLOB_OFF + 4 * (CART_BASE + CART_WORDS) and
+            blob_word(d, ID_BASE) == ID_MAGIC)
+
+
+# The identity-check terms of the load diagnostic, bit 4 first.
+ID_TERMS = ('the transfer reached the end of the savestate',
+            'the identity magic (a savestate of this core)',
+            'the cartridge (ROM CRC)',
+            'the layout',
+            'the identity check word')
+
+
+def load_diag(v):
+    """Pad word 8419 (1.1.0-rc6 on): how the last load of the session ended."""
+    if v == 0:
+        say('last load', 'not recorded -- this state was written by a core before 1.1.0-rc6')
+        return
+    if v >> 24 != 0xD1:
+        say('last load', 'unknown diagnostic word %08X -- written by a newer core?' % v)
+        return
+    loads = (v >> 20) & 0xF
+    ran, ok = (v >> 19) & 1, (v >> 18) & 1
+    chk = (v >> 13) & 0x1F
+    frozen, drained, held = (v >> 12) & 1, (v >> 11) & 1, (v >> 10) & 1
+    if loads == 0:
+        say('last load', 'none -- no savestate load since the core started or was last '
+            'reset from the menu')
+        return
+    say('loads before it', '%d%s savestate load(s) since the core started or was last '
+        'reset from the menu' % (loads, ' or more' if loads == 15 else ''))
+    failed = [ID_TERMS[4 - b] for b in range(4, -1, -1) if not chk >> b & 1]
+    if failed:
+        text = ('REFUSED at the identity check (failed: %s); the machine was not touched'
+                % ', '.join(failed))
+    elif not drained:
+        text = ('FAILED -- the copier timed out waiting for the save engine; nothing was '
+                'restored')
+    elif not ran:
+        text = ("REFUSED -- the save engine refused the state's save image; nothing was "
+                'restored (a Memory reports "Loading failed", a wake starts the game over)')
+    elif not ok:
+        text = ('REFUSED -- the savestate engine refused the machine-state header, so the '
+                'machine was not restored' + ('' if frozen else
+                '; the save image had already been applied to flash'))
+    elif frozen:
+        text = ('RESTORED -- machine state only: the state was captured while saving was '
+                'off, so flash was left as it was and saving stays off')
+    else:
+        text = ('RESTORED -- flash and machine state; a cold start after this came from '
+                'something later, such as a power-off')
+    say('last load', text)
+    say('load timing', 'arrived while the core was still starting up (the boot apply held '
+        'the machine)' if held else 'arrived after startup, with the game already running')
+
+
+def savestate(path, d):
+    print('file            : %s' % path)
+    print('size            : %d bytes -- a sleep state or Memory' % len(d))
+    crc = blob_word(d, ID_BASE + 1)
+    layout = blob_word(d, ID_BASE + 2)
+    check = blob_word(d, ID_BASE + 3)
+    print('ROM CRC32       : %08X   (the cartridge this state belongs to)%s' % (
+        crc, '' if check == crc ^ 0xFFFFFFFF else '  <-- identity check word MISMATCH'))
+    if layout == 2:
+        print('layout          : 2 (normal)')
+    elif layout == 3:
+        say('layout', '3 -- captured while saving was off: the image below is the file the '
+            'core refused, not a save')
+    else:
+        print('layout          : %d  <-- not a layout this core writes' % layout)
+    load_diag(blob_word(d, PAD_DIAG))
+    img = b''.join(d[BLOB_OFF + 4 * (CART_BASE + i):BLOB_OFF + 4 * (CART_BASE + i) + 4][::-1]
+                   for i in range(CART_WORDS))
+    print()
+    print('The file this state carries (loading the state applies nothing; saving stays off):'
+          if layout == 3 else
+          'The save image this state carries (loading the state restores it):')
+    print()
+    decode_sav(img, path + ' [embedded save image]')
+    return 0
+
+
+def decode_sav(d, path):
     def w(i):
         return int.from_bytes(d[2 * i:2 * i + 2], 'little')
 
