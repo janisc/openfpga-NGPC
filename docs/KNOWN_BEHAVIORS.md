@@ -33,11 +33,12 @@ cover the cart-swap case the in-game suspend was designed for. Normal
 turn-off-and-continue saves in Neo Turf Masters are unaffected; only the
 mid-round suspend prompt is inert.
 
-## A Memory that cannot be loaded restarts the game
+## A Memory that cannot rewind the save restarts the game
 
 **What you'll see:** the Pocket reports that a Memory could not be loaded,
 and the game starts over from the BIOS animation instead of carrying on
-where it was.
+where it was. (A Memory of a different game is turned away before anything
+is touched; the running game simply carries on.)
 
 **Why:** A Memory carries the game's save as it was when the Memory was
 made, and loading one rewinds the save to that point together with the game.

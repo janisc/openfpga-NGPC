@@ -159,8 +159,9 @@ def last_apply(code, legacy, from_state, applies):
     if code == 6:
         if from_state:
             return ('NO IMAGE -- the savestate was taken while no save was staged; '
-                    'flash was not touched, and the load fails if this session had '
-                    'already written flash')
+                    'flash was not touched, and the load fails if this session holds '
+                    'a save it could not rewind (from 1.1.0-rc6, flash the game only '
+                    'erased does not count)')
         return ('NO IMAGE -- the delivered file is not a janisc.NGPC save (magic '
                 'mismatch); nothing was written')
     if code == 7:
