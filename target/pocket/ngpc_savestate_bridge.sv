@@ -119,6 +119,11 @@ module ngpc_savestate_bridge #(
 	// apply still held the machine -- an early wake load -- or after it had
 	// released it. Nothing decides on it.
 	input  wire        save_busy_i,
+	// Cartridge-path measurements (ngpc_cart_diag), used only when built with
+	// NGPC_CART_DIAG: then stamped at pad 8419 (instead of the load stamp) and
+	// pad 8418. Unused otherwise.
+	input  wire [31:0] diag_a_i,
+	input  wire [31:0] diag_b_i,
 	input  wire [13:0] cart_img_rd_addr,
 	output wire [31:0] cart_img_rd_data,
 
@@ -525,6 +530,7 @@ module ngpc_savestate_bridge #(
 	// the apply refusing the image; ran but not ok is the engine refusing its
 	// header; ran and ok is a restore -- a cold start after it came later.
 	localparam [14:0] PAD_DIAG = 15'd8419;
+	localparam [14:0] PAD_DIAG2 = 15'd8418;   // NGPC_CART_DIAG only
 	reg  [3:0] dg_loads;
 	reg  [4:0] dg_chk;
 	reg        dg_ran, dg_drained, dg_held;
@@ -599,6 +605,22 @@ module ngpc_savestate_bridge #(
 				S_SAVE_STAMP: begin
 					seq_pa_sel  <= 1'b1;
 					seq_pa_we   <= 1'b1;
+`ifdef NGPC_CART_DIAG
+					// Six words: the cartridge diagnostic replaces the load
+					// stamp at 8419 and adds 8418.
+					seq_pa_addr <= (id_cnt == 3'd5) ? PAD_DIAG2 :
+					               id_cnt[2] ? PAD_DIAG : ID_BASE + id_cnt[1:0];
+					case (id_cnt)
+						3'd0:    seq_pa_din <= ID_MAGIC;
+						3'd1:    seq_pa_din <= cart_crc32;
+						3'd2:    seq_pa_din <= frozen_i ? ID_LAYOUT_FROZEN : ID_LAYOUT;
+						3'd3:    seq_pa_din <= ~cart_crc32;
+						3'd4:    seq_pa_din <= diag_b_i;
+						default: seq_pa_din <= diag_a_i;
+					endcase
+					id_cnt <= id_cnt + 3'd1;
+					if (id_cnt == 3'd5) begin
+`else
 					seq_pa_addr <= id_cnt[2] ? PAD_DIAG : ID_BASE + id_cnt[1:0];
 					case (id_cnt)
 						3'd0:    seq_pa_din <= ID_MAGIC;
@@ -609,6 +631,7 @@ module ngpc_savestate_bridge #(
 					endcase
 					id_cnt <= id_cnt + 3'd1;
 					if (id_cnt == 3'd4) begin
+`endif
 						cart_save_req <= 1'b1;
 						state         <= S_SAVE_CART;
 					end

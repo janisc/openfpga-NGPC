@@ -889,6 +889,8 @@ module core_top (
   wire        led_user;
 
   wire cart_fifo_overflow;
+  wire cart_fifo_drop;
+  wire [31:0] cart_diag_a, cart_diag_b;
 
   // ---- Savestates, and therefore sleep ----------------------------------
 
@@ -1027,6 +1029,8 @@ module core_top (
       .load_frozen_o   (ss_load_frozen),
       .load_fail_o     (ss_load_fail),
       .save_busy_i     (mc_save_busy),   // diagnostic only (rc6)
+      .diag_a_i        (cart_diag_a),    // NGPC_CART_DIAG only
+      .diag_b_i        (cart_diag_b),    // NGPC_CART_DIAG only
       .cart_img_rd_addr(cs_img_rd_addr),
       .cart_img_rd_data(cs_img_rd_data),
 
@@ -1085,6 +1089,7 @@ module core_top (
       .cart_wr_addr      (cart_wr_addr[26:0]),
       .cart_wr_data      (cart_wr_data),
       .cart_fifo_overflow(cart_fifo_overflow),
+      .cart_fifo_drop    (cart_fifo_drop),
 
       .hps_rtc(apf_rtc_packet),
 
@@ -1258,6 +1263,30 @@ module core_top (
       .outclk_3(clk_dot),
       .locked  (pll_core_locked)
   );
+
+  // Cartridge-path diagnostic, built only with NGPC_CART_DIAG (see the qsf):
+  // measures the cartridge path at both ends and reports through savestate
+  // pad words 8418/8419 (tools/cartdiag.py). Without it the pad words keep
+  // their release meaning and this logic is not built.
+`ifdef NGPC_CART_DIAG
+  ngpc_cart_diag cart_diag (
+      .clk_74a                 (clk_74a),
+      .clk_sys                 (clk_sys),
+      .reset_sys               (reset_in),
+      .bridge_wr               (bridge_wr),
+      .bridge_addr             (bridge_addr),
+      .bridge_wr_data          (bridge_wr_data),
+      .dataslot_requestwrite   (dataslot_requestwrite),
+      .dataslot_requestwrite_id(dataslot_requestwrite_id),
+      .fifo_drop               (cart_fifo_drop),
+      .fifo_overflow           (cart_fifo_overflow),
+      .diag_a                  (cart_diag_a),
+      .diag_b                  (cart_diag_b)
+  );
+`else
+  assign cart_diag_a = 32'd0;
+  assign cart_diag_b = 32'd0;
+`endif
 
   // cart_fifo_overflow is latched but has no reader yet: APF gives a core no
   // way to raise a diagnostic the user can see, short of putting it in the

@@ -775,6 +775,13 @@ set_global_assignment -name PHYSICAL_SYNTHESIS_EFFORT NORMAL
 # a week for want of them in the field.
 set_global_assignment -name VERILOG_MACRO "NGPC_SAVE_DIAG=1"
 
+# Cartridge-load diagnostic (target/pocket/ngpc_cart_diag.sv): the CRC of the
+# cartridge as the bridge delivered it, the transfer time and the cartridge
+# FIFO's dropped words, stamped into pad words 8418/8419 of every capture and
+# read with tools/cartdiag.py. Off for release builds, where 8419 keeps the
+# load stamp and the logic is not built; uncomment for a diagnostic build.
+#set_global_assignment -name VERILOG_MACRO "NGPC_CART_DIAG=1"
+
 # ---- Area: slow, non-critical blocks are built for area ----
 # The device sits at 98-99% of its ALMs and the CPU's register file alone
 # swings by +-400 ALUTs between otherwise identical syntheses, so every

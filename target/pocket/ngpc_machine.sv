@@ -48,6 +48,7 @@ module ngpc_machine
 	input  wire [26:0] cart_wr_addr,     // byte address within the image
 	input  wire [15:0] cart_wr_data,
 	output wire        cart_fifo_overflow, // diagnostic, see ngpc_cart_fifo
+	output wire        cart_fifo_drop,     // DIAG build: one pulse per dropped word
 
 	// ---- Host wall clock --------------------------------------------------
 	// Same packet shape ngp_host_clock consumes on MiSTer; the top level builds
@@ -495,7 +496,8 @@ module ngpc_machine
 		.addr_o     (cart_ioctl_addr),
 		.data_o     (cart_ioctl_dout),
 
-		.overflow_o (cart_fifo_overflow)
+		.overflow_o (cart_fifo_overflow),
+		.drop_o     (cart_fifo_drop)
 	);
 
 	// The loader makes its own ioctl_index[5:0] == 1 comparison internally, so
