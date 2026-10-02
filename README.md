@@ -217,15 +217,15 @@ verified and applied before boot. What that trades away, knowingly:
   over: the machine is never restored over flash that was not rewound.
   MiSTer stores 8 MB per state for the same idea; ours are 96 KB.
 
-And a word of expectation management: the design fills {{ALM_PCT}}% of
+And a word of expectation management: the design fills 98% of
 the Pocket's FPGA and does not formally close timing at this speed grade —
 every feature above was won through fit battles and seed sweeps. 1.1.0
 only fits because the slow, non-critical blocks are now built for area;
 before that the fitter had run out of LABs while ALMs were still nominally
 free. Realistically **no new features are planned**; the remaining work is
 polish, testing and release. One is of course free to try — the fitter
-reports about {{ALMS_FREE}} ALMs unused, scattered across the device
-({{LABS_USED}} of its 1,848 LABs are in use), and they are spoken for by
+reports about 374 ALMs unused, scattered across the device
+(all 1,848 of its LABs are in use), and they are spoken for by
 whoever gets there first. 😃
 
 ## Branches
@@ -267,7 +267,7 @@ benign warnings about ignored legacy assignments -- the modern fitter
 absorbed those knobs. `package.py` then stages the SD-card layout from the
 bitstream and the JSON.
 
-The design targets a Cyclone V 5CEBA4F23C8 at ~{{ALM_PCT}}% logic occupancy
+The design targets a Cyclone V 5CEBA4F23C8 at ~98% logic occupancy
 and does not formally close timing at this speed grade; see the commit
 history on `dev` for the measured reality and the disciplines that keep it
 honest. The 1.1.0 release bitstream is seed 7 (main clock −3.139 ns worst
