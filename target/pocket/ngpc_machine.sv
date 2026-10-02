@@ -161,7 +161,9 @@ module ngpc_machine
 	// machine "power" and "reset" are emphatically different things.
 	//
 	// The cartridge loader and its SDRAM backing store sit OUTSIDE the machine
-	// reset. A soft reset is a console reset, not a cartridge removal.
+	// reset. A soft reset (the machine's own, such as a System change or the
+	// boot hold) is a console reset, not a cartridge removal. The menu Reset
+	// is different: it raises hard_reset, which resets the loader too.
 	localparam [7:0] BIOS_RESET_TAIL = 8'hFF;
 
 	wire hard_reset = reset_in;
@@ -549,7 +551,12 @@ module ngpc_machine
 	// A machine reset clears ngp_cart's die population, but the loader and the
 	// SDRAM image survive it because they sit on hard_reset. Re-strap the board
 	// from the retained byte count once the machine reset releases, so a
-	// cartridge does not disappear when the user hits Reset.
+	// cartridge does not disappear across a reset the core makes on its own
+	// (a System change, a save apply's boot_hold). A menu Reset is not one of
+	// those: it raises reset_in, which IS hard_reset, so the loader forgets
+	// the image (byte count 0), the re-strap populates no dies, and the BIOS
+	// lands in its menu. A menu Reset unloads the cartridge; the save file is
+	// kept, and relaunching the game brings the cartridge back.
 	//
 	// A SAVESTATE RESTORE is such a reset too, and it arrives on its own wire:
 	// the engine's reset_ss goes straight to the mainboard's restore_reset

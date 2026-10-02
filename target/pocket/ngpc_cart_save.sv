@@ -1312,9 +1312,11 @@ module ngpc_cart_save #(
 								// game (no magic, or another cartridge's) while
 								// nothing is dirty: it was taken before any save
 								// existed, and flash already matches it. The same
-								// holds while the session has no save and only
-								// erased, published blocks (saveless_erased, rc6
-								// R1): nothing there for the machine to lose.
+								// holds while the session has no save, and nothing
+								// was programmed since its empty image was
+								// published; erased blocks may still be pending
+								// (saveless_erased, rc6 R1): nothing there for the
+								// machine to lose.
 								if (!((fail_kind == F_NOIMG) &&
 								      (!(|dirty0 || |dirty1) || saveless_erased)))
 									apply_reject_o <= 1'b1;

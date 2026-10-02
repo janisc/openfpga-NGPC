@@ -378,7 +378,7 @@ module tb_rc5_loadpath;
 		.frozen_i        (frozen),
 		.load_frozen_o   (load_frozen),
 		.load_fail_o     (load_fail),
-		.save_busy_i     (busy),
+		.save_busy_i     (boot_hold),   // as ngpc_machine wires it
 		.cart_img_rd_addr(br_img_rd_addr),
 		.cart_img_rd_data(br_img_rd_data),
 

@@ -342,8 +342,11 @@ module core_top (
 
   // Reset to BIOS: the same reset, with the cartridge re-strap suppressed
   // so the machine boots to the BIOS menu (clock, horoscope). Plain Reset
-  // clears the mode and brings the game back; a mid-session Load Cartridge
-  // straps via the loader path regardless of the mode.
+  // clears the mode. Both actions raise reset_in (hard_reset), which also
+  // resets the cartridge loader (byte count 0), so either one lands in the
+  // BIOS menu with the cartridge unloaded; the save is kept (the staging
+  // bank is not reset). To restart a game, relaunch it. A mid-session Load
+  // Cartridge straps via the loader path regardless of the mode.
   reg        bios_reset_mode = 0;
   reg [31:0] reset_delay = 0;
   wire       external_reset = reset_delay > 0;

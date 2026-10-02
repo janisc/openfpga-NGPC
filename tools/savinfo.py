@@ -284,17 +284,20 @@ def load_diag(v):
                 'restored')
     elif not ran:
         text = ("REFUSED -- the save engine refused the state's save image; nothing was "
-                'restored (a Memory reports "Loading failed", a wake starts the game over)')
+                'restored, and the game restarted because the check runs with the machine '
+                'already stopped (a Memory also reports "Loading failed")')
     elif not ok:
         text = ('REFUSED -- the savestate engine refused the machine-state header, so the '
                 'machine was not restored' + ('' if frozen else
-                '; the save image had already been applied to flash'))
+                "; flash had already been restored from the state's save image, or left "
+                'as it was if the state carried none'))
     elif frozen:
         text = ('RESTORED -- machine state only: the state was captured while saving was '
                 'off, so flash was left as it was and saving stays off')
     else:
-        text = ('RESTORED -- flash and machine state; a cold start after this came from '
-                'something later, such as a power-off')
+        text = ("RESTORED -- the machine state; flash restored from the state's save image, "
+                'or left as it was if the state carried none. A cold start after this came '
+                'from something later, such as a power-off')
     say('last load', text)
     say('load timing', 'arrived while the core was still starting up (the boot apply held '
         'the machine)' if held else 'arrived after startup, with the game already running')

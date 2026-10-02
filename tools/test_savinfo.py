@@ -337,14 +337,17 @@ def rc6_additions(tmp):
          dg(ran=0, ok=0, drained=0),
          'FAILED -- the copier timed out waiting for the save engine; nothing was restored', None),
         ('H10', 'drained but not started: the apply refused the image', dg(ran=0, ok=0),
-         "REFUSED -- the save engine refused the state's save image; nothing was restored "
-         '(a Memory reports "Loading failed", a wake starts the game over)', None),
+         "REFUSED -- the save engine refused the state's save image; nothing was restored, "
+         'and the game restarted because the check runs with the machine already stopped '
+         '(a Memory also reports "Loading failed")', None),
         ('H11', 'started but not accepted: the engine refused the header', dg(ok=0),
          'REFUSED -- the savestate engine refused the machine-state header, so the machine '
-         'was not restored; the save image had already been applied to flash', None),
+         "was not restored; flash had already been restored from the state's save image, "
+         'or left as it was if the state carried none', None),
         ('H12', 'restored, early (the boot apply still held the machine)', dg(held=1),
-         'RESTORED -- flash and machine state; a cold start after this came from something '
-         'later, such as a power-off',
+         "RESTORED -- the machine state; flash restored from the state's save image, or "
+         'left as it was if the state carried none. A cold start after this came from '
+         'something later, such as a power-off',
          'arrived while the core was still starting up (the boot apply held the machine)'),
         ('H13', 'restored, frozen, 15 loads (saturated)', dg(loads=15, frozen=1),
          'RESTORED -- machine state only: the state was captured while saving was off, so '
@@ -387,8 +390,9 @@ def rc6_additions(tmp):
     rc, out, err = run(path)
     tool_ok(s, rc, err)
     s.has(line(out, 'size'), 'a sleep state or Memory', 'size line')
-    s.eq(field(out, 'last load'), 'RESTORED -- flash and machine state; a cold start after this '
-         'came from something later, such as a power-off', 'last load')
+    s.eq(field(out, 'last load'), "RESTORED -- the machine state; flash restored from the "
+         "state's save image, or left as it was if the state carried none. A cold start "
+         'after this came from something later, such as a power-off', 'last load')
     s.done()
 
 

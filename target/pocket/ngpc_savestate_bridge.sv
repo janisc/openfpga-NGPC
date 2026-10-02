@@ -522,8 +522,9 @@ module ngpc_savestate_bridge #(
 	//           {blob_full, magic, crc, layout 2/3, ~crc}
 	//   [12] the state was captured frozen (layout 3)
 	//   [11] drained: the copier's drain began (it always reads word 1)
-	//   [10] held: the save engine held the machine at the check -- the load
-	//        arrived while the boot apply was still waiting at startup
+	//   [10] held: the save engine held the machine at the check -- a boot
+	//        apply (at startup, or re-armed by a late delivery) was waiting
+	//        or running
 	//   [9:0] 0
 	// Reading it: a clear identity bit names the gate that refused; all five
 	// passed but not drained is the copier's timeout; drained but not ran is
@@ -734,7 +735,8 @@ module ngpc_savestate_bridge #(
 					seq_pa_sel  <= 1'b1;
 					seq_pa_addr <= CART_BASE + {1'b0, cart_img_rd_addr};
 					// Every drain reads word 1; a copier timeout never moves the
-					// address from the last drain's end or its power-up zero.
+					// address from the last drain's end or its power-up/reset
+					// zero.
 					if (cart_img_rd_addr == 14'd1) dg_drained <= 1'b1;
 					if (cart_load_done) begin
 						if (cart_load_error) begin

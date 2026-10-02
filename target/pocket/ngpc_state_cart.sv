@@ -274,8 +274,9 @@ module ngpc_state_cart #(
 				// the staged header before writing a single flash word. A blob
 				// with no cart data fails the magic and applies nothing, which
 				// is the cartless-state semantic -- accepted while no flash is
-				// dirty, or while the session holds no save and only erased,
-				// already-published blocks (rc6, R1). Any other refusal fails
+				// dirty, or while the session holds no save, and nothing was
+				// programmed since its empty image was published; erased
+				// blocks may still be pending (rc6, R1). Any other refusal fails
 				// the load, so the bridge never restores a machine over flash
 				// it could not rewind.
 				I_APPLY_RUN: begin

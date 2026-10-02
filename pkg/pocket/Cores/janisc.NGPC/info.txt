@@ -10,4 +10,9 @@ Place the BIOS images in Assets/ngpc/janisc.NGPC/:
 Flash saves are automatic -- there is no save menu. Savestates
 and sleep carry the cartridge: loading a state also rewinds
 your in-game saves to that moment. Reset to BIOS visits the
-BIOS menu (clock, horoscope); plain Reset returns to the game.
+BIOS menu (clock, horoscope); plain Reset also unloads the
+cartridge and lands there. A menu Reset keeps your save; to
+restart a game, relaunch it.
+
+If a game starts without its save, quit and launch it again:
+the save file is kept. See docs/KNOWN_BEHAVIORS.md.
