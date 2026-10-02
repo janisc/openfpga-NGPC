@@ -120,7 +120,7 @@
 // dut.diag_applies and dut.diag_p2wr only in S3-CRC-RELOAD*, where the
 // session is frozen and no header carrying them is ever staged.
 //
-// Run: wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc4_engine.sh
+// Run: wsl -e sh sim/run_rc4_engine.sh
 
 `timescale 1ns / 1ps
 `default_nettype none

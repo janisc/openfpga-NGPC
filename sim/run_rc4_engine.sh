@@ -1,6 +1,6 @@
 #!/bin/sh
 # rc4 save-engine contract (rc4_spec.md S1-S10), written from the spec:
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc4_engine.sh
+#   wsl -e sh sim/run_rc4_engine.sh
 # Passes when the last line is "== ALL RC4 ENGINE SCENARIOS PASS".
 # NGPC_SAVE_DIAG is defined because header words 18 and 23 are diagnostics.
 set -e

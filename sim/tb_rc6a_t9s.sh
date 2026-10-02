@@ -4,7 +4,7 @@
 # save engine (sim/tb_rc6a_t9s_bench.sv: tb_t9s_bench.sv with the rc6
 # core_top glue). Called by sim/run_rc6_r1.sh; can be run on its own:
 #
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/tb_rc6a_t9s.sh [full|quick|xver|mut-noguard|mut-nor1|mut-pend|mut-progall]
+#   wsl -e sh sim/tb_rc6a_t9s.sh [full|quick|xver|mut-noguard|mut-nor1|mut-pend|mut-progall]
 #
 #   full   (default) rc6 captures of every T9S capture class, then every wake
 #          timing run_t9s.sh uses for it (29 captures, 90 wakes)

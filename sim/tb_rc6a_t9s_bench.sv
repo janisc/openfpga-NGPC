@@ -81,7 +81,7 @@
 //   and APF (bridge bus, lag-1 blob writes, 0xA0/0xA4 handshakes).
 //   K2GE/sound re-park is a fixed +PARK clocks before the SoC reports ready.
 //
-// Run: wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_t9s.sh
+// Run: wsl -e sh sim/run_t9s.sh
 
 `timescale 1ns / 1ps
 `default_nettype none

@@ -1,7 +1,7 @@
 #!/bin/sh
 # rc5 savestate load path with the REAL bridge, copier and save engine
 # (rc5_spec.md B1-B3, S1, S6, S8, S11), written from the spec:
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc5_loadpath.sh
+#   wsl -e sh sim/run_rc5_loadpath.sh
 # Passes when the last line is "== ALL RC5 LOAD-PATH SCENARIOS PASS".
 # SYNTHESIS keeps savestates.sv at full size, as sim/run.sh does.
 # NGPC_SAVE_DIAG is defined because the release build defines it

@@ -3,7 +3,7 @@
 # follow-up) and the flash-idle guard in target/pocket/ngpc_cart_save.sv,
 # against the REAL rc6 RTL.
 #
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_r1.sh [all|bench|t9s|t9sfull|full]
+#   wsl -e sh sim/run_rc6_r1.sh [all|bench|t9s|t9sfull|full]
 #
 #   bench  1. sim/tb_rc6a_classify.sv: the follow-up's program/erase
 #          classifier against the REAL upstream flash_die (programs at store

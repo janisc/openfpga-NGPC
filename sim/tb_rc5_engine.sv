@@ -122,7 +122,7 @@
 // the verdict of an apply after which the session is frozen, which no staged
 // header can ever carry -- verdict 7 is always such a verdict).
 //
-// Run: wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc5_engine.sh
+// Run: wsl -e sh sim/run_rc5_engine.sh
 
 `timescale 1ns / 1ps
 `default_nettype none

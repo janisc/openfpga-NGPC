@@ -50,7 +50,7 @@
 // never rise and word 23 bit 14 must never be written.
 //
 // Each run ends '== RC6X SCENARIO t7p_mode<n> (rtl) PASS' or '... FAIL (n)'.
-// Run: wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_combo.sh
+// Run: wsl -e sh sim/run_rc6_combo.sh
 
 `timescale 1ns / 1ps
 `default_nettype none

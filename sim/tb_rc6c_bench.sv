@@ -104,7 +104,7 @@
 // "== ALL RC6C SCENARIOS PASS" or "== N FAILURE(S) ...". Run it with
 // vvp -n -N: a failed run ends in $stop, which -N turns into exit code 1.
 //
-// Run: wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_l2.sh
+// Run: wsl -e sh sim/run_rc6_l2.sh
 
 `timescale 1ns / 1ps
 `default_nettype none

@@ -8,13 +8,13 @@
 # save_busy_i the engine's boot_hold_o, core_top's write-port arbiter verbatim
 # (all checked below).
 #
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_l2.sh              everything
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_l2.sh one BUILD +ARGS...
+#   wsl -e sh sim/run_rc6_l2.sh              everything
+#   wsl -e sh sim/run_rc6_l2.sh one BUILD +ARGS...
 #       one run of a build (rtl, nohold, oldwire, nordhold, nopubrd), e.g.
 #       ... one rtl +SCN=x +SAVES=1 +DELAYUS=30000 +SEED=7 +RACEOFS=7 +VERBOSE=1
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_l2.sh verdicts
+#   wsl -e sh sim/run_rc6_l2.sh verdicts
 #       re-evaluate the logs of the last full run without simulating
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_l2.sh check
+#   wsl -e sh sim/run_rc6_l2.sh check
 #       premises, mutants and builds only (no runs)
 #
 # Builds:

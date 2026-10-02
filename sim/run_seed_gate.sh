@@ -1,8 +1,8 @@
 #!/bin/sh
 # Language gate and automatic power press (rc5_spec.md G1, G2):
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_seed_gate.sh          fast, seconds
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_seed_gate.sh full     T3 counts all 2^27
-#                                                                standby clocks, ~20 min
+#   wsl -e sh sim/run_seed_gate.sh          fast, seconds
+#   wsl -e sh sim/run_seed_gate.sh full     T3 counts all 2^27
+#                                           standby clocks, ~20 min
 # Passes when the last line is "== ALL SEED-GATE SCENARIOS PASS" (exit 0).
 #
 # ngpc_machine is too large to simulate whole. The bench runs the real

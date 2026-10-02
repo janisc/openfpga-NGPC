@@ -3,12 +3,12 @@
 # REAL rc6 RTL (target/pocket + upstream, with the rc6 follow-up patch) and
 # core_top's rc6 glue verbatim.
 #
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_combo.sh           the default list (the t7p prep + 97 runs)
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_combo.sh quick     a subset (the t7p prep + 26 runs)
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_combo.sh sweep     the default list plus
+#   wsl -e sh sim/run_rc6_combo.sh           the default list (the t7p prep + 97 runs)
+#   wsl -e sh sim/run_rc6_combo.sh quick     a subset (the t7p prep + 26 runs)
+#   wsl -e sh sim/run_rc6_combo.sh sweep     the default list plus
 #        every remaining point of sim/run_t7r.sh's T7 sweep
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_combo.sh mutants   mutation checks
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_combo.sh one BENCH ARGS...
+#   wsl -e sh sim/run_rc6_combo.sh mutants   mutation checks
+#   wsl -e sh sim/run_rc6_combo.sh one BENCH ARGS...
 #        BENCH = combo | t7p | t7s (the real-RTL build), e.g.
 #        ... one combo +TAG=x +SAVES=1 +DELAYUS=30000 +FDFULL=2000 +VERBOSE=1
 #

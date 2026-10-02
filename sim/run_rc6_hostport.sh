@@ -2,7 +2,7 @@
 # rc6 family B -- the staging host port: L1 (ngpc_stage_mem, an APF flush read
 # against a queued host write) and L3 (core_top's write-port arbiter, part A;
 # the copier's ready threshold in ngpc_stage_mem, part B).
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_hostport.sh
+#   wsl -e sh sim/run_rc6_hostport.sh
 # Passes when the last line is "== ALL RC6 HOSTPORT SCENARIOS PASS" (exit 0);
 # otherwise the last line is "== N FAILURE(S) ..." and the exit status is 1.
 #

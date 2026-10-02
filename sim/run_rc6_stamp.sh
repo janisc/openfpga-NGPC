@@ -5,7 +5,7 @@
 # its held / drained bits on the real bridge + copier + save engine
 # (sim/tb_rc6f_held.sh):
 #
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_stamp.sh [all|bench|held|mutants]
+#   wsl -e sh sim/run_rc6_stamp.sh [all|bench|held|mutants]
 #
 #   bench    the six scenario groups on the rc6 bridge; the same stimulus on
 #            the rc5 bridge (sim/tb_rc6f_rc5_bridge.sv = git show

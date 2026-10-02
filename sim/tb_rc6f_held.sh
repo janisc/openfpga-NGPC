@@ -1,7 +1,7 @@
 #!/bin/sh
 # rc6 family F, the real load path: what the load diagnostic's held and
 # drained bits record with the REAL bridge, copier and save engine.
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/tb_rc6f_held.sh
+#   wsl -e sh sim/tb_rc6f_held.sh
 # sim/tb_rc6f_mkheld.py builds sim/tb_rc6f_held.sv from the tracked
 # sim/tb_rc5_loadpath.sv with the bridge's save_busy_i wired as
 # target/pocket/ngpc_machine.sv wires save_busy_state -- read from the file;

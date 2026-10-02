@@ -1,6 +1,6 @@
 #!/bin/sh
 # rc4 savestate load path, copier + save engine together:
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc4_loadpath.sh
+#   wsl -e sh sim/run_rc4_loadpath.sh
 # NGPC_SAVE_DIAG is defined because the release build defines it
 # (projects/ngpc_pocket.qsf); the header-word checks need it.
 set -e

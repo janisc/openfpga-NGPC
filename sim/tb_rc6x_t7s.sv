@@ -30,7 +30,7 @@
 //      diag_drain 8197 that the ENGINE did not issue: the flag records only
 //      the engine's own requests, so it must stay clear.
 // Each run ends '== RC6X SCENARIO t7s_mode<n>_bank<b> ... PASS' or '... FAIL'.
-// Run: wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_combo.sh
+// Run: wsl -e sh sim/run_rc6_combo.sh
 
 `timescale 1ns / 1ps
 `default_nettype none

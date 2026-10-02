@@ -114,7 +114,7 @@
 // (also written, for the fast-forward), pwr_hold_q, auto_pwr_pending_q; and
 // power_btn, the press the BIOS sees.
 //
-// Run: wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_seed_gate.sh [full]
+// Run: wsl -e sh sim/run_seed_gate.sh [full]
 
 `timescale 1ns / 1ps
 `default_nettype none

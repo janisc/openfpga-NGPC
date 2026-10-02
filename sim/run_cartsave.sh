@@ -1,6 +1,6 @@
 #!/bin/sh
 # Cartridge-save engine regression:
-#   wsl -e sh /mnt/c/FPGA/openfpga-NGPC/sim/run_cartsave.sh
+#   wsl -e sh sim/run_cartsave.sh
 # The staging engine does not go to hardware unless this passes.
 set -e
 cd "$(dirname "$0")/.."

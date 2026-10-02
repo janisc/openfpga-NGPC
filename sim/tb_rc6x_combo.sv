@@ -88,7 +88,7 @@
 //   +EXPECT_COMMIT=before means the commit is in place for the flush's first
 //   claim (stage_mem latches the bank at the claim, not at the strobe)
 //
-// Run: wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_combo.sh
+// Run: wsl -e sh sim/run_rc6_combo.sh
 
 `timescale 1ns / 1ps
 `default_nettype none

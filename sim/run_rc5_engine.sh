@@ -1,6 +1,6 @@
 #!/bin/sh
 # rc5 save-engine contract (rc5_spec.md, the [rc5] items), written from the spec:
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc5_engine.sh
+#   wsl -e sh sim/run_rc5_engine.sh
 # Passes when the last line is "== ALL RC5 ENGINE SCENARIOS PASS".
 # Built twice: without NGPC_SAVE_DIAG, because no rc5 behaviour and not
 # header word 21 may depend on the diagnostics (only failures and the summary

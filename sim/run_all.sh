@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run every tracked bench and save one log per bench, plus a summary.
-#   wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_all.sh <log-dir>
+#   wsl -e sh sim/run_all.sh <log-dir>
 # The summary lists each bench with its exit status and its last line.
 # The rc6 families (sim/run_rc6_*.sh) run here in their short modes (an entry
 # "script:mode"; together a couple of hours on a free machine, most of it

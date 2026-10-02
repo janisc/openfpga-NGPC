@@ -52,7 +52,7 @@
 // Each group ends "== RC6F GROUP n PASS (k scenarios)" or
 // "== RC6F GROUP n: m FAILURE(S)".
 //
-// Run: wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc6_stamp.sh   (needs
+// Run: wsl -e sh sim/run_rc6_stamp.sh   (needs
 // sim/tb_rc6f_out/sav_img.hex from sim/tb_rc6f_mkimg.py, which it makes)
 
 `timescale 1ns / 1ps

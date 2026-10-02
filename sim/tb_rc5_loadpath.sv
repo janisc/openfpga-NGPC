@@ -156,7 +156,7 @@
 // Stimulus follows tb_rc4_loadpath / tb_savestate_bridge: DUT-facing regs
 // change with <= at a clock edge.
 //
-// Run: wsl -e sh /mnt/c/FPGA/ngpc-rc4/sim/run_rc5_loadpath.sh
+// Run: wsl -e sh sim/run_rc5_loadpath.sh
 // Passes when the last line is "== ALL RC5 LOAD-PATH SCENARIOS PASS".
 
 `timescale 1ns / 1ps
