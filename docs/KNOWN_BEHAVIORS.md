@@ -34,8 +34,9 @@ which ROM (CRC32) it was made for. To start over instead, move the file off
 the card first, and keep it.
 
 **Why:** Before the core puts a save back into the cartridge, it checks that
-the file is intact and that it belongs to exactly this ROM: every save
-carries the checksum of the ROM it was made with. If a check fails, the core
+the file belongs to exactly this ROM (every save carries the checksum of
+the ROM it was made with) and, for a save 1.1.0 wrote, that the file is
+intact (it carries a checksum of its own). If a check fails, the core
 refuses the file. A refused file is never overwritten or deleted: the core
 leaves it on the card byte for byte and **does not save anything for the
 rest of that session**, so nothing you do in that session is kept. (Sleep
@@ -47,7 +48,7 @@ this build does not know (for example from the PR #5 test build), or when
 it was made with a different dump of the ROM. If you changed none of those,
 the likely reason is a rare fault: at launch, the core sometimes works out
 the wrong checksum for the game, although the game itself arrived intact,
-and then does not recognise its own save. We saw this during testing with
+and then does not recognize its own save. We saw this during testing with
 Card Fighters' Clash, and the next launch brought the save back. We added
 diagnostics and checks but could not pinpoint the cause. It showed up only
 on some builds, most likely depending on how the design happens to be laid
@@ -116,11 +117,13 @@ the game's save to settle could hang.
 the game. The BIOS menu appears instead (clock, horoscope), as it would
 with no cartridge.
 
-**Why:** On the Pocket, the plain menu Reset also unloads the cartridge
-(MiSTer's keeps the game). Your save is kept: tested on hardware.
+**Why:** The menu Reset resets the console and its cartridge loader. The
+loader forgets the cartridge and the Pocket does not send it again, so the
+console starts without it and the BIOS shows its menu. Your save is kept:
+tested on hardware.
 
-**Use instead:** To restart a game, quit the core and launch the game
-again. To visit the BIOS menu on purpose, use Reset to BIOS.
+**Use instead:** To restart a game, relaunch it (quit the core and launch
+the game again). To visit the BIOS menu on purpose, use Reset to BIOS.
 
 ## The clock is behind after a sleep or a Memory load
 
@@ -143,7 +146,7 @@ nothing.
 
 **Why:** The palettes belong to the color BIOS: it is the color BIOS that
 colors mono games. System = Mono runs the original mono BIOS, which has no
-palettes. (MiSTer hides the option in that case.)
+palettes.
 
-**Use instead:** System = Auto or Color. On the Pocket, Auto runs the color
-BIOS, so the palette applies to mono games.
+**Use instead:** System = Auto or Color. Both run the color BIOS, so the
+palette applies to mono games.

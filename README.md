@@ -4,31 +4,29 @@
 
 Running on hardware:
 
-- Color and mono BIOS (System: Auto/Color/Mono). On the Pocket, Auto runs
+- Color and mono BIOS (System: Auto/Color/Mono). Auto and Color both run
   the color BIOS, which plays mono games in its compatibility mode; choose
   Mono for the original NGP BIOS.
-- Language (English/Japanese) and Mono Palette, applied from the first
-  boot: the core waits for the Pocket to hand over the saved settings
-  before the game starts. Games read them when they start, so a change
-  made while a game runs takes effect the next time the game is launched,
-  just as on MiSTer. Mono Palette sets the colors the color BIOS gives mono
-  games; with System = Mono it has no effect, because the mono BIOS has no
-  palettes.
 - Cartridge flash saves — the real thing: NGP cartridges have no save RAM,
   the game rewrites its own flash, and this core persists exactly the blocks
   a game dirties into a Pocket nonvolatile save slot, packed so that even
-  games with large flash blocks fit whole. It just works; there is no save
-  menu. A save file the core refuses is never overwritten.
+  games with large flash blocks fit whole. The core should never overwrite
+  an unrecognizable or corrupt save file, to prevent data loss in case of a
+  bug in the save system.
 - Save states that carry the cartridge: a state embeds the game's flash
   save data, so loading one restores machine AND cartridge together —
   including rewinding your in-game saves to that moment, which is the
-  point. With them the Pocket's sleep/wake, a natural fit for a console
+  point. With them comes the Pocket's sleep/wake, a natural fit for a console
   that was itself designed to be always on. States are named after the
   game and refuse to load into a different cartridge. A load restores
   both or neither: the game is never put back over a save that could not
   be restored. If a Memory cannot rewind the game's save, the load fails
   and the game starts over (see Known behaviors).
-- Display modes, including Analogue's own Neo Geo Pocket screen simulations
+- Display modes, including Analogue's own Neo Geo Pocket screen simulations.
+- Language (English/Japanese) and Mono Palette, set in the Pocket's menu.
+  The Pocket saves them, and a change takes effect the next time a game is
+  launched. Mono Palette sets the colors of mono games on the color BIOS, so
+  it has no effect with System = Mono.
 - Real-time clock fed from the Pocket's system clock: the BIOS calendar,
   alarm and horoscope run on the actual date and time. After a sleep/wake
   or a Memory load the clock carries on from the moment the state was
@@ -36,11 +34,8 @@ Running on hardware:
   or Reset to BIOS, sets it right.
 - Reset to BIOS — one menu action to visit the BIOS menu (clock, horoscope)
   without a cartridge trick. The plain menu Reset also unloads the
-  cartridge and lands in the BIOS menu (MiSTer's keeps the game); to
-  restart a game, relaunch it. A menu Reset keeps your save.
-
-The mono Neo Geo Pocket is the same machine with the color video path unused;
-both BIOSes and both cartridge families run.
+  cartridge and lands in the BIOS menu; to restart a game, relaunch it. A
+  menu Reset keeps your save.
 
 ## BIOS
 
@@ -55,7 +50,7 @@ Not included, never will be. Place your own dumps at
 ## Saves
 
 Saving is automatic: the core tracks the flash blocks a game rewrites and
-persists exactly those. There is no save menu.
+persists exactly those.
 
 **A save belongs to a ROM file, not to a game.** The Pocket finds a save by
 the ROM's path and filename, mirroring it under `Saves/ngpc/`. So:
@@ -75,7 +70,7 @@ the ROM's path and filename, mirroring it under `Saves/ngpc/`. So:
 
 Saves are written in a packed format (V4): a run of erased flash is
 stored as a count, so even games that write 64 KB flash blocks fit the
-save slot whole. Every save carries a checksum over its contents, and the
+save slot whole. Every V4 save carries a checksum over its contents, and the
 core checks it before anything reaches the cartridge.
 
 Saves from 1.0.x load as before and are rewritten in the new format the
@@ -110,7 +105,7 @@ certainly still on the card. Don't overwrite or delete it:**
 
 That case is a rare fault, found during testing: at launch, the core
 sometimes worked out the wrong checksum for the game and then did not
-recognise its own save. It showed up only on some builds, and the release
+recognize its own save. It showed up only on some builds, and the release
 build never showed it in our testing, but the cause is not known yet; see
 [docs/KNOWN_BEHAVIORS.md](docs/KNOWN_BEHAVIORS.md).
 
@@ -169,28 +164,23 @@ certainly still there; quit the core and launch the game again). The rest
 are findings that are understood and intentionally left as-is (e.g. why a
 Memory that cannot rewind the game's save restarts the game).
 
-## What this port leaves out
+## What this core leaves out
 
-- **Cheats** — upstream's cheat engine is compiled out (`NGPC_NO_CHEATS`).
-- **Skip BIOS animation** — removed. The only honest way to skip the
-  eye-catch is the BIOS resume path, and faking resume on a cold boot makes
-  games restore a session that never existed (Faselei! draws over tilemaps
-  it never filled). The jingle stays; it's three seconds of 1998.
-- **Link cable** — upstream's serial port code is still in the tree but is
+- **Cheats** — the cheat engine is compiled out (`NGPC_NO_CHEATS`).
+- **Skipping the BIOS animation** — not offered. The jingle stays; it's
+  three seconds of 1998.
+- **Link cable** — the serial port code is in the tree but is
   compiled out (`NGPC_NO_LINK`); the port terminates in a stub. Two Pockets
   will not be trading Card Fighters cards.
 - **Analog video out / Analogizer** — not wired. Dock output is whatever
   Analogue's scaler does with it; untested here, no dock on hand.
-- **MiSTer's video processing options** — LCD Response simulation and
-  Saturation are not wired; that ground is covered (better) by Analogue's
-  display modes, including their Neo Geo Pocket screen simulations.
-- **Stereo Mix** — the NGP's stereo comes through as-is, no blend option.
-- **Savestate slots and hotkeys** — MiSTer's four slots and F-keys are
-  replaced by the Pocket's own Memories UI, which manages any number of
-  states. Nothing lost, different furniture.
+- **LCD effects and color saturation** — left to the Pocket's display
+  modes, including Analogue's Neo Geo Pocket screen simulations.
+- **Stereo blend** — no option to mix the left and right channels; the
+  NGP's stereo comes through as-is.
 
 **Saves are a ground-up rewrite, not a port of MiSTer's.** MiSTer keeps a
-sparse overlay of the whole 8 MB cartridge space; this port tracks exactly
+sparse overlay of the whole 8 MB cartridge space; this core tracks exactly
 the flash blocks a game dirties and persists them, packed and checksummed,
 in a sub-64 KB Pocket nonvolatile slot, CRC-bound to the cartridge,
 verified and applied before boot. What that trades away, knowingly:
@@ -240,7 +230,7 @@ whoever gets there first. 😃
 upstream/          the MiSTer core, cloned by scripts/setup.sh, patched from patches/
 patches/           our changes to upstream, as one reviewable diff
 platform/pocket/   Analogue's APF framework files
-target/pocket/     this port: bridge, savestate transport, cart save engine, RTC
+target/pocket/     the Pocket side: bridge, savestate transport, cart save engine, clock feed
 projects/          the Quartus project
 pkg/pocket/        core definition JSON for the Pocket
 sim/               iverilog benches: save engine, savestate transport and
@@ -260,12 +250,12 @@ quartus_sh --flow compile projects/ngpc_pocket.qpf
 python scripts/package.py --zip
 ```
 
-Open `projects/ngpc_pocket.qpf` in Quartus and hit Compile, exactly as on
-MiSTer. 1.1.0 is built and verified with **Quartus Prime Lite 25.1** (free,
-no license; install with Cyclone V device support). Expect a batch of
-benign warnings about ignored legacy assignments -- the modern fitter
-absorbed those knobs. `package.py` then stages the SD-card layout from the
-bitstream and the JSON.
+Open `projects/ngpc_pocket.qpf` in Quartus and hit Compile. 1.1.0 is built
+and verified with **Quartus Prime Lite 25.1** (free, no license; install
+with Cyclone V device support). Expect a batch of benign warnings about
+ignored legacy assignments -- the modern fitter absorbed those knobs.
+`package.py` then stages the SD-card layout from the bitstream and the
+JSON.
 
 The design targets a Cyclone V 5CEBA4F23C8 at ~98% logic occupancy
 and does not formally close timing at this speed grade; see the commit
@@ -279,6 +269,8 @@ case), picked from a 25-seed search.
   the K2GE, the whole machine. GPL-2.0.
 - **Adam Gastineau (agg23)** — PSRAM controller and data loader from the
   openFPGA template ecosystem. MIT.
+- **Guy Hutchison** — TV80, the Z80 core that runs the sound CPU, based on
+  Daniel Wallner's T80. MIT.
 - **supergarbo** — the packed save format and double-banked staging
   ([#5](https://github.com/janisc/openfpga-NGPC/pull/5)), reimplemented
   here with credit, and the two savestate transport fixes in 1.0.1.
@@ -295,12 +287,18 @@ Three layers, each carried where it applies:
 
 - **GPL-2.0** for the core and this port — inherited from upstream, see
   [LICENSE](LICENSE). Kitrinx's copyright headers are preserved throughout.
-- **MIT** for the agg23 modules (`psram.sv`, `data_loader.sv`) — their
-  headers carry it.
+- **MIT** for the agg23 modules (`psram.sv`, `data_loader.sv`,
+  `data_unloader.sv`, `sound_i2s.sv`, `sync_fifo.sv`) and for TV80
+  (`upstream/rtl/snd/z80/tv80/`) — their headers carry it.
 - **Analogue's APF Software License Agreement** for `platform/pocket/` —
   every APF file carries Analogue's agreement in its header, referencing
   their [EULA](https://www.analogue.link/pocket-eula); this is how all
-  published openFPGA cores ship these files.
+  published openFPGA cores ship these files. Analogue's core template also
+  supplies `target/pocket/core_bridge_cmd.v`. A few files in
+  `platform/pocket/` carry other terms in their headers: `pocket.tcl` and
+  `build_cdf.tcl` (OpenGateware, CC0-1.0), `build_id_gen.tcl` (Altera
+  Reference Design License), and `mf_datatable.v` and `mf_ddio_bidir_12.v`
+  (Intel, generated by Quartus).
 
 The platform image derives from a public-domain photograph by Evan-Amos
 ([Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Neo-Geo-Pocket-Color-Blue-Left.jpg)).
