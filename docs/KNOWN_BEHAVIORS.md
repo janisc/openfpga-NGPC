@@ -47,14 +47,14 @@ this build does not know (for example from the PR #5 test build), or when
 it was made with a different dump of the ROM. If you changed none of those,
 the likely reason is a rare fault: at launch, the core sometimes works out
 the wrong checksum for the game, although the game itself arrived intact,
-and then does not recognise its own save. We saw this during release
-testing with Card Fighters' Clash, after many quick quit-and-relaunch
-cycles, on some test builds, and the next launch brought the save back. The
-cause is not known yet; whether it shows up depends on the build. The
-release build went through more than 50 such launches without it, while a
-build known to show it did show it in the same session. We can't be sure
-it is gone for good, though. (1.0.x went on saving after it had refused a
-file, so there the same fault could cost the save; 1.1.0 keeps the file.)
+and then does not recognise its own save. We saw this during testing with
+Card Fighters' Clash, and the next launch brought the save back. We added
+diagnostics and checks but could not pinpoint the cause. It showed up only
+on some builds, most likely depending on how the design happens to be laid
+out on the FPGA (the fitter's placement and timing), and the release build
+never showed it in our testing. We can't be sure it is gone for good,
+though. (1.0.x went on saving after it had refused a file, so there the
+same fault could cost the save; 1.1.0 keeps the file.)
 
 ## In-game suspend features don't offer resume (Neo Turf Masters)
 

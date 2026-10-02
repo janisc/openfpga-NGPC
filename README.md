@@ -108,10 +108,11 @@ certainly still on the card. Don't overwrite or delete it:**
    it, and the Memory if you made one.
 3. **Launch the game again.** In the case we have seen, the save is back.
 
-That case is a rare fault, found during release testing: at launch, the
-core sometimes works out the wrong checksum for the game and then does not
-recognise its own save. The next launch brought the save back, but the
-cause is not known yet; see [docs/KNOWN_BEHAVIORS.md](docs/KNOWN_BEHAVIORS.md).
+That case is a rare fault, found during testing: at launch, the core
+sometimes worked out the wrong checksum for the game and then did not
+recognise its own save. It showed up only on some builds, and the release
+build never showed it in our testing, but the cause is not known yet; see
+[docs/KNOWN_BEHAVIORS.md](docs/KNOWN_BEHAVIORS.md).
 
 If the save still isn't there, run `tools/savinfo.py` on the file (below).
 To start over instead, move the file off the card first, and keep it.
