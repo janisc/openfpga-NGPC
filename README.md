@@ -80,8 +80,9 @@ core checks it before anything reaches the cartridge.
 
 Saves from 1.0.x load as before and are rewritten in the new format the
 next time the game saves. A 1.0.x file that was cut off at the slot size
-(Unitron 2, Faselei!, Neo Turf Masters, Neo 21, Bust-A-Move) can only give
-back what it holds.
+(among the games we found: Unitron 2, Faselei!, Neo Turf Masters, Neo 21,
+Bust-A-Move and the Ogre Battle Gaiden translation) can only give back what
+it holds.
 
 ### If a game starts without its save
 
