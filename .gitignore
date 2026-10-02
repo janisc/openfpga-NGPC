@@ -31,3 +31,24 @@ assets/ngpc_photo_pd_evanamos.jpg
 
 # Artwork intermediates stay local; the platform image ships from pkg/
 assets/
+sim/*.sav
+__pycache__/
+
+# rc6 bench families (sim/run_rc6_*.sh): logs, captures, work dirs, and the
+# files the runners regenerate on every run (sed mutants, the arbiter copied
+# out of core_top.v, the held bench made by tb_rc6f_mkheld.py, the t7p prep)
+sim/*.vvp.*
+sim/tb_rc6a_logs/
+sim/tb_rc6a_t9s_out/
+sim/tb_rc6b_work/
+sim/tb_rc6c_logs/
+sim/tb_rc6f_logs/
+sim/tb_rc6f_out/
+sim/tb_rc6x_logs/
+sim/tb_rc6?_mut_*
+sim/tb_rc6b_arb.vh
+sim/tb_rc6f_held.sv
+sim/tb_rc6x_t7p_F0.hex
+sim/tb_rc6x_t7p_psram.hex
+# sim/run_all.sh's default log directory
+sim/logs_all/

@@ -342,8 +342,11 @@ module core_top (
 
   // Reset to BIOS: the same reset, with the cartridge re-strap suppressed
   // so the machine boots to the BIOS menu (clock, horoscope). Plain Reset
-  // clears the mode and brings the game back; a mid-session Load Cartridge
-  // straps via the loader path regardless of the mode.
+  // clears the mode. Both actions raise reset_in (hard_reset), which also
+  // resets the cartridge loader (byte count 0), so either one lands in the
+  // BIOS menu with the cartridge unloaded; the save is kept (the staging
+  // bank is not reset). To restart a game, relaunch it. A mid-session Load
+  // Cartridge straps via the loader path regardless of the mode.
   reg        bios_reset_mode = 0;
   reg [31:0] reset_delay = 0;
   wire       external_reset = reset_delay > 0;
@@ -589,6 +592,7 @@ module core_top (
   wire [15:0] stage_diag_beats, stage_diag_drops;
 
   wire        stage_host_wr;
+  wire        stage_host_ready;
   wire [27:0] stage_host_wr_addr;
   wire [15:0] stage_host_wr_data;
 
@@ -646,7 +650,18 @@ module core_top (
 
   synch_3 settle_sync (slots_settled_74, slots_settled, clk_sys);
 
+  // APF's Reset Exit (0x0011), which follows the persisted interact settings
+  // at core load. ngpc_machine holds the BIOS setup seed for it (issue #6).
+  wire       reset_n_s;
+  synch_3 reset_n_sync (reset_n, reset_n_s, clk_sys);
+
+  wire        stage_wr_bank;   // assigned beside the state copier below
+
   ngpc_stage_mem stage_mem (
+      .active_bank_i(mc_stage_bank),
+      // The drain stages a savestate's image in the SPARE bank; the apply
+      // commits it only if it accepts it.
+      .host_wr_bank_i(stage_wr_bank),
       .clk  (clk_sys),
       .reset(reset_in),
 
@@ -659,13 +674,15 @@ module core_top (
       .host_rd_data_o(stage_host_rd_data),
 
       .host_busy_o(host_busy),
-      .host_wr_ready_o(sc_host_ready),
+      .host_wr_ready_o(stage_host_ready),
       .diag_beats_o(stage_diag_beats),
       .diag_drops_o(stage_diag_drops),
 
       .eng_req_i  (sc_rd_active ? sc_rd_req : stage_req),
       .eng_we_i   (sc_rd_active ? 1'b0 : stage_we),
-      .eng_addr_i (sc_rd_active ? sc_rd_addr : stage_addr),
+      // The copier reads the committed image, so it carries the bank too.
+      .eng_addr_i (sc_rd_active ? (sc_rd_addr | {8'd0, mc_stage_bank, 16'd0})
+                                : stage_addr),
       .eng_wdata_i(stage_wdata),
       .eng_ready_o(stage_ready),
       .eng_done_o (stage_done),
@@ -807,12 +824,10 @@ module core_top (
   wire [27:0] cart_wr_addr = {4'd0, bios_addr_raw[23:0]};
   wire [15:0] cart_wr_data = bios_data_raw;
 
-  // The save slot's writes, demuxed off the same stream. The [24:0] slice is
-  // the byte offset within the slot, since bit 25 is the region select.
-  assign stage_host_wr      = (bios_wr_raw && ld_is_save) || sc_host_wr;
-  assign stage_host_wr_addr = sc_host_wr ? {3'd0, sc_host_addr}
-                                         : {3'd0, bios_addr_raw[24:0]};
-  assign stage_host_wr_data = sc_host_wr ? sc_host_data : bios_data_raw;
+  // The save slot's writes, demuxed off the same stream, share the staging
+  // port with the state copier's drain: see the arbiter beside the copier
+  // below. The [24:0] slice is the byte offset within the slot, since bit 25
+  // is the region select.
 
   // ----------------------------------------------------------------------
   //  Controls
@@ -877,6 +892,8 @@ module core_top (
   wire        led_user;
 
   wire cart_fifo_overflow;
+  wire cart_fifo_drop;
+  wire [31:0] cart_diag_a, cart_diag_b;
 
   // ---- Savestates, and therefore sleep ----------------------------------
 
@@ -912,8 +929,31 @@ module core_top (
   wire        cs_load_error;
   wire [24:0] sc_host_addr;
   wire [15:0] sc_host_data;
-  wire        mc_stage_current, mc_save_busy;
-  wire        mc_state_apply, mc_capture_hold;
+  wire        mc_stage_current, mc_save_busy, mc_stage_bank;
+
+  // One host write port serves two writers: APF delivering the save slot
+  // (into the committed bank) and the copier draining a state's image (into
+  // the spare bank). An APF beat and a copier beat in the same cycle used to
+  // lose the APF beat outright -- data_loader cannot retry (rc6, L3). APF now
+  // always takes the cycle; the copier's beat is replayed on the next one
+  // (its address and data hold until it issues again) and it is shown not
+  // ready meanwhile. Address, data and bank all switch on sc_go, so a beat is
+  // never one writer's data in the other writer's bank.
+  wire        apf_save_wr = bios_wr_raw && ld_is_save;
+  reg         sc_replay   = 1'b0;
+  wire        sc_beat     = sc_host_wr || sc_replay;
+  wire        sc_go       = sc_beat && !apf_save_wr;
+  always @(posedge clk_sys) sc_replay <= !reset_in && sc_beat && apf_save_wr;
+  assign stage_host_wr      = apf_save_wr || sc_beat;
+  assign stage_host_wr_addr = sc_go ? {3'd0, sc_host_addr}
+                                    : {3'd0, bios_addr_raw[24:0]};
+  assign stage_host_wr_data = sc_go ? sc_host_data : bios_data_raw;
+  assign stage_wr_bank      = sc_go ? ~mc_stage_bank : mc_stage_bank;
+  assign sc_host_ready      = stage_host_ready && !sc_replay &&
+                              !(sc_host_wr && apf_save_wr);
+  wire        mc_state_apply, mc_capture_hold, mc_state_done;
+  wire        mc_frozen, ss_load_frozen, ss_load_fail;
+  wire [15:0] sc_diag_drain;
 
   ngpc_state_cart state_cart (
       .clk  (clk_sys),
@@ -946,7 +986,8 @@ module core_top (
       .stage_current_i(mc_stage_current),
       .apply_reject_i (mc_apply_reject),
       .state_apply_o  (mc_state_apply),
-      .apply_busy_i   (mc_save_busy),
+      .state_done_i   (mc_state_done),
+      .diag_drain_o   (sc_diag_drain),
       .hold_o         (mc_capture_hold)
   );
 
@@ -987,6 +1028,12 @@ module core_top (
       .cart_load_req   (cs_load_req),
       .cart_load_done  (cs_load_done),
       .cart_load_error (cs_load_error),
+      .frozen_i        (mc_frozen),
+      .load_frozen_o   (ss_load_frozen),
+      .load_fail_o     (ss_load_fail),
+      .save_busy_i     (mc_save_busy),   // diagnostic only (rc6)
+      .diag_a_i        (cart_diag_a),    // NGPC_CART_DIAG only
+      .diag_b_i        (cart_diag_b),    // NGPC_CART_DIAG only
       .cart_img_rd_addr(cs_img_rd_addr),
       .cart_img_rd_data(cs_img_rd_data),
 
@@ -1025,6 +1072,7 @@ module core_top (
 
       .opt_system      (opt_system_s),
       .opt_language_jp (opt_language_jp_s),
+      .apf_reset_exit  (reset_n_s),
       .opt_palette     (opt_palette_s),
       .opt_skip_anim   (1'b0),
       .opt_use_host_rtc(apf_rtc_ready),
@@ -1044,6 +1092,7 @@ module core_top (
       .cart_wr_addr      (cart_wr_addr[26:0]),
       .cart_wr_data      (cart_wr_data),
       .cart_fifo_overflow(cart_fifo_overflow),
+      .cart_fifo_drop    (cart_fifo_drop),
 
       .hps_rtc(apf_rtc_packet),
 
@@ -1069,7 +1118,10 @@ module core_top (
       .stage_ready(stage_ready),
       .stage_done (stage_done),
       .stage_rdata(stage_rdata),
-      .host_busy  (host_busy || sc_draining),
+      // The staging host port alone: the engine takes sc_draining on its own
+      // input, and its state commit must not wait on it (rc6, L2).
+      .host_busy  (host_busy),
+      .host_rd    (stage_host_rd),
       .state_apply     (mc_state_apply),
       // APF-origin save-slot writes only; the copier's own drain rides
       // the same mux and must not look like a delivery.
@@ -1078,7 +1130,14 @@ module core_top (
       .capture_hold    (mc_capture_hold),
       .suppress_cart_strap(bios_reset_mode_s),
       .stage_current   (mc_stage_current),
+      .stage_bank      (mc_stage_bank),
       .save_busy_state (mc_save_busy),
+      .draining        (sc_draining),
+      .state_done      (mc_state_done),
+      .save_frozen     (mc_frozen),
+      .state_frozen    (ss_load_frozen),
+      .state_fail      (ss_load_fail),
+      .stage_diag_drain(sc_diag_drain),
       .slots_settled(slots_settled),
       .stage_diag_beats(stage_diag_beats),
       .stage_diag_drops(stage_diag_drops),
@@ -1207,6 +1266,30 @@ module core_top (
       .outclk_3(clk_dot),
       .locked  (pll_core_locked)
   );
+
+  // Cartridge-path diagnostic, built only with NGPC_CART_DIAG (see the qsf):
+  // measures the cartridge path at both ends and reports through savestate
+  // pad words 8418/8419 (tools/cartdiag.py). Without it the pad words keep
+  // their release meaning and this logic is not built.
+`ifdef NGPC_CART_DIAG
+  ngpc_cart_diag cart_diag (
+      .clk_74a                 (clk_74a),
+      .clk_sys                 (clk_sys),
+      .reset_sys               (reset_in),
+      .bridge_wr               (bridge_wr),
+      .bridge_addr             (bridge_addr),
+      .bridge_wr_data          (bridge_wr_data),
+      .dataslot_requestwrite   (dataslot_requestwrite),
+      .dataslot_requestwrite_id(dataslot_requestwrite_id),
+      .fifo_drop               (cart_fifo_drop),
+      .fifo_overflow           (cart_fifo_overflow),
+      .diag_a                  (cart_diag_a),
+      .diag_b                  (cart_diag_b)
+  );
+`else
+  assign cart_diag_a = 32'd0;
+  assign cart_diag_b = 32'd0;
+`endif
 
   // cart_fifo_overflow is latched but has no reader yet: APF gives a core no
   // way to raise a diagnostic the user can see, short of putting it in the

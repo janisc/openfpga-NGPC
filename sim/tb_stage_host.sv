@@ -21,6 +21,7 @@ module tb_stage_host;
 	always #6.734  clk_74a = ~clk_74a;
 
 	reg reset = 1;
+	reg wr_bank = 0;
 
 	// ---- APF bridge (write side only) --------------------------------------
 	reg         bridge_wr = 0;
@@ -62,6 +63,10 @@ module tb_stage_host;
 	ngpc_stage_mem dut (
 		.clk  (clk_sys),
 		.reset(reset),
+		// Both banks follow one bench-driven bit: which bank APF's writes
+		// land in is core_top's choice, and this bench checks it is honoured.
+		.active_bank_i (wr_bank),
+		.host_wr_bank_i(wr_bank),
 		.host_wr_i     (stage_host_wr),
 		.host_wr_addr_i(stage_host_wr_addr),
 		.host_wr_data_i(stage_host_wr_data),
@@ -129,6 +134,7 @@ module tb_stage_host;
 	reg [7:0] img [0:WORDS16*2-1];
 
 	integer i, k, errs, gap;
+	integer chk_base = 0;
 
 	task stream_image(input integer word_gap);
 		integer j;
@@ -151,10 +157,10 @@ module tb_stage_host;
 		begin
 			errs = 0;
 			for (k = 0; k < WORDS16; k = k + 1) begin
-				if (cmem[k] !== {img[2*k+1], img[2*k]}) begin
+				if (cmem[chk_base + k] !== {img[2*k+1], img[2*k]}) begin
 					if (errs < 8)
 						$display("   word %0d: got %h expected %h%h",
-						         k, cmem[k], img[2*k+1], img[2*k]);
+						         k, cmem[chk_base + k], img[2*k+1], img[2*k]);
 					errs = errs + 1;
 				end
 			end
@@ -205,13 +211,47 @@ module tb_stage_host;
 		end
 		check(4); total = total + errs;
 
+		// Staging is double-banked: a write aimed at bank 1 must land 64 KB
+		// up and leave bank 0 alone.
+		$display("== bank 1 (the savestate drain's spare bank)");
+		for (i = 0; i < 262144; i = i + 1) cmem[i] = 16'hCCCC;
+		wr_bank = 1; chk_base = 32768;
+		stream_image(75); check(75); total = total + errs;
+		errs = 0;
+		for (k = 0; k < 32768; k = k + 1) if (cmem[k] !== 16'hCCCC) errs = errs + 1;
+		if (errs) $display("   FAIL: %0d words of bank 0 written", errs);
+		else      $display("   PASS (bank 0 untouched)");
+		total = total + errs;
+
+		// A file longer than a bank -- a foreign or oversized save -- must
+		// not spill into the other bank or wrap over this one's header.
+		$display("== writes past the 64 KB bank are dropped");
+		wr_bank = 0;
+		begin : spill
+			integer j;
+			for (j = 0; j < 64; j = j + 1) begin
+				@(posedge clk_74a);
+				bridge_addr <= 32'h12010000 + j*4; bridge_wr_data <= 32'h5A5A5A5A; bridge_wr <= 1;
+				@(posedge clk_74a); bridge_wr <= 0;
+				repeat (75) @(posedge clk_74a);
+			end
+			repeat (2000) @(posedge clk_74a);
+		end
+		errs = 0;
+		for (k = 0; k < 32768; k = k + 1) if (cmem[k] !== 16'hCCCC) errs = errs + 1;
+		for (k = 0; k < WORDS16; k = k + 1)
+			if (cmem[32768 + k] !== {img[2*k+1], img[2*k]}) errs = errs + 1;
+		if (errs) $display("   FAIL: %0d words changed by writes past the bank", errs);
+		else      $display("   PASS (dropped; both banks intact)");
+		total = total + errs;
+
 		if (total == 0) $display("== HOST WRITE LEG CLEAN IN SIMULATION");
 		else            $display("== %0d TOTAL ERRORS", total);
 		$finish;
 	end
 
 	initial begin
-		#80_000_000;
+		#160_000_000;
 		$display("== WATCHDOG TIMEOUT");
 		$finish;
 	end

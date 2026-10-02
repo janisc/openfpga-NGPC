@@ -1,6 +1,6 @@
 #!/bin/sh
 # Host write leg of the save staging region:
-#   wsl -e sh /mnt/c/FPGA/openfpga-NGPC/sim/run_stage.sh
+#   wsl -e sh sim/run_stage.sh
 set -e
 cd "$(dirname "$0")/.."
 

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Savestate transport regression. Run from anywhere:
-#   wsl -e sh /mnt/c/FPGA/openfpga-NGPC/sim/run.sh
+#   wsl -e sh sim/run.sh
 # Requires iverilog (apt install iverilog). The transport does not change
 # unless this prints ALL SCENARIOS MATCHED EXPECTATIONS.
 set -e

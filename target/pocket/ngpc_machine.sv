@@ -1,5 +1,7 @@
 // NGPC for Analogue Pocket -- machine wrapper.
 //
+// Machine-side logic carried from NGPC.sv: Copyright (c) 2026 Jamie Blanks.
+//
 // This is the Pocket's answer to NGPC.sv. It keeps the machine-side logic of
 // the MiSTer top level (reset sequencing, BIOS load, strap, power button, BIOS
 // setup seeding, the cartridge loader and its SDRAM backing store) and drops
@@ -28,6 +30,7 @@ module ngpc_machine
 	// machine rather than the framework's scaler.
 	input  wire [1:0]  opt_system,       // 0 = NGPC, 1 = Auto, 2 = NGP        (status[2:1])
 	input  wire        opt_language_jp,  //                                    (status[3])
+	input  wire        apf_reset_exit,   // APF Reset Exit (reset_n), synchronised
 	input  wire [2:0]  opt_palette,      // mono palette                       (status[16:14])
 	input  wire        opt_skip_anim,    // 1 = skip the BIOS eye-catch        (!status[19])
 	input  wire        opt_use_host_rtc, //                                    (!status[17])
@@ -47,6 +50,7 @@ module ngpc_machine
 	input  wire [26:0] cart_wr_addr,     // byte address within the image
 	input  wire [15:0] cart_wr_data,
 	output wire        cart_fifo_overflow, // diagnostic, see ngpc_cart_fifo
+	output wire        cart_fifo_drop,     // DIAG build: one pulse per dropped word
 
 	// ---- Host wall clock --------------------------------------------------
 	// Same packet shape ngp_host_clock consumes on MiSTer; the top level builds
@@ -85,14 +89,22 @@ module ngpc_machine
 	input  wire        stage_ready,
 	input  wire        stage_done,
 	input  wire [15:0] stage_rdata,
-	input  wire        host_busy,        // APF is moving the slot
+	input  wire        host_busy,        // staging host port busy (APF or drain), ~10 ms tail
+	input  wire        host_rd,          // APF's read strobe on the staging port
 	input  wire        state_apply,      // savestate restore: apply staged image
 	input  wire        save_slot_wr,     // APF writing the save slot now
 	output wire        apply_reject,     // load refused: bitmap omits dirty blocks
 	input  wire        capture_hold,     // savestate capture: hold the pause
 	input  wire        suppress_cart_strap, // reset boots cartless: BIOS menu
 	output wire        stage_current,    // stager parked, image current
-	output wire        save_busy_state,  // cart-save engine busy (apply observer)
+	output wire        stage_bank,       // committed staging bank
+	output wire        save_busy_state,  // the save engine holds the machine (boot_hold)
+	input  wire        draining,         // copier draining a state into staging
+	output wire        state_done,       // the state apply has finished
+	output wire        save_frozen,      // save engine frozen: stamp captures
+	input  wire        state_frozen,     // the state being loaded is frozen
+	input  wire        state_fail,       // the bridge reported a load failed
+	input  wire [15:0] stage_diag_drain, // drain beats, for the save header
 	input  wire        slots_settled,    // no loader region written for ~500 ms
 	input  wire [15:0] stage_diag_beats,
 	input  wire [15:0] stage_diag_drops,
@@ -151,7 +163,9 @@ module ngpc_machine
 	// machine "power" and "reset" are emphatically different things.
 	//
 	// The cartridge loader and its SDRAM backing store sit OUTSIDE the machine
-	// reset. A soft reset is a console reset, not a cartridge removal.
+	// reset. A soft reset (the machine's own, such as a System change or the
+	// boot hold) is a console reset, not a cartridge removal. The menu Reset
+	// is different: it raises hard_reset, which resets the loader too.
 	localparam [7:0] BIOS_RESET_TAIL = 8'hFF;
 
 	wire hard_reset = reset_in;
@@ -286,7 +300,11 @@ module ngpc_machine
 	wire auto_pwr = auto_pwr_pending_q && bios_setup_ready && launch_target_ready;
 
 	always @(posedge clk_sys) begin
-		if (hard_reset || cart_download_start) begin
+		// The machine reset clears a press too. Every savestate apply asserts it
+		// (boot_hold), and a press the settings gate delayed towards APF's
+		// Reset Exit could otherwise still be held when a wake restores the
+		// game -- which reads it as the power button and switches off (review).
+		if (hard_reset || cart_download_start || reset) begin
 			pwr_hold_q         <= 25'd0;
 			auto_pwr_pending_q <= 1'b0;
 		end else begin
@@ -302,6 +320,32 @@ module ngpc_machine
 	end
 
 	wire power_btn = pwr_pad || (pwr_hold_q != 25'd0);
+
+	// ---- settings gate begin ----
+	// The seed samples Language and Mono Palette the moment the BIOS reaches
+	// standby, and the automatic power-on follows one clock later. On the
+	// Pocket those values arrive over the bridge, and APF writes them just
+	// before its Reset Exit (0x0011). So the seed -- and with it the power-on
+	// -- waits for the first Reset Exit. The gate is sticky: a later Reset
+	// Enter never closes it, and menu Reset keeps it (power-up value only). If
+	// no Reset Exit ever comes, the BIOS gives up waiting after 2^27 clocks
+	// (~2.73 s) spent in standby -- counted in standby, not from
+	// configuration, so a slow load cannot use the fallback up before the BIOS
+	// even gets there (review).
+	reg        apf_run_seen_q  = 1'b0;
+	reg        settings_late_q = 1'b0;
+	reg [26:0] settings_wait_q = 27'd0;
+	reg        setup_ready_q   = 1'b0;
+
+	always @(posedge clk_sys) begin
+		setup_ready_q <= bios_setup_ready;
+		if (apf_reset_exit) apf_run_seen_q <= 1'b1;
+		if (!apf_run_seen_q && !settings_late_q && setup_ready_q)
+			{settings_late_q, settings_wait_q} <= {1'b0, settings_wait_q} + 28'd1;
+	end
+
+	wire settings_ready = apf_run_seen_q || settings_late_q;
+	// ---- settings gate end ----
 
 	//////////////////////////// BIOS setup seed /////////////////////////////
 
@@ -343,7 +387,17 @@ module ngpc_machine
 	(
 		.clk                    (clk_sys),
 		.reset                  (reset),
-		.setup_ready            (bios_setup_ready),
+		// The seed samples Language and Mono Palette the moment the BIOS
+		// reaches standby, and the automatic power-on follows one clock
+		// later -- after that the game is running and nothing re-seeds until
+		// the next standby. On MiSTer the menu values exist from the first
+		// cycle; on the Pocket they arrive over the bridge, and they can
+		// arrive after standby. The game then read the power-up default,
+		// English, for the whole session, while "Reset to BIOS" -- which
+		// seeds again later -- showed the chosen language (issue #6). So the
+		// seed, and with it the automatic power-on, waits for APF to have
+		// finished writing them (settings_ready, above).
+		.setup_ready            (bios_setup_ready && settings_ready),
 		.mono                   (bios_mono_active),
 		.osd_language_japanese  (opt_language_jp),
 		.osd_palette            (opt_palette),
@@ -446,7 +500,8 @@ module ngpc_machine
 		.addr_o     (cart_ioctl_addr),
 		.data_o     (cart_ioctl_dout),
 
-		.overflow_o (cart_fifo_overflow)
+		.overflow_o (cart_fifo_overflow),
+		.drop_o     (cart_fifo_drop)
 	);
 
 	// The loader makes its own ioctl_index[5:0] == 1 comparison internally, so
@@ -498,7 +553,12 @@ module ngpc_machine
 	// A machine reset clears ngp_cart's die population, but the loader and the
 	// SDRAM image survive it because they sit on hard_reset. Re-strap the board
 	// from the retained byte count once the machine reset releases, so a
-	// cartridge does not disappear when the user hits Reset.
+	// cartridge does not disappear across a reset the core makes on its own
+	// (a System change, a save apply's boot_hold). A menu Reset is not one of
+	// those: it raises reset_in, which IS hard_reset, so the loader forgets
+	// the image (byte count 0), the re-strap populates no dies, and the BIOS
+	// lands in its menu. A menu Reset unloads the cartridge; the save file is
+	// kept, and relaunching the game brings the cartridge back.
 	//
 	// A SAVESTATE RESTORE is such a reset too, and it arrives on its own wire:
 	// the engine's reset_ss goes straight to the mainboard's restore_reset
@@ -643,13 +703,21 @@ module ngpc_machine
 		.die_busy_i      (cart_die_busy),
 
 		.host_busy_i     (host_busy),
+		.host_rd_i       (host_rd),
 		.state_apply_i   (state_apply),
+		.draining_i      (draining),
+		.state_frozen_i  (state_frozen),
+		.state_fail_i    (state_fail),
+		.frozen_o        (save_frozen),
 		.save_slot_wr_i  (save_slot_wr),
 		.apply_reject_o  (apply_reject),
+		.state_done_o    (state_done),
 		.stage_current_o (stage_current),
+		.stage_bank_o    (stage_bank),
 		.slots_settled_i (slots_settled),
 		.diag_beats_i    (stage_diag_beats),
 		.diag_drops_i    (stage_diag_drops),
+		.diag_drain_i    (stage_diag_drain),
 
 		.boot_hold_o     (overlay_boot_hold),
 		.save_present_o  (save_present_o),
@@ -673,7 +741,10 @@ module ngpc_machine
 		.stage_rdata_i   (stage_rdata)
 	);
 
-	assign save_busy_state = save_busy;
+	// Read only by the savestate bridge's load diagnostic (rc6): whether a
+	// load arrived while the boot apply still held the machine. busy_o is also
+	// high during every background staging pass, so it is the hold itself.
+	assign save_busy_state = overlay_boot_hold;
 
 	//////////////////////////// Savestates //////////////////////////////////
 	//
