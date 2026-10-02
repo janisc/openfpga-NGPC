@@ -1,5 +1,7 @@
 // NGPC for Analogue Pocket -- machine wrapper.
 //
+// Machine-side logic carried from NGPC.sv: Copyright (c) 2026 Jamie Blanks.
+//
 // This is the Pocket's answer to NGPC.sv. It keeps the machine-side logic of
 // the MiSTer top level (reset sequencing, BIOS load, strap, power button, BIOS
 // setup seeding, the cartridge loader and its SDRAM backing store) and drops
