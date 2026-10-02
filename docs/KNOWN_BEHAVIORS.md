@@ -56,34 +56,22 @@ never showed it in our testing. We can't be sure it is gone for good,
 though. (1.0.x went on saving after it had refused a file, so there the
 same fault could cost the save; 1.1.0 keeps the file.)
 
-## In-game suspend features don't offer resume (Neo Turf Masters)
+## Neo Turf Masters: the in-game suspend and the power button
 
 **What you'll see:** Neo Turf Masters offers "press OPTION to suspend" before
-each stroke. Choosing "suspend and turn off the power → Yes" keeps the round
-and powers the machine down (blank/white screen — a powered-off NGP shows a
-blank panel; this part is correct). On the next launch the game never offers
-to resume.
+each stroke. If you choose to suspend and turn off the power, the game
+switches the console off and the screen goes white.
 
-**Why:** The suspend is not kept in the cartridge at all. It lives in the
-console's **always-on work memory**: on real hardware "power off" is a standby
-in which that memory stays powered, and on the next power-on the BIOS and the
-game pick the round up from it. Every launch on the Pocket starts the console
-from cold with that memory cleared, so there is nothing to resume. Measured:
-a suspend followed by quitting leaves the save file exactly as it was, byte
-for byte. (The empty 16 KB block 34 in Neo Turf Masters' save file is the
-BIOS's own power-up routine, which erases the cartridge's top block at every
-cold start; the saves of most games carry one.) **MiSTer behaves
-identically** — it cold-boots too.
+**What to do:** press **Select**. On this core it is the console's power
+button, and the round carries on where you left it. We strongly suggest
+using the Pocket's sleep or Memories (save states) instead, though.
 
-**Decision: document, don't fix — for now.** Keeping the console's work memory
-between sessions, as some software emulators do, would make in-game suspend
-work for every game without per-game hacks. That is a candidate for a later
-version, not for a save-safety release.
-
-**Use instead:** **Sleep.** The Pocket's sleep *is* the NGP's always-on model,
-done faithfully — put the Pocket to sleep mid-backswing, wake, continue. Savestates
-cover the cart-swap case the in-game suspend was designed for. The game's
-normal saves are unaffected; only the mid-round suspend prompt is inert.
+**Why:** On the real console, the suspend keeps the round in memory while
+the console is off, and the power button switches it back on. This core's
+power button does that, but otherwise it doesn't work as it should (it only
+switches the console back on, not off), it is confusing, and it offers
+nothing that sleep and Memories don't. It is under consideration for
+removal in a future version.
 
 ## A Memory that cannot rewind the save restarts the game
 

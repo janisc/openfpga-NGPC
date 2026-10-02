@@ -166,9 +166,7 @@ from the moment it was taken, so the save may be recoverable from one;
 See [docs/KNOWN_BEHAVIORS.md](docs/KNOWN_BEHAVIORS.md). It starts with what
 to do if a game starts without its save (in short: the save is almost
 certainly still there; quit the core and launch the game again). The rest
-are findings that are understood and intentionally left as-is (e.g. why
-in-game suspend features cannot offer resume on any cold-booting core, this
-one and MiSTer alike, and why sleep is the honest replacement; or why a
+are findings that are understood and intentionally left as-is (e.g. why a
 Memory that cannot rewind the game's save restarts the game).
 
 ## What this port leaves out
