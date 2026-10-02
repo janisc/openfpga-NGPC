@@ -12,6 +12,6 @@ fi
 cd upstream
 git fetch --all
 git checkout "$COMMIT"
-git apply --check ../patches/0001-pocket-video-path.patch
-git apply ../patches/0001-pocket-video-path.patch
+git apply --check ../patches/ngpc-upstream-patches.diff
+git apply ../patches/ngpc-upstream-patches.diff
 echo "upstream at $COMMIT, patch applied"

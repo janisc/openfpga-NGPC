@@ -48,7 +48,8 @@ def main() -> int:
     out_core.mkdir(parents=True)
     shutil.copytree(PKG / "Platforms", DIST / "Platforms")
 
-    for f in sorted((PKG / "Cores" / CORE_DIR_NAME).glob("*.json")):
+    # Every definition file, and info.txt (the text the Pocket shows for the core).
+    for f in sorted(p for p in (PKG / "Cores" / CORE_DIR_NAME).iterdir() if p.is_file()):
         shutil.copy2(f, out_core / f.name)
 
     raw = RBF.read_bytes()
@@ -63,8 +64,8 @@ def main() -> int:
         "boot0.rom  Neo Geo Pocket Color BIOS (64 KiB)\n"
         "boot1.rom  Neo Geo Pocket mono BIOS (64 KiB)\n"
         "\n"
-        "Same files the MiSTer core uses. Without boot0.rom the core has\n"
-        "nothing to run and the screen stays blank.\n"
+        "Without boot0.rom only System = Mono (boot1.rom) can run;\n"
+        "otherwise the screen stays blank.\n"
     )
 
     print(f"staged {DIST}")

@@ -35,7 +35,8 @@ module ngpc_cart_fifo
 	output wire [26:0] addr_o,
 	output wire [15:0] data_o,
 
-	output reg         overflow_o
+	output reg         overflow_o,
+	output wire        drop_o      // DIAG: a write arrived while full (dropped)
 );
 
 	localparam int unsigned WIDTH = 43;   // 27 address + 16 data
@@ -77,6 +78,7 @@ module ngpc_cart_fifo
 		.eccstatus    ()
 	);
 
+	assign drop_o = wr_i && fifo_full;
 	assign wr_o   = pop;
 	assign addr_o = fifo_dout[42:16];
 	assign data_o = fifo_dout[15:0];
