@@ -1,7 +1,60 @@
 # Known Behaviors
 
-Findings from play-testing that are understood and intentionally left as-is.
-Each entry states what you'll see, why it happens, and what to use instead.
+Things you may run into, why they happen, and what to do. All but the first
+are understood and intentionally left as-is. The first is a rare fault whose
+cause is still being looked for; when it happens, the core keeps your save
+file as it is.
+
+## A game starts without its save (the save is still on the card)
+
+**What you'll see:** you launch a game that has a save, and the save isn't
+there: no Continue, or the game starts as if it were new. There is no
+message.
+
+**What to do:** the save is almost certainly still on the card. Don't
+overwrite or delete it.
+
+1. **Quit the core.** Don't play on: nothing in that session is saved. If
+   you'd like to help find the cause, make a Memory before you quit. It
+   records the checksum the core worked out. Keep it only for the report;
+   don't play from it later.
+2. **Optional: back up the save and tell us.** Copy the save to your
+   computer. It is on the SD card under `Saves/ngpc/`, in the same folders
+   as the game under `Assets/ngpc/`, with the game's name and `.sav` at the
+   end: for a game in `Assets/ngpc/common/`, that is
+   `Saves/ngpc/common/<game>.sav`. If you can, open an issue on GitHub and
+   attach the file, and the Memory if you made one (Memories are in
+   `Memories/Save States/janisc.NGPC/`).
+3. **Launch the game again.** If it was the fault described below, your
+   save is back.
+
+If the save still isn't there, the file is still kept. `tools/savinfo.py`
+shows whether it is damaged or in a format this build does not read, and
+which ROM (CRC32) it was made for. To start over instead, move the file off
+the card first, and keep it.
+
+**Why:** Before the core puts a save back into the cartridge, it checks that
+the file is intact and that it belongs to exactly this ROM: every save
+carries the checksum of the ROM it was made with. If a check fails, the core
+refuses the file. A refused file is never overwritten or deleted: the core
+leaves it on the card byte for byte and **does not save anything for the
+rest of that session**, so nothing you do in that session is kept. (Sleep
+and wake still work in such a session, and a Memory made in it remembers
+that saving is off.)
+
+A file is refused on purpose when it is damaged, when it is in a format
+this build does not know (for example from the PR #5 test build), or when
+it was made with a different dump of the ROM. If you changed none of those,
+the likely reason is a rare fault: at launch, the core sometimes works out
+the wrong checksum for the game, although the game itself arrived intact,
+and then does not recognise its own save. We saw this during release
+testing with Card Fighters' Clash, after many quick quit-and-relaunch
+cycles, on some test builds, and the next launch brought the save back. The
+cause is not known yet; whether it shows up depends on the build. The
+release build went through more than 50 such launches without it, while a
+build known to show it did show it in the same session. We can't be sure
+it is gone for good, though. (1.0.x went on saving after it had refused a
+file, so there the same fault could cost the save; 1.1.0 keeps the file.)
 
 ## In-game suspend features don't offer resume (Neo Turf Masters)
 
@@ -28,10 +81,9 @@ work for every game without per-game hacks. That is a candidate for a later
 version, not for a save-safety release.
 
 **Use instead:** **Sleep.** The Pocket's sleep *is* the NGP's always-on model,
-done faithfully — close the lid mid-backswing, wake, continue. Savestates
-cover the cart-swap case the in-game suspend was designed for. Normal
-turn-off-and-continue saves in Neo Turf Masters are unaffected; only the
-mid-round suspend prompt is inert.
+done faithfully — put the Pocket to sleep mid-backswing, wake, continue. Savestates
+cover the cart-swap case the in-game suspend was designed for. The game's
+normal saves are unaffected; only the mid-round suspend prompt is inert.
 
 ## A Memory that cannot rewind the save restarts the game
 
@@ -54,3 +106,56 @@ save is cut short, just as a reset at that moment would cut it.
 
 **Use instead:** Continue from the game's own save, or load a more recent
 Memory. Only unsaved progress from that session is lost.
+
+## A short sound stutter when a Memory loads
+
+**What you'll see:** now and then, loading a Memory makes the sound stutter
+briefly before the Memory is restored.
+
+**Why:** If the game is writing to its save at that moment, the core waits
+for the flash write in progress to finish before it stops the game and
+restores the Memory. (A save the game makes of several writes can still be
+cut between them, as the entry above describes.) The
+wait is deliberate: cutting a flash write in half would leave the cartridge
+in a state that nothing records, and a Memory load that did not wait for
+the game's save to settle could hang.
+
+**Use instead:** Nothing to do. The load completes normally.
+
+## Menu Reset goes to the BIOS menu, not back to the game
+
+**What you'll see:** choosing Reset in the Pocket's menu does not restart
+the game. The BIOS menu appears instead (clock, horoscope), as it would
+with no cartridge.
+
+**Why:** On the Pocket, the plain menu Reset also unloads the cartridge
+(MiSTer's keeps the game). Your save is kept: tested on hardware.
+
+**Use instead:** To restart a game, quit the core and launch the game
+again. To visit the BIOS menu on purpose, use Reset to BIOS.
+
+## The clock is behind after a sleep or a Memory load
+
+**What you'll see:** after waking from sleep, or loading a Memory, the
+NGP's clock (the BIOS calendar, alarm and horoscope, and games that read
+the time) carries on from the moment the sleep or the Memory was taken, so
+it is behind by the time in between.
+
+**Why:** A sleep or a Memory brings back the whole machine as it was,
+clock included. The core sets the clock from the Pocket's when a game is
+launched, and at Reset to BIOS.
+
+**Use instead:** Relaunch the game, or use Reset to BIOS, to set the clock
+right.
+
+## Mono Palette has no effect with System = Mono
+
+**What you'll see:** with System set to Mono, changing Mono Palette changes
+nothing.
+
+**Why:** The palettes belong to the color BIOS: it is the color BIOS that
+colors mono games. System = Mono runs the original mono BIOS, which has no
+palettes. (MiSTer hides the option in that case.)
+
+**Use instead:** System = Auto or Color. On the Pocket, Auto runs the color
+BIOS, so the palette applies to mono games.
