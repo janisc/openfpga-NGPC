@@ -73,6 +73,11 @@ stored as a count, so even games that write 64 KB flash blocks fit the
 save slot whole. Every V4 save carries a checksum over its contents, and the
 core checks it before anything reaches the cartridge.
 
+While a game runs, the core keeps its working copy of the save in the
+Pocket's PSRAM. It sets the PSRAM up at every start (full refresh, the
+standard asynchronous mode) rather than relying on the settings the chip
+was left with, and reads them back to make sure.
+
 Saves from 1.0.x load as before and are rewritten in the new format the
 next time the game saves. A 1.0.x file that was cut off at the slot size
 (among the games we found: Unitron 2, Faselei!, Neo Turf Masters, Neo 21,
@@ -129,7 +134,8 @@ made before updating.
 cartridge, the ROM checksum, which flash blocks it carries, whether those
 blocks hold real data or only erased flash, whether the file's own checksum
 still matches, which build wrote it, whether the last restore came from the
-file or from a savestate, which check refused a restore, and the core's own
+file or from a savestate, which check refused a restore, how the PSRAM was
+found when the core started (1.1.1 and later), and the core's own
 diagnostic counters:
 
 ```

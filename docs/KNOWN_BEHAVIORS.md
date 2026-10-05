@@ -26,7 +26,8 @@ overwrite or delete it.
    attach the file, and the Memory if you made one (Memories are in
    `Memories/Save States/janisc.NGPC/`).
 3. **Launch the game again.** If it was the fault described below, your
-   save is back.
+   save is back. If it still isn't, switch the Pocket fully off and on,
+   and launch the game once more.
 
 If the save still isn't there, the file is still kept. `tools/savinfo.py`
 shows whether it is damaged or in a format this build does not read, and
@@ -53,9 +54,19 @@ Card Fighters' Clash, and the next launch brought the save back. We added
 diagnostics and checks but could not pinpoint the cause. It showed up only
 on some builds, most likely depending on how the design happens to be laid
 out on the FPGA (the fitter's placement and timing), and the release build
-never showed it in our testing. We can't be sure it is gone for good,
-though. (1.0.x went on saving after it had refused a file, so there the
-same fault could cost the save; 1.1.0 keeps the file.)
+never showed it in our testing. A player has since reported the same
+symptom with 1.1.0; there, relaunching did not help, but switching the
+Pocket off and on brought the save back. So it is not gone. (1.0.x went on
+saving after it had refused a file, so there the same fault could cost the
+save; 1.1.0 and later keep the file.)
+
+Up to 1.1.0 there was also a second way to end up here, fixed in 1.1.1:
+while a game runs, the core keeps a working copy of the save in the
+Pocket's PSRAM, and 1.1.0 relied on the chip's power-on settings. If the
+PSRAM had been left with its refresh switched off, that copy could decay
+during play and be written to the card damaged when you quit. The next
+launch then refuses the damaged file (`tools/savinfo.py` reports its
+checksum as a mismatch). 1.1.1 sets the PSRAM up itself at every start.
 
 ## Neo Turf Masters: the in-game suspend and the power button
 
