@@ -35,15 +35,19 @@ VERDICT_NEW = {0: 'none', 1: 'ACCEPTED', 2: 'REJECTED (coverage)',
 
 # Header word 21 is {writer revision, catalogue sub-code}, on every build.
 # From 1.1.0-rc5 the high byte names the revision of the core that wrote
-# the file: 0x05 is rc5, 0x06 is rc6 and later. Every older writer left it 0.
+# the file: 0x05 is rc5, 0x06 is rc6 and 1.1.0, 0x07 is 1.1.1 (which adds
+# the PSRAM report in header words 32/33). Every older writer left it 0.
 WRITER_RC5 = 0x05
 WRITER_RC6 = 0x06
+WRITER_111 = 0x07
 
 # A savestate file (.sta): the Pocket's own header, then the core's blob as
 # big-endian 32-bit words. The identity block and the load diagnostic sit
 # between the engine's machine state and the embedded save image.
 BLOB_OFF = 592
 PAD_DIAG = 8419
+PAD_PSRAM = 8418               # 1.1.1: the PSRAM set-up report (diag builds: their own word)
+H_VERSION = 132                # the Pocket's header: the core's version string
 ID_BASE = 8420
 CART_BASE = 8424
 CART_WORDS = 16256
@@ -177,9 +181,11 @@ def writer(rev):
     if rev == WRITER_RC5:
         return 'written by 1.1.0-rc5 (rev %d)' % rev
     if rev == WRITER_RC6:
-        return 'written by 1.1.0-rc6 or later (rev %d)' % rev
-    if rev > WRITER_RC6:
-        return 'written by 1.1.0-rc6 or later (rev %d, newer than this tool knows)' % rev
+        return 'written by 1.1.0-rc6 or 1.1.0 (rev %d)' % rev
+    if rev == WRITER_111:
+        return 'written by 1.1.1 or later (rev %d)' % rev
+    if rev > WRITER_111:
+        return 'written by 1.1.1 or later (rev %d, newer than this tool knows)' % rev
     return 'unknown writer revision %d -- no core writes it; the header may be damaged' % rev
 
 
@@ -231,6 +237,51 @@ def diagnostics(w, rev=0):
                 'hardware fault. Please keep this file and report it.')
         else:
             say('staging check', 'clean')
+
+
+PAR = {0: 'full array', 1: 'bottom 1/2', 2: 'bottom 1/4', 3: 'bottom 1/8', 4: 'NONE of the array',
+       5: 'top 1/2', 6: 'top 1/4', 7: 'top 1/8'}
+
+
+def psram_report(v):
+    """The 1.1.1 PSRAM set-up report (header words 32/33, or state word 8418):
+    how the PSRAM was found when the core started -- a core that ran before
+    this one may have changed it -- and whether the set-up read back."""
+    if not v & 1:
+        return
+    bcr0, rcr0 = v >> 16, (v >> 8) & 0xFF
+    async1, par1 = (v >> 7) & 1, (v >> 4) & 7
+    ok1, ok0, done = (v >> 3) & 1, (v >> 2) & 1, (v >> 1) & 1
+    left = []
+
+    def die(mode_async, par, dpd_on, regs):
+        parts = []
+        if mode_async:
+            parts.append('asynchronous')
+        else:
+            parts.append('SYNCHRONOUS burst mode')
+            left.append('mode')
+        parts.append('refresh %s' % PAR[par])
+        if par != 0:
+            left.append('refresh')
+        if dpd_on:
+            parts.append('DEEP POWER-DOWN on')
+            left.append('power-down')
+        return ', '.join(parts) + regs
+
+    d0 = die(bcr0 >> 15 & 1, rcr0 & 7, not (rcr0 >> 4 & 1), ' (BCR %04X, RCR %02X)' % (bcr0, rcr0))
+    d1 = die(async1, par1, False, '')
+    say('PSRAM at start', 'die 0 %s; die 1 %s' % (d0, d1))
+    if left:
+        say('PSRAM note', 'not the power-on settings: a core that ran before this one left the '
+            'PSRAM so (refresh off lets stored data decay). The set-up below put it back.')
+    if not done:
+        say('PSRAM set-up', 'NOT DONE when this was written')
+    elif ok0 and ok1:
+        say('PSRAM set-up', 'done; both dies read back as written (asynchronous, full refresh)')
+    else:
+        say('PSRAM set-up', 'done, but die %s did NOT read back as written' % (
+            '0 and 1' if not ok0 and not ok1 else ('0' if not ok0 else '1')))
 
 
 def main(path):
@@ -319,6 +370,9 @@ def savestate(path, d):
     else:
         print('layout          : %d  <-- not a layout this core writes' % layout)
     load_diag(blob_word(d, PAD_DIAG))
+    version = d[H_VERSION:H_VERSION + 32].split(b'\0')[0].decode('ascii', 'replace')
+    if 'diag' not in version:
+        psram_report(blob_word(d, PAD_PSRAM))
     img = b''.join(d[BLOB_OFF + 4 * (CART_BASE + i):BLOB_OFF + 4 * (CART_BASE + i) + 4][::-1]
                    for i in range(CART_WORDS))
     print()
@@ -359,6 +413,8 @@ def decode_sav(d, path):
     # byte of their V2 files, which must not read as a newer writer.
     rev = (w(21) >> 8) if version == '4' else 0
     say('writer', writer(rev))
+    if rev >= WRITER_111:
+        psram_report((w(33) << 16) | w(32))
 
     title = bytes(b for i in range(25, 31) for b in (d[2 * i], d[2 * i + 1]))
     printable = ''.join(chr(c) if 32 <= c < 127 else '.' for c in title)
