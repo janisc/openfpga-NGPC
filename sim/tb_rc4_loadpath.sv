@@ -297,6 +297,7 @@ module tb_rc4_loadpath;
 	ngpc_cart_save #(
 		.QUIET_CLOCKS (20'd200)
 	) cs (
+		.psram_report_i (32'h9D1F108F),   // 1.1.1
 		.clk             (clk),
 		.reset           (reset),
 		.cart_ready_i    (cart_ready),

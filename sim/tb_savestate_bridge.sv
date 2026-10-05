@@ -205,6 +205,8 @@ module tb;
 	wire [31:0] cart_img_rd_data;
 
 	ngpc_savestate_bridge dut (
+
+		.psram_report_i (32'h9D1F108F),   // 1.1.1
 		.clk_sys(clk_sys), .clk_74a(clk_74a), .reset(reset),
 
 		.savestate_start     (ss_start_req),

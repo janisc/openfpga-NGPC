@@ -52,3 +52,5 @@ sim/tb_rc6x_t7p_F0.hex
 sim/tb_rc6x_t7p_psram.hex
 # sim/run_all.sh's default log directory
 sim/logs_all/
+sim/mut_psram_nocre.sv
+sim/logs_fix111/

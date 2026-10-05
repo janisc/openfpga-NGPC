@@ -307,6 +307,8 @@ module tb_rc6x_t7p;
 	ngpc_cart_save #(
 		.QUIET_CLOCKS(QUIETP)
 	) cart_save (
+
+		.psram_report_i (32'h9D1F108F),   // 1.1.1
 		.clk  (clk_sys),
 		.reset(reset_in),
 		.cart_ready_i  (cart_ready),
@@ -915,7 +917,7 @@ module tb_rc6x_t7p;
 			monitors_summary;
 			$display("== mode 0 done");
 			chk(f0[0] === 16'h4E47 && f0[1] === 16'h5043 && f0[2] === 16'h5341 && f0[3] === 16'h5634, "F0 lacks the magic");
-			chk(f0[21] === 16'h0603, $sformatf("F0 word 21 = %04h, want 0603 (writer rev 06)", f0[21]));
+			chk(f0[21] === 16'h0703, $sformatf("F0 word 21 = %04h, want 0703 (writer rev 07)", f0[21]));
 			chk(f0[23] === 16'h0001, $sformatf("F0 word 23 = %04h, want 0001 (accepted, no T7 flag)", f0[23]));
 			common_checks;
 			verdict_line;

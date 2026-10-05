@@ -214,6 +214,8 @@ module tb_rc5_engine;
 	ngpc_cart_save #(
 		.QUIET_CLOCKS (20'd200)
 	) dut (
+
+		.psram_report_i (32'h9D1F108F),   // 1.1.1
 		.clk             (clk),
 		.reset           (reset),
 		.cart_ready_i    (cart_ready),
@@ -567,9 +569,9 @@ module tb_rc5_engine;
 				       psram[base+2], psram[base+3]))
 			if (psram[base+4] !== cart_crc[15:0] || psram[base+5] !== cart_crc[31:16])
 				`FAIL(("committed cart CRC %h%h, cartridge %h", psram[base+5], psram[base+4], cart_crc))
-			if (psram[base+21] !== {8'h06, cart_subcat})
-				`FAIL(("committed word 21 = %h, expected %h (S10: writer revision 06, subcat)",
-				       psram[base+21], {8'h06, cart_subcat}))
+			if (psram[base+21] !== {8'h07, cart_subcat})
+				`FAIL(("committed word 21 = %h, expected %h (S10: writer revision 07, subcat)",
+				       psram[base+21], {8'h07, cart_subcat}))
 			hb = {psram[base+11], psram[base+10], psram[base+9], psram[base+8]};
 			if (hb !== bmp) `FAIL(("committed bitmap %h, expected %h", hb, bmp))
 			pk = 0; c = 32'hFFFFFFFF;
@@ -1240,12 +1242,12 @@ module tb_rc5_engine;
 		psram_fill(16'hFEED);
 		boot_now;
 		publishes(8'h21);
-		if (hdr(21) !== 16'h0601) `FAIL(("word 21 = %h, expected 0601", hdr(21)))
+		if (hdr(21) !== 16'h0701) `FAIL(("word 21 = %h, expected 0701", hdr(21)))
 		seeds_clear; exp_seed[10] = 8'h21;
 		check_committed(64'h400);
 		@(posedge clk); cart_subcat <= 8'h7E;
 		publishes(8'h22);
-		if (hdr(21) !== 16'h067E) `FAIL(("word 21 = %h, expected 067E", hdr(21)))
+		if (hdr(21) !== 16'h077E) `FAIL(("word 21 = %h, expected 077E", hdr(21)))
 		@(posedge clk); cart_subcat <= 8'h01;
 		end_scn;
 

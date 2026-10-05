@@ -278,7 +278,7 @@ def judge(words, sta, entry, crc):
         errs.append('embedded save image: payload checksum not ok')
     if not (out and out[-1].startswith('VERDICT: looks like a real save')):
         errs.append('embedded save image verdict %r' % (out[-1:] or ''))
-    if field(out, 'writer') != 'written by 1.1.0-rc6 or later (rev 6)':
+    if field(out, 'writer') not in ('written by 1.1.0-rc6 or 1.1.0 (rev 6)', 'written by 1.1.1 or later (rev 7)'):
         errs.append('embedded writer %r' % field(out, 'writer'))
     return errs, out
 
@@ -402,11 +402,11 @@ def mode_cmp(logdir, hex6, hex5):
             continue
         w6, w5 = read_hex(f6), read_hex(f5)
         diff = [i for i in range(max(len(w6), len(w5)))
-                if i != PAD_DIAG and (i >= len(w6) or i >= len(w5) or w6[i] != w5[i])]
+                if i not in (PAD_DIAG, PAD_DIAG - 1) and (i >= len(w6) or i >= len(w5) or w6[i] != w5[i])]
         nblob += 1
         if diff:
             nfail += 1
-            print('   FAIL %s: %d words differ from rc5 besides 8419 (first %s)' % (
+            print('   FAIL %s: %d words differ from rc5 besides 8418/8419 (first %s)' % (
                 os.path.basename(f6), len(diff), diff[:6]))
         else:
             print('   same %-12s rc6 8419=%08X rc5 8419=%08X, 8420..8423 %08X %08X %08X %08X' % (

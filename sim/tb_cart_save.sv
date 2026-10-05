@@ -140,6 +140,8 @@ module tb_cart_save;
 	ngpc_cart_save #(
 		.QUIET_CLOCKS (20'd200)
 	) dut (
+
+		.psram_report_i (32'h9D1F108F),   // 1.1.1
 		.clk            (clk),
 		.reset          (reset),
 		.cart_ready_i   (cart_ready),
@@ -463,8 +465,8 @@ module tb_cart_save;
 			errors = errors + 1; $display("   FAIL: bitmap %h expected 0500", psram[BANK+8]);
 		end
 		// rc6 S10: word 21 = {writer revision 8'h06, cart_subcat_i (01)}
-		if (psram[BANK+21] !== 16'h0601) begin
-			errors = errors + 1; $display("   FAIL: word 21 = %h, expected 0601 (rc6 writer revision)", psram[BANK+21]);
+		if (psram[BANK+21] !== 16'h0701) begin
+			errors = errors + 1; $display("   FAIL: word 21 = %h, expected 0701 (1.1.1 writer revision)", psram[BANK+21]);
 		end
 		// payload: block 0 then block 2, in walk order
 		decode_payload;

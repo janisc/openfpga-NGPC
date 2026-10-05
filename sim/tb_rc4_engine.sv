@@ -209,6 +209,8 @@ module tb_rc4_engine;
 	ngpc_cart_save #(
 		.QUIET_CLOCKS (20'd200)
 	) dut (
+
+		.psram_report_i (32'h9D1F108F),   // 1.1.1
 		.clk             (clk),
 		.reset           (reset),
 		.cart_ready_i    (cart_ready),
@@ -527,8 +529,8 @@ module tb_rc4_engine;
 			if (psram[base+4] !== cart_crc[15:0] || psram[base+5] !== cart_crc[31:16])
 				`FAIL(("committed cart CRC %h%h, cartridge %h", psram[base+5], psram[base+4], cart_crc))
 			// rc6 S10: word 21 = {writer revision 8'h06, cart_subcat} (0x01 here)
-			if (psram[base+21] !== 16'h0601)
-				`FAIL(("committed word 21 = %h, expected 0601 (rc6 writer revision 06, subcat 01)", psram[base+21]))
+			if (psram[base+21] !== 16'h0701)
+				`FAIL(("committed word 21 = %h, expected 0701 (1.1.1 writer revision 07, subcat 01)", psram[base+21]))
 			hb = {psram[base+11], psram[base+10], psram[base+9], psram[base+8]};
 			if (hb !== bmp) `FAIL(("committed bitmap %h, expected %h", hb, bmp))
 			pk = 0; c = 32'hFFFFFFFF;

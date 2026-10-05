@@ -297,6 +297,8 @@ module tb_rc6x_combo;
 	wire        mc_frozen, ss_load_frozen, ss_load_fail;
 
 	ngpc_savestate_bridge savestate_bridge (
+
+		.psram_report_i (32'h9D1F108F),   // 1.1.1
 		.clk_sys(clk_sys), .clk_74a(clk_74a), .reset(reset_in),
 		.savestate_start     (ss_start_req),
 		.savestate_start_ack (start_ack),
@@ -515,6 +517,7 @@ module tb_rc6x_combo;
 	// The engine: target/pocket/ngpc_cart_save.sv, or a mutant copy of it with
 	// the same module name (sim/run_rc6_combo.sh mutants).
 	ngpc_cart_save cart_save (
+		.psram_report_i (32'h9D1F108F),   // 1.1.1
 		.clk             (clk_sys),
 		.reset           (reset_in),
 		.cart_ready_i    (cart_ready),

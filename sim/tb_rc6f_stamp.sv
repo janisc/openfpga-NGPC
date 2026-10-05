@@ -235,6 +235,7 @@ module tb_rc6f_stamp;
 		.frozen_i(frozen_in), .load_frozen_o(load_frozen), .load_fail_o(load_fail),
 `ifndef RC6F_RC5
 		.save_busy_i(save_busy),
+		.psram_report_i(32'h9D1F108F),   // 1.1.1: stamped at 8418
 `endif
 		.cart_img_rd_addr(cart_img_rd_addr), .cart_img_rd_data(cart_img_rd_data),
 		.bus_out_Din(bus_out_Din), .bus_out_Dout(bus_out_Dout),
@@ -812,7 +813,12 @@ module tb_rc6f_stamp;
 			do_load(1, 1, 1, 0, 0);
 			if (mon_c2d != c2d_ref) fail($sformatf("check-to-verdict %0d cycles, S1 took %0d", mon_c2d, c2d_ref));
 			do_cap(dgw(1, 1, 1, 5'b11111, 0, 1, 0), 0);
+`ifdef RC6F_RC5
 			if (cap[8418] !== 32'hDEADBEEF) fail($sformatf("pad word 8418 = %08h, the loaded DEADBEEF expected (nothing writes it)", cap[8418]));
+`else
+			// 1.1.1: the bridge stamps the PSRAM set-up report at 8418
+			if (cap[8418] !== 32'h9D1F108F) fail($sformatf("pad word 8418 = %08h, want the PSRAM report 9D1F108F", cap[8418]));
+`endif
 			scn_end;
 			scn("S5"); wake_reset; img_good; image[8419] = 32'hFFFFFFFF; image[8420] = image[8420] ^ 32'h1;
 			do_load(0, 0, 0, 0, 1);

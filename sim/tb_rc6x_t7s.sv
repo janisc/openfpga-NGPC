@@ -253,6 +253,8 @@ module tb_rc6x_t7s;
 	wire boot_hold, save_busy, save_present, frozen;
 
 	ngpc_cart_save u_save (
+
+		.psram_report_i (32'h9D1F108F),   // 1.1.1
 		.clk            (clk_sys),
 		.reset          (reset_in),
 		.cart_ready_i   (1'b1),
