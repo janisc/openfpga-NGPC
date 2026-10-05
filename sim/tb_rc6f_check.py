@@ -378,11 +378,12 @@ def mode_cmp(logdir, hex6, hex5):
             if len(d6) != len(d5):
                 print('      %d decisions on rc6, %d on rc5' % (len(d6), len(d5)))
         ndec += len(d6)
-        strip = lambda ls: [re.sub(r' w8419=[0-9a-fx]+', '', x) for x in ls]
+        # 8419 is the rc6 load stamp, 8418 the 1.1.1 PSRAM report: rc5 has neither
+        strip = lambda ls: [re.sub(r' w841[89]=[0-9a-fx]+', '', x) for x in ls]
         c6, c5 = lines_of(l6, 'RC6F CAP'), lines_of(l5, 'RC6F CAP')
         if strip(c6) != strip(c5) or not c6:
             nfail += 1
-            print('   FAIL group %d: capture lines differ beyond word 8419' % g)
+            print('   FAIL group %d: capture lines differ beyond words 8418/8419' % g)
             for a, b in zip(c6, c5):
                 if strip([a]) != strip([b]):
                     print('      rc6: %s\n      rc5: %s' % (a, b))

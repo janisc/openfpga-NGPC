@@ -54,3 +54,4 @@ sim/tb_rc6x_t7p_psram.hex
 sim/logs_all/
 sim/mut_psram_nocre.sv
 sim/logs_fix111/
+sim/tb_psram_init_mut.out
