@@ -108,6 +108,10 @@ module ngpc_machine
 	input  wire        slots_settled,    // no loader region written for ~500 ms
 	input  wire [15:0] stage_diag_beats,
 	input  wire [15:0] stage_diag_drops,
+	input  wire [31:0] stage_psram_report, // for header words 32/33
+	// The cartridge SDRAM has finished its start-up (sticky from
+	// configuration): core_top holds the Pocket's boot status until it has.
+	output wire        sdram_up_o,
 
 	// ---- Savestates --------------------------------------------------------
 	// The engine lives here, beside the machine it serialises; the controller
@@ -459,6 +463,14 @@ module ngpc_machine
 	wire [24:0] cart_load_addr;
 	wire [15:0] cart_load_data;
 	wire        cart_load_ready;
+
+	// cart_sdram's write_ready first rises when its start-up (200 us of CKE
+	// low, precharge, refreshes, mode register) is done; nothing can be
+	// pending before the first load. Remembered from configuration on, so a
+	// menu Reset's re-initialisation does not take the boot status back.
+	reg sdram_up_q = 1'b0;
+	always @(posedge clk_sys) if (cart_load_ready) sdram_up_q <= 1'b1;
+	assign sdram_up_o = sdram_up_q;
 	wire        cart_load_done;
 
 	wire [24:0] cart_image_bytes;
@@ -715,6 +727,7 @@ module ngpc_machine
 		.stage_current_o (stage_current),
 		.stage_bank_o    (stage_bank),
 		.slots_settled_i (slots_settled),
+		.psram_report_i  (stage_psram_report),
 		.diag_beats_i    (stage_diag_beats),
 		.diag_drops_i    (stage_diag_drops),
 		.diag_drain_i    (stage_diag_drain),

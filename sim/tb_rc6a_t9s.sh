@@ -60,7 +60,7 @@ mut-progall) ENGSRC=sim/tb_rc6a_mut_progall.sv; OUT=sim/tb_rc6a_t9s_progall.vvp;
 esac
 case "$MODE" in mut-*) sh sim/tb_rc6a_mutants.sh > /dev/null ;; esac
 
-iverilog -g2012 -D SYNTHESIS -DNGPC_SAVE_DIAG=1 -o "$OUT" -s tb_rc6a_t9s \
+iverilog -g2012 -DNGPC_SIM_SKIP_PSRAM_INIT -D SYNTHESIS -DNGPC_SAVE_DIAG=1 -o "$OUT" -s tb_rc6a_t9s \
     upstream/rtl/Savestates/savestates.sv \
     target/pocket/ngpc_savestate_bridge.sv \
     sim/sim_synch3.v \

@@ -67,6 +67,25 @@ module ngpc_stage_mem
 	output reg  [15:0] diag_beats_o,
 	output reg  [15:0] diag_drops_o,
 
+	// ---- PSRAM set-up --------------------------------------------------------
+	// The chip keeps its configuration registers while the Pocket is on, so
+	// a core that ran before this one may have left it in another mode -- or
+	// with refresh switched off, which corrupts what is stored (reproduced:
+	// with RCR left at "refresh none of the array", a staged save decayed
+	// within minutes). Before anything else touches it,
+	// both dies are woken (in case of deep power-down), their BCR and RCR
+	// read as found, set to the power-on defaults (BCR 9D1Fh asynchronous,
+	// RCR 0010h full-array refresh) and read back. Once per configuration;
+	// a menu Reset does not repeat it. Until it is done neither client is
+	// served (APF's writes wait in the skid), and core_top holds the
+	// Pocket's boot status until it is.
+	output wire        psram_ready_o,
+	// {die 0 BCR as found [31:16], die 0 RCR[7:0] as found [15:8],
+	//  die 1 BCR[15] as found [7], die 1 RCR[2:0] as found [6:4],
+	//  die 1 read back as written [3], die 0 read back as written [2],
+	//  set-up done [1], 1 [0]}
+	output wire [31:0] psram_report_o,
+
 	// ---- Client B: the save engine ----------------------------------------
 	input  wire        eng_req_i,
 	input  wire        eng_we_i,
@@ -112,6 +131,8 @@ module ngpc_stage_mem
 	reg         ps_write_en;
 	reg         ps_read_en;
 	reg  [15:0] ps_data_in;
+	reg         ps_cfg = 1'b0;
+	reg         ps_wake = 1'b0;
 
 	wire [15:0] ps_data_out;
 	wire        ps_read_avail;
@@ -129,6 +150,8 @@ module ngpc_stage_mem
 		.write_low_byte  (1'b1),
 		.read_en         (ps_read_en),
 		.read_avail      (ps_read_avail),
+		.cfg             (ps_cfg),
+		.wake            (ps_wake),
 		.data_out        (ps_data_out),
 		.busy            (ps_busy),
 		.cram_a          (cram_a),
@@ -186,8 +209,40 @@ module ngpc_stage_mem
 	// was simply never served -- the walk then waited for a done that could
 	// not come (review). Ready is therefore withheld while the host has
 	// anything queued or arriving; the host path keeps its priority.
-	assign eng_ready_o = !ps_busy && !ps_write_en && !ps_read_en && !host_pending &&
-	                     skid_empty && !host_rd_i;
+	// ---- PSRAM set-up (see psram_ready_o) -----------------------------------
+	//
+	// Not cleared by reset: it runs once, after the first release of reset
+	// (the PLL is locked by then), and a menu Reset leaves the staged save
+	// and the registers alone. At 49.152 MHz: CE# LOW 600 clocks (12.2 us)
+	// per die, then 8000 clocks (163 us) for a die leaving deep power-down,
+	// then per die seven accesses -- read BCR, read RCR, write RCR, write
+	// BCR, read BCR, read RCR, and the array read the datasheet recommends
+	// after register access. About 0.2 ms in all.
+`ifdef NGPC_SIM_SKIP_PSRAM_INIT
+	// Simulation only: benches whose PSRAM model ignores CRE skip it.
+	reg         init_done_q = 1'b1;
+`else
+	reg         init_done_q = 1'b0;
+`endif
+	localparam [1:0] IS_WAKE = 2'd0, IS_WAIT = 2'd1, IS_OP = 2'd2;
+	reg  [1:0]  ist   = IS_WAKE;
+	reg  [13:0] icnt  = 14'd0;
+	reg         idie  = 1'b0;
+	reg  [2:0]  istep = 3'd0;
+	reg         iwait = 1'b0;        // an access is in flight
+	reg  [15:0] f_bcr0 = 16'd0, f_bcr1 = 16'd0;
+	reg  [7:0]  f_rcr0 = 8'd0,  f_rcr1 = 8'd0;
+	reg  [15:0] c_bcr  = 16'd0;
+	reg         ok0 = 1'b0, ok1 = 1'b0;
+
+	localparam [15:0] BCR_DEFAULT = 16'h9D1F;
+	localparam [15:0] RCR_DEFAULT = 16'h0010;
+
+	assign psram_ready_o  = init_done_q;
+	assign psram_report_o = {f_bcr0, f_rcr0, f_bcr1[15], f_rcr1[2:0], ok1, ok0, init_done_q, 1'b1};
+
+	assign eng_ready_o = init_done_q && !ps_busy && !ps_write_en && !ps_read_en &&
+	                     !host_pending && skid_empty && !host_rd_i;
 
 	always @(posedge clk) begin
 		if (reset) begin
@@ -260,7 +315,77 @@ module ngpc_stage_mem
 				end
 			end
 
-			if (!ps_busy && !ps_write_en && !ps_read_en) begin
+			if (!init_done_q) begin
+				// ---- the set-up sequence ----
+				case (ist)
+					IS_WAKE: begin
+						ps_bank <= idie;
+						ps_wake <= 1'b1;
+						icnt    <= icnt + 14'd1;
+						if (icnt == 14'd599) begin
+							ps_wake <= 1'b0;
+							icnt    <= 14'd0;
+							idie    <= ~idie;
+							if (idie) ist <= IS_WAIT;
+						end
+					end
+					IS_WAIT: begin
+						icnt <= icnt + 14'd1;
+						if (icnt == 14'd7999) begin
+							icnt  <= 14'd0;
+							idie  <= 1'b0;
+							istep <= 3'd0;
+							ist   <= IS_OP;
+						end
+					end
+					default: begin
+						if (!iwait && !ps_busy && !ps_write_en && !ps_read_en) begin
+							ps_bank <= idie;
+							ps_cfg  <= (istep != 3'd6);
+							iwait   <= 1'b1;
+							case (istep)
+								// A[19:18]: 10b BCR, 00b RCR. For a write the
+								// register value is the address's low half.
+								3'd0, 3'd4: begin ps_addr <= 22'h080000; ps_read_en <= 1'b1; end
+								3'd1, 3'd5: begin ps_addr <= 22'h000000; ps_read_en <= 1'b1; end
+								3'd2: begin
+									ps_addr     <= {6'd0, RCR_DEFAULT};
+									ps_data_in  <= RCR_DEFAULT;
+									ps_write_en <= 1'b1;
+								end
+								3'd3: begin
+									ps_addr     <= {6'b00_10_00, BCR_DEFAULT};
+									ps_data_in  <= BCR_DEFAULT;
+									ps_write_en <= 1'b1;
+								end
+								default: begin ps_addr <= 22'd0; ps_read_en <= 1'b1; end
+							endcase
+						end else if (iwait && (ps_read_avail ||
+						             (!ps_busy && !ps_write_en && !ps_read_en &&
+						              (istep == 3'd2 || istep == 3'd3)))) begin
+							iwait <= 1'b0;
+							case (istep)
+								3'd0: if (idie) f_bcr1 <= ps_data_out; else f_bcr0 <= ps_data_out;
+								3'd1: if (idie) f_rcr1 <= ps_data_out[7:0]; else f_rcr0 <= ps_data_out[7:0];
+								3'd4: c_bcr <= ps_data_out;
+								3'd5: begin
+									if (idie) ok1 <= (c_bcr == BCR_DEFAULT) && (ps_data_out == RCR_DEFAULT);
+									else      ok0 <= (c_bcr == BCR_DEFAULT) && (ps_data_out == RCR_DEFAULT);
+								end
+								default: ;
+							endcase
+							if (istep == 3'd6) begin
+								ps_cfg <= 1'b0;
+								istep  <= 3'd0;
+								idie   <= ~idie;
+								if (idie) init_done_q <= 1'b1;
+							end else begin
+								istep <= istep + 3'd1;
+							end
+						end
+					end
+				endcase
+			end else if (!ps_busy && !ps_write_en && !ps_read_en) begin
 				if (host_pending) begin
 					host_pending <= 1'b0;
 					ps_bank      <= 1'b0;
@@ -291,7 +416,7 @@ module ngpc_stage_mem
 
 			// Completion. A write is done once the controller goes idle again;
 			// a read when its data arrives.
-			if (ps_read_avail) begin
+			if (ps_read_avail && init_done_q) begin
 				if (eng_active && eng_active_rd) begin
 					eng_rdata_o <= ps_data_out;
 					eng_done_o  <= 1'b1;

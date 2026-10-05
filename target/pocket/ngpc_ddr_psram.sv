@@ -95,6 +95,8 @@ module ngpc_ddr_psram
 
 		.read_en         (ps_read_en),
 		.read_avail      (ps_read_avail),
+		.cfg             (1'b0),
+		.wake            (1'b0),
 		.data_out        (ps_data_out),
 
 		.busy            (ps_busy),

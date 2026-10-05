@@ -387,8 +387,20 @@ module core_top (
   wire        reset_n;
   wire [31:0] cmd_bridge_rd_data;
 
-  wire status_boot_done  = pll_core_locked;
-  wire status_setup_done = pll_core_locked;
+  // Booted only once both external memories are ready: the cartridge SDRAM
+  // has finished its 200 us start-up and the PSRAM has been set up
+  // (ngpc_stage_mem). Before 1.1.1 this was the PLL lock alone, so a slot
+  // the Pocket started sending at once could meet an SDRAM still in its
+  // start-up, the cart FIFO overflowing behind it (not seen on hardware;
+  // closed because nothing guaranteed it). Both inputs are sticky levels.
+  wire       stage_psram_ready;   // ngpc_stage_mem, clk_sys
+  wire       machine_sdram_up;    // ngpc_machine, clk_sys
+  (* altera_attribute = "-name SYNCHRONIZER_IDENTIFICATION FORCED" *)
+  reg  [1:0] mem_ready_74a = 2'b00;
+  always @(posedge clk_74a) mem_ready_74a <= {mem_ready_74a[0], stage_psram_ready && machine_sdram_up};
+
+  wire status_boot_done  = pll_core_locked && mem_ready_74a[1];
+  wire status_setup_done = pll_core_locked && mem_ready_74a[1];
   wire status_running    = reset_n;
 
   wire        dataslot_requestread;
@@ -590,6 +602,7 @@ module core_top (
   wire [15:0] stage_rdata;
   wire        host_busy;
   wire [15:0] stage_diag_beats, stage_diag_drops;
+  wire [31:0] stage_psram_report;
 
   wire        stage_host_wr;
   wire        stage_host_ready;
@@ -677,6 +690,8 @@ module core_top (
       .host_wr_ready_o(stage_host_ready),
       .diag_beats_o(stage_diag_beats),
       .diag_drops_o(stage_diag_drops),
+      .psram_ready_o (stage_psram_ready),
+      .psram_report_o(stage_psram_report),
 
       .eng_req_i  (sc_rd_active ? sc_rd_req : stage_req),
       .eng_we_i   (sc_rd_active ? 1'b0 : stage_we),
@@ -1032,6 +1047,7 @@ module core_top (
       .load_frozen_o   (ss_load_frozen),
       .load_fail_o     (ss_load_fail),
       .save_busy_i     (mc_save_busy),   // diagnostic only (rc6)
+      .psram_report_i  (stage_psram_report),
       .diag_a_i        (cart_diag_a),    // NGPC_CART_DIAG only
       .diag_b_i        (cart_diag_b),    // NGPC_CART_DIAG only
       .cart_img_rd_addr(cs_img_rd_addr),
@@ -1139,6 +1155,8 @@ module core_top (
       .state_fail      (ss_load_fail),
       .stage_diag_drain(sc_diag_drain),
       .slots_settled(slots_settled),
+      .stage_psram_report(stage_psram_report),
+      .sdram_up_o      (machine_sdram_up),
       .stage_diag_beats(stage_diag_beats),
       .stage_diag_drops(stage_diag_drops),
 

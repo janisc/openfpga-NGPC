@@ -74,7 +74,7 @@ COMMON="upstream/rtl/Savestates/savestates.sv target/pocket/ngpc_savestate_bridg
  sim/sim_synch3.v sim/sim_dcfifo.v target/pocket/data_loader.sv
  target/pocket/data_unloader.sv target/pocket/psram.sv target/pocket/ngpc_stage_mem.sv
  upstream/rtl/cart/ngp_cart_overlay_geometry.sv target/pocket/ngpc_state_cart.sv"
-IVFLAGS="-g2012 -D SYNTHESIS -DNGPC_SAVE_DIAG=1"
+IVFLAGS="-g2012 -DNGPC_SIM_SKIP_PSRAM_INIT -D SYNTHESIS -DNGPC_SAVE_DIAG=1"
 CS=target/pocket/ngpc_cart_save.sv
 TB=sim/tb_rc6c_bench.sv
 MUT_A=sim/tb_rc6c_mut_nohold_cart_save.sv
