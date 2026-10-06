@@ -61,6 +61,16 @@ module psram #(
 
     input wire read_en,
     output reg read_avail,
+
+    // A READ or WRITE started with cfg high runs with CRE high: it reads or
+    // loads a configuration register (BCR, RCR or DIDR, selected by
+    // addr[19:18]) instead of the array. A write's register value is the
+    // address itself (addr[15:0]), latched with ADV#.
+    input wire cfg,
+    // While idle with wake high, the bank_sel chip enable is held LOW and
+    // nothing else moves: a die left in deep power-down leaves it after
+    // 10 us of CE# LOW (and then needs 150 us before it is usable).
+    input wire wake,
     output reg [15:0] data_out,
 
     output reg busy,
@@ -283,6 +293,7 @@ module psram #(
 
           // Enable write
           cram_we_n <= 0;
+          cram_cre  <= cfg;
 
           // Enable address latching
           cram_adv_n <= 0;
@@ -308,9 +319,13 @@ module psram #(
           cram_adv_n <= 0;
           cram_ub_n <= 0;
           cram_lb_n <= 0;
+          cram_cre <= cfg;
 
           // Set busy now instead of waiting for the state change
           busy <= 1;
+        end else if (wake) begin
+          if (bank_sel) cram_ce1_n <= 0;
+          else cram_ce0_n <= 0;
         end
       end
 

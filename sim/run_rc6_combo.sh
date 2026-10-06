@@ -63,7 +63,7 @@ LOGS=sim/tb_rc6x_logs
 mkdir -p "$LOGS"
 JOBS=${JOBS:-2}
 
-IV="iverilog -g2012 -D SYNTHESIS -DNGPC_SAVE_DIAG=1"
+IV="iverilog -g2012 -DNGPC_SIM_SKIP_PSRAM_INIT -D SYNTHESIS -DNGPC_SAVE_DIAG=1"
 UP_SS=upstream/rtl/Savestates/savestates.sv
 UP_GEO=upstream/rtl/cart/ngp_cart_overlay_geometry.sv
 R_BR=target/pocket/ngpc_savestate_bridge.sv

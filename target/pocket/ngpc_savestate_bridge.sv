@@ -109,6 +109,9 @@ module ngpc_savestate_bridge #(
 	// read the refused file back as "no save", unfroze, and the next in-game
 	// save overwrote it (review).
 	input  wire        frozen_i,
+	// The PSRAM set-up report (ngpc_stage_mem psram_report_o), stamped at
+	// pad word 8418 of every capture in release builds.
+	input  wire [31:0] psram_report_i,
 	output reg         load_frozen_o,    // the state being loaded is layout 3
 	// One pulse per failed load, whatever failed: the engine freezes a
 	// wake-shaped session on it, since a failed wake cold-boots the game
@@ -531,7 +534,7 @@ module ngpc_savestate_bridge #(
 	// the apply refusing the image; ran but not ok is the engine refusing its
 	// header; ran and ok is a restore -- a cold start after it came later.
 	localparam [14:0] PAD_DIAG = 15'd8419;
-	localparam [14:0] PAD_DIAG2 = 15'd8418;   // NGPC_CART_DIAG only
+	localparam [14:0] PAD_DIAG2 = 15'd8418;   // the cart diagnostic, or (release) the PSRAM report
 	reg  [3:0] dg_loads;
 	reg  [4:0] dg_chk;
 	reg        dg_ran, dg_drained, dg_held;
@@ -622,16 +625,20 @@ module ngpc_savestate_bridge #(
 					id_cnt <= id_cnt + 3'd1;
 					if (id_cnt == 3'd5) begin
 `else
-					seq_pa_addr <= id_cnt[2] ? PAD_DIAG : ID_BASE + id_cnt[1:0];
+					// Six words: the identity block, the load stamp at 8419
+					// and (1.1.1) the PSRAM set-up report at 8418.
+					seq_pa_addr <= (id_cnt == 3'd5) ? PAD_DIAG2 :
+					               id_cnt[2] ? PAD_DIAG : ID_BASE + id_cnt[1:0];
 					case (id_cnt)
 						3'd0:    seq_pa_din <= ID_MAGIC;
 						3'd1:    seq_pa_din <= cart_crc32;
 						3'd2:    seq_pa_din <= frozen_i ? ID_LAYOUT_FROZEN : ID_LAYOUT;
 						3'd3:    seq_pa_din <= ~cart_crc32;
-						default: seq_pa_din <= dg_word;
+						3'd4:    seq_pa_din <= dg_word;
+						default: seq_pa_din <= psram_report_i;
 					endcase
 					id_cnt <= id_cnt + 3'd1;
-					if (id_cnt == 3'd4) begin
+					if (id_cnt == 3'd5) begin
 `endif
 						cart_save_req <= 1'b1;
 						state         <= S_SAVE_CART;

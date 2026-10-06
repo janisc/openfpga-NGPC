@@ -98,6 +98,7 @@ module tb_rc6a_classify;
 
 	// ---- the engine: only its classifier is exercised -------------------------------
 	ngpc_cart_save #(.QUIET_CLOCKS(20'd25000)) u_save (
+		.psram_report_i (32'h9D1F108F),   // 1.1.1
 		.clk(clk), .reset(eng_reset),
 		.cart_ready_i(1'b0), .cart_replace_i(1'b0),
 		.cart_crc32_i(32'h21E8CC15), .cart_bytes_i(25'h0080000),

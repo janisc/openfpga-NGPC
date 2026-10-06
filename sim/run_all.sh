@@ -12,7 +12,7 @@ mkdir -p "$LOG"
 : > "$LOG/SUMMARY.txt"
 for s in run.sh run_cartsave.sh run_rc4_engine.sh run_rc4_loadpath.sh \
          run_rc5_engine.sh run_rc5_loadpath.sh run_rtc.sh run_seed_gate.sh \
-         run_stage.sh run_statecart.sh \
+         run_stage.sh run_statecart.sh run_psram_init.sh \
          run_rc6_hostport.sh run_rc6_l2.sh:check run_rc6_stamp.sh:bench \
          run_rc6_stamp.sh:held run_rc6_r1.sh:t9s run_rc6_combo.sh:quick; do
 	case "$s:${RC6:-1}" in run_rc6_*:0) continue ;; esac

@@ -243,7 +243,7 @@ GARBLED = bytes([0x53, 0x52, 0xD1, 0x55, 0x55, 0x0D, 0xD5, 0x54, 0x55, 0x59, 0x5
 
 # ---------------------------------------------------------------- rc6
 
-WRITER_RC6 = 'writer          : written by 1.1.0-rc6 or later (rev 6)'
+WRITER_RC6 = 'writer          : written by 1.1.0-rc6 or 1.1.0 (rev 6)'
 STA_OFF = 592                  # the Pocket's header before the core's blob
 STA_WORDS = 24680              # the core's blob, 32-bit words
 DG_TAG = 0xD1
@@ -255,7 +255,7 @@ def dg(loads=1, ran=1, ok=1, chk=0x1F, frozen=0, drained=1, held=0):
             (frozen << 12) | (drained << 11) | (held << 10))
 
 
-def make_sta(tmp, name, diag, layout=2, crc=ROM_CRC, check=None, extra=0):
+def make_sta(tmp, name, diag, layout=2, crc=ROM_CRC, check=None, extra=0, psram=0, version=b''):
     """A sleep state or Memory: the identity block at 8420, the load
     diagnostic at 8419, and a V4 save image at 8424 as the copier stores it
     (each 32-bit word byte-reversed against the .sav's order)."""
@@ -264,6 +264,7 @@ def make_sta(tmp, name, diag, layout=2, crc=ROM_CRC, check=None, extra=0):
     blob = bytearray(4 * STA_WORDS)
     def put(i, v):
         blob[4 * i:4 * i + 4] = (v & 0xFFFFFFFF).to_bytes(4, 'big')
+    put(8418, psram)
     put(8419, diag)
     put(8420, 0x4E475053)
     put(8421, crc)
@@ -273,8 +274,70 @@ def make_sta(tmp, name, diag, layout=2, crc=ROM_CRC, check=None, extra=0):
         blob[4 * (8424 + i):4 * (8424 + i) + 4] = img[4 * i:4 * i + 4][::-1]
     path = os.path.join(tmp, name)
     with open(path, 'wb') as f:
-        f.write(b'\x01SPA' + b'\x00' * (STA_OFF - 4) + bytes(blob) + b'\x00' * (4 + extra))
+        hdr = bytearray(b'\x01SPA' + b'\x00' * (STA_OFF - 4))
+        hdr[132:132 + len(version)] = version
+        f.write(bytes(hdr) + bytes(blob) + b'\x00' * (4 + extra))
     return path
+
+
+# 1.1.1: the PSRAM set-up report. PS_SYNC_NOREFRESH: die 0 found at BCR 181F
+# (synchronous) and RCR 14 (refresh none); die 1 at its defaults.
+PS_SYNC_NOREFRESH = 0x181F148F
+PS_DEFAULT = 0x9D1F108F
+
+
+def psram_report_111(tmp):
+    s = Scenario('P1', 'rev 7, the PSRAM found synchronous with refresh off: both named')
+    path, _, _ = make_v4(tmp, 'p1.sav', {**diag_words(word23=0x0001), 32: PS_SYNC_NOREFRESH & 0xFFFF, 33: PS_SYNC_NOREFRESH >> 16},
+                         w21=word21(7))
+    rc, out, err = run(path)
+    tool_ok(s, rc, err)
+    s.eq(line(out, 'writer'), 'writer          : written by 1.1.1 or later (rev 7)', 'writer line')
+    s.has(field(out, 'PSRAM at start'), 'die 0 SYNCHRONOUS burst mode, refresh NONE of the array (BCR 181F, RCR 14)', 'die 0')
+    s.has(field(out, 'PSRAM at start'), 'die 1 asynchronous, refresh full array', 'die 1')
+    s.has(field(out, 'PSRAM note'), 'a core that ran before this one', 'note')
+    s.has(field(out, 'PSRAM set-up'), 'both dies read back as written', 'set-up')
+    s.done()
+
+    s = Scenario('P2', 'rev 7 with the power-on settings found: no note')
+    path, _, _ = make_v4(tmp, 'p2.sav', {**diag_words(word23=0x0001), 32: PS_DEFAULT & 0xFFFF, 33: PS_DEFAULT >> 16},
+                         w21=word21(7))
+    rc, out, err = run(path)
+    tool_ok(s, rc, err)
+    s.has(field(out, 'PSRAM at start'), 'die 0 asynchronous, refresh full array (BCR 9D1F, RCR 10)', 'die 0')
+    s.eq(line(out, 'PSRAM note'), None, 'no note')
+    s.done()
+
+    s = Scenario('P3', 'rev 7, die 1 failed its read-back')
+    v = PS_SYNC_NOREFRESH & ~(1 << 3)
+    path, _, _ = make_v4(tmp, 'p3.sav', {**diag_words(word23=0x0001), 32: v & 0xFFFF, 33: v >> 16}, w21=word21(7))
+    rc, out, err = run(path)
+    tool_ok(s, rc, err)
+    s.has(field(out, 'PSRAM set-up'), 'die 1 did NOT read back as written', 'set-up')
+    s.done()
+
+    s = Scenario('P4', 'rev 6 (1.1.0): words 32/33 are not read, no PSRAM lines')
+    path, _, _ = make_v4(tmp, 'p4.sav', {**diag_words(word23=0x0001), 32: PS_SYNC_NOREFRESH & 0xFFFF, 33: PS_SYNC_NOREFRESH >> 16},
+                         w21=word21(6))
+    rc, out, err = run(path)
+    tool_ok(s, rc, err)
+    s.eq(line(out, 'PSRAM at start'), None, 'no PSRAM line')
+    s.done()
+
+    s = Scenario('P5', 'a 1.1.1 state: word 8418 decoded')
+    path = make_sta(tmp, 'p5.sta', dg(), psram=PS_SYNC_NOREFRESH, version=b'1.1.1-rc1')
+    rc, out, err = run(path)
+    tool_ok(s, rc, err)
+    s.has(field(out, 'PSRAM at start'), 'die 0 SYNCHRONOUS burst mode', 'state PSRAM line')
+    s.done()
+
+    s = Scenario('P6', 'a 1.1.0 state (word 8418 zero), and a diag build\'s state: no PSRAM line')
+    for name, ver, val in (('p6a.sta', b'1.1.0', 0), ('p6b.sta', b'1.1.0-diag5', PS_SYNC_NOREFRESH)):
+        path = make_sta(tmp, name, dg(), psram=val, version=ver)
+        rc, out, err = run(path)
+        tool_ok(s, rc, err)
+        s.eq(next((l for l in out if l.startswith('PSRAM at start')), None), None, 'no PSRAM line (%s)' % ver.decode())
+    s.done()
 
 
 def rc6_additions(tmp):
@@ -426,7 +489,7 @@ def rc5_writer_and_frozen(tmp):
         ('F3a', 0x05FF, '0067-FF', 'written by 1.1.0-rc5 (rev 5)'),
         ('F3b', 0x0500, '0067-00', 'written by 1.1.0-rc5 (rev 5)'),
         ('F3c', 0x00FF, '0067-FF', 'older writer (rev 0)'),
-        ('F3d', 0xFF05, '0067-05', 'written by 1.1.0-rc6 or later (rev 255'),
+        ('F3d', 0xFF05, '0067-05', 'written by 1.1.1 or later (rev 255'),
     ]
     for sid, w21, cat, phrase in split:
         s = Scenario(sid, 'word 21 = %04X: high byte is the writer, low byte the catalogue sub-code' % w21)
@@ -437,13 +500,13 @@ def rc5_writer_and_frozen(tmp):
         s.has(line(out, 'writer'), phrase, 'writer line')
         s.done()
 
-    for sid, rev in (('F4a', 7), ('F4b', 255)):
-        s = Scenario(sid, 'writer revision %d: rc6 or later, and the tool says it is newer than it knows' % rev)
+    for sid, rev in (('F4a', 8), ('F4b', 255)):
+        s = Scenario(sid, 'writer revision %d: 1.1.1 or later, and the tool says it is newer than it knows' % rev)
         path, _, _ = make_v4(tmp, 'f4.sav', diag_words(word23=0x0001), w21=word21(rev))
         rc, out, err = run(path)
         tool_ok(s, rc, err)
         s.eq(line(out, 'writer'),
-             'writer          : written by 1.1.0-rc6 or later (rev %d, newer than this tool knows)' % rev,
+             'writer          : written by 1.1.1 or later (rev %d, newer than this tool knows)' % rev,
              'writer line')
         # Newer than rc5 is also later than rc4: the rc4 decode applies.
         s.eq(line(out, 'ingest split'), 'ingest split    : delivery 32512 beats | drain 0 beats',
@@ -986,6 +1049,7 @@ def main():
         rc5_writer_and_frozen(tmp)
         rc4_output_unchanged(tmp)
         rc6_additions(tmp)
+        psram_report_111(tmp)
 
     total = passes + failures
     if failures:

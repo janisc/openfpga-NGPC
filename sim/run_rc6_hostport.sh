@@ -125,7 +125,7 @@ build() {
     cp "$arb" "$W/$v/tb_rc6b_arb.vh"
     if [ "$dg" = 1 ]; then def=-DNGPC_SAVE_DIAG=1; else def=-DRC6B_NODIAG; fi
     for tb in rdwr port; do
-        iverilog -g2012 $def "-DRC6B_LABEL=\"$v\"" -I "$W/$v" \
+        iverilog -g2012 -DNGPC_SIM_SKIP_PSRAM_INIT $def "-DRC6B_LABEL=\"$v\"" -I "$W/$v" \
             -o "$W/$v/$tb.vvp" -s "tb_rc6b_$tb" $COMMON "$sm" "sim/tb_rc6b_$tb.sv" ||
             bail "   build of $v/$tb failed" "build $v/$tb"
     done

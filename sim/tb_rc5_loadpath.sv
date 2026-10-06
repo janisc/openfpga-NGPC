@@ -345,6 +345,7 @@ module tb_rc5_loadpath;
 	wire        load_fail;     // bridge load_fail_o   -> engine state_fail_i
 
 	ngpc_savestate_bridge u_bridge (
+		.psram_report_i (32'h9D1F108F),
 		.clk_sys(clk_sys), .clk_74a(clk_74a), .reset(reset),
 
 		.savestate_start     (ss_start_req),
@@ -421,6 +422,7 @@ module tb_rc5_loadpath;
 	ngpc_cart_save #(
 		.QUIET_CLOCKS (20'd200)
 	) u_save (
+		.psram_report_i (32'h9D1F108F),
 		.clk             (clk_sys),
 		.reset           (reset),
 		.cart_ready_i    (cart_ready),
@@ -1601,10 +1603,10 @@ module tb_rc5_loadpath;
 		chk_flash("the delivered save was not restored");
 		later_save_publishes(9, 8'h33);
 		if (hdr(8) !== 16'h0700) `FAIL(("(setup) published bitmap %h, want 0700", hdr(8)))
-		if (hdr(21) !== 16'h0601) `FAIL(("S10: published word 21 = %h, want 0601 (rev 06, subcat 01)", hdr(21)))
+		if (hdr(21) !== 16'h0701) `FAIL(("S10: published word 21 = %h, want 0701 (rev 07, subcat 01)", hdr(21)))
 		machine_init(8'h14);
 		capture(32'd2, CRC_A);
-		if (secw(21) !== 16'h0601) `FAIL(("S10: captured image word 21 = %h, want 0601", secw(21)))
+		if (secw(21) !== 16'h0701) `FAIL(("S10: captured image word 21 = %h, want 0701", secw(21)))
 		for (i = 0; i < 16384; i = i + 1) bl2_gold[i] = gold[32'h3C000 + i];
 		blob_keep(B_L2, 8'h14);
 		// the game saves over it: that is what a load has to rewind

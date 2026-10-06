@@ -161,7 +161,7 @@ if [ "$MODE" = all ] || [ "$MODE" = bench ] || [ "$MODE" = full ]; then
 	CVARIANTS="real progall prog0 norestart"
 	for v in $CVARIANTS; do
 		if [ "$v" = real ]; then e=target/pocket/ngpc_cart_save.sv; else e=sim/tb_rc6a_mut_$v.sv; fi
-		if ! iverilog -g2012 -D SYNTHESIS -DNGPC_SAVE_DIAG=1 -o sim/tb_rc6a_cls_$v.vvp -s tb_rc6a_classify \
+		if ! iverilog -g2012 -DNGPC_SIM_SKIP_PSRAM_INIT -D SYNTHESIS -DNGPC_SAVE_DIAG=1 -o sim/tb_rc6a_cls_$v.vvp -s tb_rc6a_classify \
 		        $e upstream/rtl/cart/ngp_cart_overlay_geometry.sv upstream/rtl/cart/flash_die.sv sim/tb_rc6a_classify.sv; then
 			echo "== 1 FAILURE(S): the classify $v build failed"
 			exit 1
@@ -189,7 +189,7 @@ if [ "$MODE" = all ] || [ "$MODE" = bench ] || [ "$MODE" = full ]; then
 	VARIANTS="real nor1 nodata noprog noovf nodeliv nobase pend progall prog0 nopubclr noguard"
 	for v in $VARIANTS; do
 		if [ "$v" = real ]; then e=target/pocket/ngpc_cart_save.sv; else e=sim/tb_rc6a_mut_$v.sv; fi
-		if ! iverilog -g2012 -D SYNTHESIS -DNGPC_SAVE_DIAG=1 -o sim/tb_rc6a_$v.vvp -s tb_rc6a_bench $e $COMMON; then
+		if ! iverilog -g2012 -DNGPC_SIM_SKIP_PSRAM_INIT -D SYNTHESIS -DNGPC_SAVE_DIAG=1 -o sim/tb_rc6a_$v.vvp -s tb_rc6a_bench $e $COMMON; then
 			echo "== 1 FAILURE(S): the $v build failed"
 			exit 1
 		fi

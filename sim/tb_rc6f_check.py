@@ -278,7 +278,7 @@ def judge(words, sta, entry, crc):
         errs.append('embedded save image: payload checksum not ok')
     if not (out and out[-1].startswith('VERDICT: looks like a real save')):
         errs.append('embedded save image verdict %r' % (out[-1:] or ''))
-    if field(out, 'writer') != 'written by 1.1.0-rc6 or later (rev 6)':
+    if field(out, 'writer') not in ('written by 1.1.0-rc6 or 1.1.0 (rev 6)', 'written by 1.1.1 or later (rev 7)'):
         errs.append('embedded writer %r' % field(out, 'writer'))
     return errs, out
 
@@ -378,11 +378,12 @@ def mode_cmp(logdir, hex6, hex5):
             if len(d6) != len(d5):
                 print('      %d decisions on rc6, %d on rc5' % (len(d6), len(d5)))
         ndec += len(d6)
-        strip = lambda ls: [re.sub(r' w8419=[0-9a-fx]+', '', x) for x in ls]
+        # 8419 is the rc6 load stamp, 8418 the 1.1.1 PSRAM report: rc5 has neither
+        strip = lambda ls: [re.sub(r' w841[89]=[0-9a-fx]+', '', x) for x in ls]
         c6, c5 = lines_of(l6, 'RC6F CAP'), lines_of(l5, 'RC6F CAP')
         if strip(c6) != strip(c5) or not c6:
             nfail += 1
-            print('   FAIL group %d: capture lines differ beyond word 8419' % g)
+            print('   FAIL group %d: capture lines differ beyond words 8418/8419' % g)
             for a, b in zip(c6, c5):
                 if strip([a]) != strip([b]):
                     print('      rc6: %s\n      rc5: %s' % (a, b))
@@ -402,11 +403,11 @@ def mode_cmp(logdir, hex6, hex5):
             continue
         w6, w5 = read_hex(f6), read_hex(f5)
         diff = [i for i in range(max(len(w6), len(w5)))
-                if i != PAD_DIAG and (i >= len(w6) or i >= len(w5) or w6[i] != w5[i])]
+                if i not in (PAD_DIAG, PAD_DIAG - 1) and (i >= len(w6) or i >= len(w5) or w6[i] != w5[i])]
         nblob += 1
         if diff:
             nfail += 1
-            print('   FAIL %s: %d words differ from rc5 besides 8419 (first %s)' % (
+            print('   FAIL %s: %d words differ from rc5 besides 8418/8419 (first %s)' % (
                 os.path.basename(f6), len(diff), diff[:6]))
         else:
             print('   same %-12s rc6 8419=%08X rc5 8419=%08X, 8420..8423 %08X %08X %08X %08X' % (

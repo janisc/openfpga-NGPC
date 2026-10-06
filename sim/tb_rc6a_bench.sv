@@ -315,6 +315,8 @@ module tb_rc6a_bench;
 	wire        busy;
 
 	ngpc_savestate_bridge u_bridge (
+
+		.psram_report_i (32'h9D1F108F),   // 1.1.1
 		.clk_sys(clk_sys), .clk_74a(clk_74a), .reset(reset),
 		.savestate_start(ss_start_req), .savestate_start_ack(start_ack),
 		.savestate_start_busy(start_busy), .savestate_start_ok(start_ok),
@@ -382,6 +384,8 @@ module tb_rc6a_bench;
 	wire        stage_host_rd = 1'b0;
 
 	ngpc_cart_save #(.QUIET_CLOCKS(QUIET)) u_save (
+
+		.psram_report_i (32'h9D1F108F),   // 1.1.1
 		.clk(clk_sys), .reset(reset),
 		.cart_ready_i(cart_ready), .cart_replace_i(cart_replace),
 		.cart_crc32_i(cart_crc), .cart_bytes_i(25'h0080000),

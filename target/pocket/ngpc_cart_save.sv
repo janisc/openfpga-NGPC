@@ -196,6 +196,9 @@ module ngpc_cart_save #(
 	// present -> the slot flushes 0xFE00 bytes at shutdown, absent -> zero
 	// bytes and no file is created for games that never save.
 	output wire        save_present_o,
+	// The PSRAM set-up report (ngpc_stage_mem psram_report_o), stamped into
+	// header words 32/33 of every staged save.
+	input  wire [31:0] psram_report_i,
 	output wire        stage_current_o,   // idle with nothing left to stage
 	output reg         stage_bank_o,      // committed bank: what APF sees
 
@@ -579,9 +582,9 @@ module ngpc_cart_save #(
 			6'd19: hdr_word = ~crc_acc[15:0];
 			6'd20: hdr_word = ~crc_acc[31:16];
 			// High byte: the writer revision, so a file says which build
-			// wrote it. 0x05 = 1.1.0-rc5, 0x06 = 1.1.0-rc6 and later; older
-			// writers left 0.
-			6'd21: hdr_word = {8'h06, cart_subcat_i};
+			// wrote it. 0x05 = 1.1.0-rc5, 0x06 = 1.1.0-rc6 and 1.1.0, 0x07 =
+			// 1.1.1 (words 32/33 below); older writers left 0.
+			6'd21: hdr_word = {8'h07, cart_subcat_i};
 			6'd22: hdr_word = diag_applies;
 			6'd23: hdr_word = {diag_verdict[15], diag_wr_drain, diag_verdict[13:0]};
 			6'd24: hdr_word = diag_p2wr;
@@ -594,6 +597,10 @@ module ngpc_cart_save #(
 			6'd29: hdr_word = cart_title_i[79:64];
 			6'd30: hdr_word = cart_title_i[95:80];
 			6'd31: hdr_word = cart_catalog_i;
+			// 1.1.1: how the PSRAM was found at core start, and whether the
+			// set-up read back as written (ngpc_stage_mem psram_report_o).
+			6'd32: hdr_word = psram_report_i[15:0];
+			6'd33: hdr_word = psram_report_i[31:16];
 			default: hdr_word = 16'd0;
 		endcase
 	end
@@ -950,7 +957,7 @@ module ngpc_cart_save #(
 					if (stage_ready_i) begin
 						stage_req_o   <= 1'b1;
 						stage_we_o    <= 1'b1;
-						stage_addr_o  <= {8'd0, build_bank, 16'd0} + {19'd0, hdr_idx[4:0], 1'b0};
+						stage_addr_o  <= {8'd0, build_bank, 16'd0} + {18'd0, hdr_idx, 1'b0};
 						stage_wdata_o <= hdr_word;
 						state         <= S_STAGE_HDR_W;
 					end
@@ -958,7 +965,7 @@ module ngpc_cart_save #(
 
 				S_STAGE_HDR_W: begin
 					if (stage_done_i) begin
-						if (hdr_idx == 6'd31) begin
+						if (hdr_idx == 6'd33) begin
 							// The image is whole: publish it in one step -- unless
 							// the game wrote flash while the pass was running, in
 							// which case the older image in the other bank is the

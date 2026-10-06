@@ -15,4 +15,5 @@ there. A menu Reset keeps your save; to restart a game,
 relaunch it.
 
 If a game starts without its save, quit and launch it again:
-the save file is kept. See docs/KNOWN_BEHAVIORS.md.
+the save file is kept. If that doesn't help, switch the Pocket
+off and on. See docs/KNOWN_BEHAVIORS.md.
