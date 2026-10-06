@@ -215,13 +215,13 @@ verified and applied before boot. What that trades away, knowingly:
 
 And a word of expectation management: the design fills 98% of
 the Pocket's FPGA and does not formally close timing at this speed grade —
-every feature above was won through fit battles and seed sweeps. 1.1.0
+every feature above was won through fit battles and seed sweeps. It
 only fits because the slow, non-critical blocks are now built for area;
 before that the fitter had run out of LABs while ALMs were still nominally
 free. Realistically **no new features are planned**; the remaining work is
 polish, testing and release. One is of course free to try — the fitter
-reports about 374 ALMs unused, scattered across the device
-(all 1,848 of its LABs are in use), and they are spoken for by
+reports about 280 ALMs unused, scattered across the device
+(practically all of its 1,848 LABs are in use), and they are spoken for by
 whoever gets there first. 😃
 
 ## Branches
@@ -256,7 +256,7 @@ quartus_sh --flow compile projects/ngpc_pocket.qpf
 python scripts/package.py --zip
 ```
 
-Open `projects/ngpc_pocket.qpf` in Quartus and hit Compile. 1.1.0 is built
+Open `projects/ngpc_pocket.qpf` in Quartus and hit Compile. 1.1.1 is built
 and verified with **Quartus Prime Lite 25.1** (free, no license; install
 with Cyclone V device support). Expect a batch of benign warnings about
 ignored legacy assignments -- the modern fitter absorbed those knobs.
@@ -266,8 +266,8 @@ JSON.
 The design targets a Cyclone V 5CEBA4F23C8 at ~98% logic occupancy
 and does not formally close timing at this speed grade; see the commit
 history on `dev` for the measured reality and the disciplines that keep it
-honest. The 1.1.0 release bitstream is seed 7 (main clock −3.139 ns worst
-case), picked from a 25-seed search.
+honest. The 1.1.1 release bitstream is seed 51 (main clock −2.839 ns worst
+case), picked from a 62-seed search.
 
 ## Credits
 
