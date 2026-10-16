@@ -27,6 +27,7 @@ if [ "${BUILD:-1}" != 0 ]; then
 		+libext+.sv+.v \
 		--Mdir "$OUT/obj" --top-module tb_link2 \
 		"$ROOT/target/pocket/t900_regfile_mlab.sv" \
+		"$ROOT/target/pocket/tv80_reg_mlab.v" "$ROOT/target/pocket/pocket_lutram.sv" \
 		"$ROOT/target/pocket/ngpc_link.sv" \
 		"$U/Mem/cache_ram.v" "$U/Mem/cache_ram_be.sv" \
 		"$ROOT/target/pocket/ngpc_pocket_video.sv" \
