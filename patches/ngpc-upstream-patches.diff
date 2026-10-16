@@ -1,3 +1,19 @@
+diff --git a/NGPC.sdc b/NGPC.sdc
+index a1aa6e2..b039cd0 100644
+--- a/NGPC.sdc
++++ b/NGPC.sdc
+@@ -17,7 +17,10 @@ set t900_int_req_mc_from [get_registers {*|g_rf_read_split.int_req_hold}]
+ set t900_int_level_mc_from [get_registers {*|g_rf_read_split.int_level_hold*}]
+ set t900_dma_req_mc_from [get_registers {*|g_rf_read_split.dma_req_hold*}]
+ set t900_pause_req_mc_from [get_registers {*|g_rf_read_split.pause_req_hold}]
+-set t900_regfile_mc_to [get_registers {*|t900_regfile:u_regfile|regs*}]
++# Pocket port: everything registered inside the register file is its storage,
++# whether that is the flop array (regs*) or the LUT-RAM build's MLAB write
++# ports, which also write only on a ce_t900_g cycle (wr_en carries the enable).
++set t900_regfile_mc_to [get_registers {*|t900_regfile:u_regfile|*}]
+ set t900_biu_addr_mc_to [get_registers {*|t900_biu:u_biu|bus_addr_r*}]
+ 
+ if {[get_collection_size $t900_state_mc_from] == 0} {
 diff --git a/rtl/Savestates/savestates.sv b/rtl/Savestates/savestates.sv
 index 3d8d52f..0fc22e0 100644
 --- a/rtl/Savestates/savestates.sv
