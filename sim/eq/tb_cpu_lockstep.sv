@@ -139,7 +139,7 @@ module tb_cpu_lockstep;
 	// ---- run control and statistics --------------------------------------
 	longint cycles = 2_000_000;
 	longint cyc = 0;
-	longint n_retire = 0, n_halt = 0, n_int = 0, n_dma = 0, n_pause = 0, n_sswr = 0, n_wr = 0, n_rd = 0;
+	longint n_retire = 0, n_bios = 0, n_cart = 0, n_halt = 0, n_int = 0, n_dma = 0, n_pause = 0, n_sswr = 0, n_wr = 0, n_rd = 0;
 	longint mismatches = 0;
 	string  mode = "fuzz";
 
@@ -150,6 +150,7 @@ module tb_cpu_lockstep;
 	int      pause_in = 0;
 	int      sweep_i = 0;
 	int      sweep_wait = 0;
+	bit      entered = 0;
 	byte unsigned tap [$] = '{
 		8'h00, 8'h01, 8'h02, 8'h03, 8'h04, 8'h05, 8'h06, 8'h07, 8'h08, 8'h09,
 		8'h0A, 8'h0B, 8'h0C, 8'h0D, 8'h0E, 8'h0F, 8'h10, 8'h11, 8'h12, 8'h13,
@@ -167,7 +168,10 @@ module tb_cpu_lockstep;
 		end else begin
 			for (int i = 0; i < (1 << 24); i++) mem[i] = 8'($urandom);
 		end
-		pause_in = $urandom_range(20_000, 200_000);
+		// In rom mode the first pause comes early and starts the cartridge at the
+		// entry point in its header (offset 1C), since nothing here plays the
+		// video and timer hardware the BIOS waits on before it hands over.
+		pause_in = (mode == "rom") ? 5_000 : $urandom_range(20_000, 200_000);
 	end
 
 	always @(posedge clk) begin
@@ -262,7 +266,11 @@ module tb_cpu_lockstep;
 		end
 
 		// trace_valid stands for a whole machine state, so count it on the tick.
-		if (ce && r_trace_valid) n_retire++;
+		if (ce && r_trace_valid) begin
+			n_retire++;
+			if (r_trace_pc >= 24'hFF0000) n_bios++;
+			else if (is_cart(r_trace_pc)) n_cart++;
+		end
 		if (ce && r_halted) n_halt++;
 
 		// Pauses with a savestate sweep; otherwise a random tap address.
@@ -299,7 +307,14 @@ module tb_cpu_lockstep;
 					automatic logic [31:0] v = $urandom;
 					automatic bit w = 0;
 					if (t < 8'h14)        w = (r < 33);
-					else if (t == 8'h20)  w = (r < 25);
+					else if (t == 8'h20) begin
+						w = (r < 25) && (mode != "rom");   // keep real code running
+						if (mode == "rom" && !entered) begin
+							w = 1;
+							v = {8'd0, mem[24'h20001E], mem[24'h20001D], mem[24'h20001C]};
+							entered = 1;
+						end
+					end
 					else if (t == 8'h21) begin
 						w = (r < 60);
 						if ($urandom_range(0, 9) != 0) v[14:12] = 3'($urandom_range(0, 6));
@@ -329,8 +344,8 @@ module tb_cpu_lockstep;
 		endcase
 
 		if (cyc >= cycles) begin
-			$display("mode %s: %0d cycles, %0d retired, %0d halted states, %0d reads, %0d writes, %0d interrupts, %0d dma starts, %0d pauses, %0d tap writes",
-				mode, cyc, n_retire, n_halt, n_rd, n_wr, n_int, n_dma, n_pause, n_sswr);
+			$display("mode %s: %0d cycles, %0d retired (%0d in BIOS, %0d in cartridge), %0d halted states, %0d reads, %0d writes, %0d interrupts, %0d dma starts, %0d pauses, %0d tap writes",
+				mode, cyc, n_retire, n_bios, n_cart, n_halt, n_rd, n_wr, n_int, n_dma, n_pause, n_sswr);
 			$display("LOCKSTEP EQUIVALENT");
 			$finish;
 		end
