@@ -14,6 +14,10 @@
 // kept three times, once per reader: read port A, read port B and the
 // savestate tap. All three copies take every write, so they always agree.
 //
+// Quartus does not infer an asynchronous-read RAM for Cyclone V from HDL (it
+// rebuilds it in flops and merges the copies), so synthesis instantiates the
+// LUT-RAM primitive directly; see t900_rf_lutram below.
+//
 // Timing behaviour matches the flop version at clock-edge granularity: a read
 // is combinational, and a write lands on the clock edge that ends the cycle in
 // which wr_en (or ss_wren) is high. The CPU drives wr_en only on `ce` cycles
@@ -140,39 +144,83 @@ module t900_regfile
 		end
 	end
 
-	(* ramstyle = "MLAB" *) reg [31:0] mem_a [0:19];
-	(* ramstyle = "MLAB" *) reg [31:0] mem_b [0:19];
-	(* ramstyle = "MLAB" *) reg [31:0] mem_s [0:19];
+	wire [31:0] qa, qb, qs;
+
+	t900_rf_lutram u_copy_a (.clk(clk), .we(we), .waddr(waddr), .wbe(wbe), .wdata(wdata), .raddr(ra_phys[4:0]), .q(qa));
+	t900_rf_lutram u_copy_b (.clk(clk), .we(we), .waddr(waddr), .wbe(wbe), .wdata(wdata), .raddr(rb_phys[4:0]), .q(qb));
+	t900_rf_lutram u_copy_s (.clk(clk), .we(we), .waddr(waddr), .wbe(wbe), .wdata(wdata), .raddr(ss_addr),      .q(qs));
+
+	assign ra_data  = ra_phys[5] ? lane_read(qa, ra_code[1:0], ra_size) : 32'd0;
+	assign rb_data  = rb_phys[5] ? lane_read(qb, rb_code[1:0], rb_size) : 32'd0;
+	assign ss_rdata = ss_addr_ok ? qs : 32'd0;
+
+endmodule
+
+// One copy: 32 x 32 bits, byte-enabled write on the rising edge, asynchronous
+// read. On Cyclone V the MLAB registers wren, address, data and byte enables
+// on the rising edge and writes on that same edge (altera_mf.v altdpram:
+// Cyclone V is a rising-edge-write family), so the read port changes exactly
+// when a flop would.
+module t900_rf_lutram
+(
+	input  wire        clk,
+	input  wire        we,
+	input  wire [4:0]  waddr,
+	input  wire [3:0]  wbe,
+	input  wire [31:0] wdata,
+	input  wire [4:0]  raddr,
+	output wire [31:0] q
+);
+
+`ifdef SYNTHESIS
+	altdpram
+	#(
+		.intended_device_family             ("Cyclone V"),
+		.ram_block_type                     ("MLAB"),
+		.width                              (32),
+		.widthad                            (5),
+		.numwords                           (32),
+		.width_byteena                      (4),
+		.byte_size                          (8),
+		.indata_reg                         ("INCLOCK"),
+		.indata_aclr                        ("OFF"),
+		.wraddress_reg                      ("INCLOCK"),
+		.wraddress_aclr                     ("OFF"),
+		.wrcontrol_reg                      ("INCLOCK"),
+		.wrcontrol_aclr                     ("OFF"),
+		.rdaddress_reg                      ("UNREGISTERED"),
+		.rdaddress_aclr                     ("OFF"),
+		.rdcontrol_reg                      ("UNREGISTERED"),
+		.rdcontrol_aclr                     ("OFF"),
+		.outdata_reg                        ("UNREGISTERED"),
+		.outdata_aclr                       ("OFF"),
+		.outdata_sclr                       ("OFF"),
+		.read_during_write_mode_mixed_ports ("DONT_CARE"),
+		.lpm_type                           ("altdpram")
+	)
+	u_ram
+	(
+		.inclock   (clk),
+		.wren      (we),
+		.wraddress (waddr),
+		.byteena   (wbe),
+		.data      (wdata),
+		.rdaddress (raddr),
+		.q         (q)
+	);
+`else
+	reg [31:0] mem [0:31];
 
 	always @(posedge clk) begin
 		if (we) begin
-			if (wbe[0]) mem_a[waddr][7:0]   <= wdata[7:0];
-			if (wbe[1]) mem_a[waddr][15:8]  <= wdata[15:8];
-			if (wbe[2]) mem_a[waddr][23:16] <= wdata[23:16];
-			if (wbe[3]) mem_a[waddr][31:24] <= wdata[31:24];
+			if (wbe[0]) mem[waddr][7:0]   <= wdata[7:0];
+			if (wbe[1]) mem[waddr][15:8]  <= wdata[15:8];
+			if (wbe[2]) mem[waddr][23:16] <= wdata[23:16];
+			if (wbe[3]) mem[waddr][31:24] <= wdata[31:24];
 		end
 	end
 
-	always @(posedge clk) begin
-		if (we) begin
-			if (wbe[0]) mem_b[waddr][7:0]   <= wdata[7:0];
-			if (wbe[1]) mem_b[waddr][15:8]  <= wdata[15:8];
-			if (wbe[2]) mem_b[waddr][23:16] <= wdata[23:16];
-			if (wbe[3]) mem_b[waddr][31:24] <= wdata[31:24];
-		end
-	end
-
-	always @(posedge clk) begin
-		if (we) begin
-			if (wbe[0]) mem_s[waddr][7:0]   <= wdata[7:0];
-			if (wbe[1]) mem_s[waddr][15:8]  <= wdata[15:8];
-			if (wbe[2]) mem_s[waddr][23:16] <= wdata[23:16];
-			if (wbe[3]) mem_s[waddr][31:24] <= wdata[31:24];
-		end
-	end
-
-	assign ra_data  = ra_phys[5] ? lane_read(mem_a[ra_phys[4:0]], ra_code[1:0], ra_size) : 32'd0;
-	assign rb_data  = rb_phys[5] ? lane_read(mem_b[rb_phys[4:0]], rb_code[1:0], rb_size) : 32'd0;
-	assign ss_rdata = ss_addr_ok ? mem_s[ss_addr] : 32'd0;
+	assign q = mem[raddr];
+`endif
 
 endmodule

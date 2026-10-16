@@ -9,9 +9,11 @@
 
 module tb_regfile_eq;
 
-	localparam int CYCLES = 20_000_000;
+	longint CYCLES = 20_000_000;      // +cycles=N overrides
 
-	reg        clk = 1'b0;
+	// The clock is a wire so it can feed altera_mf's tri1 clock ports too.
+	reg        clk_r = 1'b0;
+	wire       clk = clk_r;
 	reg [1:0]  rfp;
 	reg [7:0]  ra_code, rb_code, wr_code;
 	reg [1:0]  ra_size, rb_size, wr_size;
@@ -42,18 +44,22 @@ module tb_regfile_eq;
 
 	// Mostly valid register codes (absolute banks, previous, current, the
 	// index group), sometimes anything at all, including the undefined 40-7C.
+	// (Written without `return` so iverilog 11 can run it too.)
 	function automatic [7:0] pick_code();
-		int r = $urandom_range(0, 99);
+		int r;
+		reg [31:0] x;
+		r = $urandom_range(0, 99);
+		x = $urandom;
 		if (r < 15)
-			return 8'($urandom);
+			pick_code = x[7:0];
 		else if (r < 45)
-			return {2'b00, 6'($urandom)};
+			pick_code = {2'b00, x[5:0]};
 		else if (r < 60)
-			return {4'hd, 4'($urandom)};
+			pick_code = {4'hd, x[3:0]};
 		else if (r < 85)
-			return {4'he, 4'($urandom)};
+			pick_code = {4'he, x[3:0]};
 		else
-			return {4'hf, 4'($urandom)};
+			pick_code = {4'hf, x[3:0]};
 	endfunction
 
 	longint mismatches = 0;
@@ -70,6 +76,7 @@ module tb_regfile_eq;
 	endtask
 
 	initial begin
+		if ($value$plusargs("cycles=%d", CYCLES)) ;
 		rfp = 0; ra_code = 0; rb_code = 0; wr_code = 0;
 		ra_size = 0; rb_size = 0; wr_size = 0;
 		wr_en = 0; ss_wren = 0; wr_data = 0; ss_wdata = 0; ss_addr = 0;
@@ -78,7 +85,7 @@ module tb_regfile_eq;
 		// tap, the way a restore does, so the comparison starts defined.
 		for (int i = 0; i < 20; i++) begin
 			ss_wren = 1; ss_addr = 5'(i); ss_wdata = $urandom;
-			#1 clk = 1; #1 clk = 0;
+			#1 clk_r = 1; #1 clk_r = 0;
 		end
 		ss_wren = 0;
 
@@ -98,9 +105,9 @@ module tb_regfile_eq;
 			if (wr_en && ss_wren) both++;
 
 			#1 check(cyc);          // reads before the edge: old contents
-			clk = 1;
+			clk_r = 1;
 			#1 check(cyc);          // the same reads after it: new contents
-			clk = 0;
+			clk_r = 0;
 		end
 
 		$display("cycles %0d, writes %0d, savestate writes %0d, both at once %0d, mismatches %0d",
