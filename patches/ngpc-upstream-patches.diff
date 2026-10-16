@@ -30,10 +30,18 @@ index 3d8d52f..0fc22e0 100644
  	input  wire paused,
  
 diff --git a/rtl/soc/k2_soc.sv b/rtl/soc/k2_soc.sv
-index 010a885..6cebbf5 100644
+index 010a885..276ea46 100644
 --- a/rtl/soc/k2_soc.sv
 +++ b/rtl/soc/k2_soc.sv
-@@ -630,6 +630,21 @@ module k2_soc
+@@ -224,6 +224,7 @@ module k2_soc
+ 	input  wire        link_rxd,
+ 	output wire        link_rts_n,   // SNK register 0xB2 bit 0
+ 	input  wire        link_cts_n,   // CTS0 pin
++	input  wire        link_present, // cable-detect input, active high internally
+ 
+ 	// ---- savestate internals slice + memory taps --------------------------
+ 	input  wire [9:0]  ss_bus_adr,
+@@ -630,6 +631,21 @@ module k2_soc
  	// RAM cheats behave alike. Writes, memory taps and cartridge backing traffic
  	// never pass through it. bus_rdy is observed only to rescan compare records
  	// once the raw response is valid; the engine never changes readiness.
@@ -55,7 +63,7 @@ index 010a885..6cebbf5 100644
  	ngp_cheat_engine cheat_engine
  	(
  		.clk_sys_i        (clk_sys),
-@@ -649,6 +664,7 @@ module k2_soc
+@@ -649,6 +665,7 @@ module k2_soc
  		.available_o      (cheat_available),
  		.commit_done_o    (cheat_commit_done)
  	);
@@ -63,11 +71,44 @@ index 010a885..6cebbf5 100644
  
  	// fabric : k2_soc_fabric -- the internal bus and the on-chip memories
  
+@@ -826,6 +843,7 @@ module k2_soc
+ 		.btn_n             (btn_n),
+ 		.pwr_btn_n         (pwr_btn_held_n),
+ 		.subbatt_ok        (1'b1),          // deviation 3
++		.link_present      (link_present),
+ 		.link_rts_n        (link_rts_n),
+ 
+ 		.gear              (gear),
 diff --git a/rtl/soc/ngp_mainboard.sv b/rtl/soc/ngp_mainboard.sv
-index 77efed5..e0ad2bd 100644
+index 77efed5..6d87686 100644
 --- a/rtl/soc/ngp_mainboard.sv
 +++ b/rtl/soc/ngp_mainboard.sv
-@@ -488,6 +488,45 @@ module ngp_mainboard
+@@ -80,13 +80,13 @@ module ngp_mainboard
+ 	input  wire        power_btn,        // active HIGH, held >= 8 frames
+ 
+ 	// ---- CON2 link connector ----------------------------------------------
+-	// The board carries all four SC0 signals without inventing a partner. The
+-	// emu boundary supplies the unplugged RXD0/CTS0_n pull levels; keeping TXD0
+-	// and RTS_n visible here makes a later cable transport a wiring change.
++	// The board carries all four SC0 signals plus the active-low cable-detect
++	// state exposed through system register 0xB1 bit 2.
+ 	output wire        link_txd,
+ 	input  wire        link_rxd,
+ 	output wire        link_rts_n,
+ 	input  wire        link_cts_n,
++	input  wire        link_present,
+ 
+ 	output wire        led_user,
+ 	output wire        bios_setup_ready,
+@@ -353,6 +353,7 @@ module ngp_mainboard
+ 		.link_rxd      (link_rxd),
+ 		.link_rts_n    (link_rts_n),
+ 		.link_cts_n    (link_cts_n),
++		.link_present  (link_present),
+ 
+ 		.ss_bus_adr    (ss_bus_adr),
+ 		.ss_bus_din    (ss_bus_din),
+@@ -488,6 +489,45 @@ module ngp_mainboard
  	// keep normal gameplay continuous. The public raster uses clk_sys directly
  	// and therefore continues through every machine pause.
  
@@ -113,7 +154,7 @@ index 77efed5..e0ad2bd 100644
  	ngpc_crt_framebuffer lcd
  	(
  		.clk_sys              (clk_sys),
-@@ -519,6 +558,7 @@ module ngp_mainboard
+@@ -519,6 +559,7 @@ module ngp_mainboard
  		.vga_hs               (hsync),
  		.vga_vs               (vsync)
  	);
@@ -167,6 +208,33 @@ index fbeaa25..5f439ac 100644
  						rtc_year_q    <= rtc_seed_value[47:40];
  						rtc_month_q   <= rtc_seed_value[39:32];
  						rtc_day_q     <= rtc_seed_value[31:24];
+diff --git a/rtl/soc/ngp_sysreg.sv b/rtl/soc/ngp_sysreg.sv
+index 28df913..ab24146 100644
+--- a/rtl/soc/ngp_sysreg.sv
++++ b/rtl/soc/ngp_sysreg.sv
+@@ -110,6 +110,7 @@ module ngp_sysreg
+ 	input  wire [6:0]  btn_n,          // active low: Up Down Left Right A B Option
+ 	input  wire        pwr_btn_n,      // active low
+ 	input  wire        subbatt_ok,     // board ties 1
++	input  wire        link_present,   // active high; inverted at 0xB1 bit 2
+ 	output wire        link_rts_n,
+ 
+ 	// chip-internal fan-out
+@@ -193,11 +194,9 @@ module ngp_sysreg
+ 		case (a)
+ 			A_GEAR:  rdata_r = reg_gear;
+ 			A_BTN:   rdata_r = {1'b0, ~btn_n};
+-			// Bit 2 is the active-low cable-detect input. There is no link
+-			// transport at the emu boundary yet, so it must read 1 = unplugged.
+-			// SNK Gals' Fighters reads exactly this bit at ROM 0x264350 and
+-			// enters its LINK FAILURE path when it is left at 0.
+-			A_PWR:   rdata_r = {5'd0, 1'b1, subbatt_ok, pwr_btn_n};
++			// Bit 2 is the active-low cable-detect input: 0 when the selected
++			// external transport presents a link cable, 1 when unplugged.
++			A_PWR:   rdata_r = {5'd0, ~link_present, subbatt_ok, pwr_btn_n};
+ 			A_COMM:  rdata_r = reg_b2;
+ 			A_NMIG:  rdata_r = reg_b3;
+ 			A_PWL0:  rdata_r = reg_b4;
 diff --git a/rtl/soc/t900_mcu.sv b/rtl/soc/t900_mcu.sv
 index cc899cf..4f66ee1 100644
 --- a/rtl/soc/t900_mcu.sv

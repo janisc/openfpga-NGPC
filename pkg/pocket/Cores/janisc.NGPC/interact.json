@@ -93,6 +93,26 @@
             "name": "Classic"
           }
         ]
+      },
+      {
+        "name": "Link Cable",
+        "id": 23,
+        "type": "list",
+        "enabled": true,
+        "persist": true,
+        "writeonly": true,
+        "address": "0x10C",
+        "defaultval": 0,
+        "options": [
+          {
+            "value": 0,
+            "name": "Off"
+          },
+          {
+            "value": 1,
+            "name": "On"
+          }
+        ]
       }
     ]
   }

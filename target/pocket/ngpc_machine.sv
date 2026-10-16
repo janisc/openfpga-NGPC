@@ -152,7 +152,13 @@ module ngpc_machine
 	output wire        SDRAM_nRAS,
 	output wire        SDRAM_nWE,
 
-	output wire        led_user
+	output wire        led_user,
+
+	// The link port, through ngpc_link. `link_si` is the raw, asynchronous pin.
+	input  wire        link_enable,
+	input  wire        link_si,
+	output wire        link_so,
+	output wire        link_so_oe
 );
 
 	//////////////////////////////// Reset ///////////////////////////////////
@@ -881,14 +887,28 @@ module ngpc_machine
 
 	///////////////////////// The machine: mainboard //////////////////////////
 
-	// The link port has no host on the Pocket. TMP95C061 Port 8 pulls P81/RXD0
-	// and P82/CTS0 high (datasheet pp.41-42), so an absent cable is RXD at
-	// mark/idle and active-low CTS deasserted -- which is what a disabled or
-	// mismatched host looks like electrically.
-	localparam [0:0] LINK_RXD_UNPLUGGED   = 1'b1;
-	localparam [0:0] LINK_CTS_N_UNPLUGGED = 1'b1;
-
+	// The link cable. ngpc_link carries this machine's TxD0 and RTS_n to the
+	// other Pocket and rebuilds the other machine's as RxD0 and CTS0_n. With the
+	// link off or no partner on the cable it presents an unplugged CON2: RxD at
+	// mark, CTS_n deasserted (TMP95C061 Port 8 pulls P81/RXD0 and P82/CTS0 high,
+	// datasheet pp.41-42) and cable detect clear.
 	wire link_txd, link_rts_n;
+	wire link_rxd, link_cts_n, link_present;
+
+	ngpc_link link
+	(
+		.clk     (clk_sys),
+		.reset   (reset),
+		.enable  (link_enable),
+		.txd     (link_txd),
+		.rts_n   (link_rts_n),
+		.rxd     (link_rxd),
+		.cts_n   (link_cts_n),
+		.present (link_present),
+		.so      (link_so),
+		.so_oe   (link_so_oe),
+		.si      (link_si)
+	);
 
 	ngp_mainboard mainboard
 	(
@@ -915,9 +935,10 @@ module ngpc_machine
 		.power_btn            (power_btn),
 
 		.link_txd             (link_txd),
-		.link_rxd             (LINK_RXD_UNPLUGGED),
+		.link_rxd             (link_rxd),
 		.link_rts_n           (link_rts_n),
-		.link_cts_n           (LINK_CTS_N_UNPLUGGED),
+		.link_cts_n           (link_cts_n),
+		.link_present         (link_present),
 
 		.led_user             (led_user),
 
@@ -990,7 +1011,7 @@ module ngpc_machine
 
 	assign vga_de = ~(vga_hbl | vga_vbl);
 
-	wire unused_ok = &{1'b0, link_txd, link_rts_n, seed_busy, ss_bus_dout,
+	wire unused_ok = &{1'b0, seed_busy, ss_bus_dout,
 	                   ss_mem_rdata, cart_image_crc32, cart_size_code0,
 	                   wram_clear_done, save_busy, 1'b0};
 

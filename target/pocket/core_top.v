@@ -253,12 +253,13 @@ module core_top (
   assign cart_tran_pin31         = 1'bz;
   assign cart_tran_pin31_dir     = 1'b0;
 
-  // The NGP link port is a real feature of the machine and the core models it
-  // (ngp_sio, 19200 baud). Wiring it to the Pocket's link connector is a later
-  // exercise; for now the machine sees an unplugged cable, which ngpc_machine
-  // states as the pad pull-ups rather than as a tie-off.
-  assign port_tran_so            = 1'bz;
-  assign port_tran_so_dir        = 1'b0;
+  // The link port carries the NGP link cable (ngpc_link, inside ngpc_machine)
+  // over a GBC link cable. Only SO is ever driven, and only while the Link Cable
+  // option is on; SI is read, and SCK and SD stay inputs. SO lands on the other
+  // Pocket's SI, an input, which is how every Game Boy link game uses the port.
+  wire link_so, link_so_oe;
+  assign port_tran_so            = link_so_oe ? link_so : 1'bz;
+  assign port_tran_so_dir        = link_so_oe;
   assign port_tran_si            = 1'bz;
   assign port_tran_si_dir        = 1'b0;
   assign port_tran_sck           = 1'bz;
@@ -335,6 +336,7 @@ module core_top (
   reg [1:0] opt_system = 2'd0;      // status[2:1]  0 NGPC, 1 Auto, 2 NGP
   reg       opt_language_jp = 0;    // status[3]
   reg [2:0] opt_palette = 3'd0;     // status[16:14]
+  reg       opt_link = 0;           // Link Cable: 0 off, 1 on
 
 
   // Cartridge saves. The two actions are toggles rather than levels: APF
@@ -361,6 +363,7 @@ module core_top (
         32'h100: opt_system       <= bridge_wr_data[1:0];
         32'h104: opt_language_jp  <= bridge_wr_data[0];
         32'h108: opt_palette      <= bridge_wr_data[2:0];
+        32'h10C: opt_link         <= bridge_wr_data[0];
       endcase
     end
   end
@@ -371,12 +374,13 @@ module core_top (
   wire       opt_language_jp_s;
   wire       bios_reset_mode_s;
   wire [2:0] opt_palette_s;
+  wire       opt_link_s;
 
   synch_3 #(
-      .WIDTH(7)
+      .WIDTH(8)
   ) settings_sync (
-      {opt_system, opt_language_jp, opt_palette, bios_reset_mode},
-      {opt_system_s, opt_language_jp_s, opt_palette_s, bios_reset_mode_s},
+      {opt_system, opt_language_jp, opt_palette, bios_reset_mode, opt_link},
+      {opt_system_s, opt_language_jp_s, opt_palette_s, bios_reset_mode_s, opt_link_s},
       clk_sys
   );
 
@@ -1186,7 +1190,12 @@ module core_top (
       .SDRAM_nRAS(dram_ras_n),
       .SDRAM_nWE (dram_we_n),
 
-      .led_user(led_user)
+      .led_user(led_user),
+
+      .link_enable(opt_link_s),
+      .link_si    (port_tran_si),
+      .link_so    (link_so),
+      .link_so_oe (link_so_oe)
   );
 
   // ----------------------------------------------------------------------
