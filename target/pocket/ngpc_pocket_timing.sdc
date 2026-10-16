@@ -22,7 +22,10 @@
 # RTL, find the register's always block, and confirm it has no update path
 # outside reset / restore_hold / `else if (ce)`.
 
-set pocket_regfile_to [get_registers {*|t900_regfile:u_regfile|regs*}]
+# Everything registered inside t900_regfile is its storage: the flop array
+# (regs*) in upstream's version, the MLAB write ports in the LUT-RAM version
+# (t900_regfile_mlab.sv), which also commit only when the ce-gated wr_en is high.
+set pocket_regfile_to [get_registers {*|t900_regfile:u_regfile|*}]
 set pocket_biu_addr_to [get_registers {*|t900_biu:u_biu|bus_addr_r*}]
 
 if {[get_collection_size $pocket_regfile_to] == 0} {
