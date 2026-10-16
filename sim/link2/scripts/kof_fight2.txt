@@ -1,0 +1,20 @@
+# From k2120 (the round should be live): close the distance and trade hits.
+# Run with +restore=k2120.ckpt +shot_every=10 +linklog=<file>
+2125 A  press R 30
+2125 B  press L 30
+2160 A  press A 3
+2166 B  press B 3
+2172 A  press B 3
+2178 B  press A 3
+2184 A  press A 3
+2190 B  press DB 4
+2198 A  press A 3
+2204 B  press B 3
+2212 A  press RB 3
+2220 B  press A 3
+2228 A  press A 3
+2236 B  press B 3
+2244 A  press B 3
+2252 B  press A 3
+2340 -  save k2340
+2341 -  end

@@ -1,0 +1,19 @@
+# From k1840 (the linked round is starting on MID EAST): both players walk in
+# and attack, with different inputs on each machine. In link play both
+# machines run the same fight from the exchanged inputs, so the two screens
+# must stay identical.
+# Run with +restore=k1840.ckpt +shot_every=20 +linklog=<file>
+1860 A  press R 40
+1860 B  press L 25
+1905 A  press A 3
+1912 B  press B 3
+1925 A  press A 3
+1932 B  press DB 6
+1950 A  press RA 4
+1960 B  press A 3
+1975 A  press B 3
+1990 B  press LB 4
+2010 A  press A 3
+2020 B  press A 3
+2120 -  save k2120
+2121 -  end

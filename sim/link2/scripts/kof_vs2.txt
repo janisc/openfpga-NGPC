@@ -1,0 +1,10 @@
+# From k1140 (MAIN menu): both go down to VS MODE, but B confirms 30 frames
+# after A, as two players would. Identical machines pressing on the same frame
+# stay in lockstep and never settle who leads (see link.log of kof_vs.txt).
+# Run with +restore=k1140.ckpt +shot_every=15 +linklog=<file>
+1145 AB press D 3
+1157 AB press D 3
+1175 A  press A 4
+1205 B  press A 4
+1380 -  save k1380
+1381 -  end

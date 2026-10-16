@@ -1,0 +1,5 @@
+# From t900: press A on both at the title, see what menu comes up.
+# Run with +restore=t900.ckpt +shot_every=20
+960  AB press A 4
+1080 -  save t1080
+1081 -  end

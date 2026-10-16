@@ -2,7 +2,7 @@
 //
 //   Vtb_link2 +bios=<hex> +cart0=<hex> +cart0_bytes=<n> +cart1=<hex> +cart1_bytes=<n>
 //             +script=<file> [+out=<dir>] [+restore=<checkpoint>] [+frames=<n>]
-//             [+shot_every=<n>] [+sameclock]
+//             [+shot_every=<n>] [+sameclock] [+linklog=<file>]
 //
 // +sameclock drives both machines from machine A's clock: half the evaluation
 // steps. The link transport's tolerance of two different clocks is covered by
@@ -125,6 +125,82 @@ struct Screen {
 	}
 };
 
+// ---- what crosses the cable ----------------------------------------------
+// Decodes one side's link frames off its SO wire (the same 6-bit frames
+// ngpc_link.sv sends: start, TxD, RTS_n, tag, parity, stop at 48 clk_sys per
+// bit), which gives that machine's serial TxD0 and RTS_n as the other side
+// rebuilds them; then decodes TxD0 as 19200 bps 8N1 (2560 clk_sys per bit).
+// It only watches the wire, so it changes nothing in the simulated design.
+struct LinkTap {
+	// frame decoder
+	bool busy = false, prev = true;
+	int cnt = 0, bit = 0;
+	bool smp[6] = {};
+	bool txd = true, rts_n = true;
+	uint64_t frames_ok = 0, frames_bad = 0;
+	// UART decoder on the rebuilt TxD
+	int ust = 0, ucnt = 0, ubit = 0;
+	uint8_t ub = 0;
+	bool txd_prev = true;
+	uint64_t bytes = 0, uart_errors = 0, rts_changes = 0;
+	bool rts_prev = true;
+	std::vector<uint8_t> recent;
+	FILE* log = nullptr;
+	const char* name = "";
+
+	void clk(bool s, uint64_t frame) {
+		if (!busy) {
+			if (prev && !s) { busy = true; cnt = 23; bit = 0; }
+		} else if (cnt) {
+			cnt--;
+		} else {
+			smp[bit] = s;
+			if (bit == 0 && s) busy = false;
+			else if (bit == 5) {
+				busy = false;
+				bool ok = s && (smp[1] ^ smp[2] ^ smp[3] ^ smp[4]);
+				if (ok) { txd = smp[1]; rts_n = smp[2]; frames_ok++; } else frames_bad++;
+			} else { bit++; cnt = 47; }
+		}
+		prev = s;
+
+		if (rts_n != rts_prev) {
+			rts_changes++;
+			if (log) fprintf(log, "%llu %s RTS_n=%d\n", (unsigned long long)frame, name, rts_n);
+			rts_prev = rts_n;
+		}
+		// 19200 8N1: start edge, sample mid-bit
+		if (ust == 0) {
+			if (txd_prev && !txd) { ust = 1; ucnt = 1280; }
+		} else if (--ucnt == 0) {
+			if (ust == 1) {
+				if (txd) ust = 0; else { ust = 2; ubit = 0; ub = 0; ucnt = 2560; }
+			} else if (ust == 2) {
+				ub |= (txd ? 1 : 0) << ubit;
+				if (++ubit == 8) ust = 3;
+				ucnt = 2560;
+			} else {
+				if (txd) {
+					bytes++;
+					recent.push_back(ub);
+					if (recent.size() > 8) recent.erase(recent.begin());
+					if (log) fprintf(log, "%llu %s %02X\n", (unsigned long long)frame, name, ub);
+				} else uart_errors++;
+				ust = 0;
+			}
+		}
+		txd_prev = txd;
+	}
+	std::string summary() const {
+		char b[160];
+		std::string r;
+		for (uint8_t x : recent) { snprintf(b, sizeof b, "%02X ", x); r += b; }
+		snprintf(b, sizeof b, "%s: %llu bytes [%s] RTS_n %d (%llu changes)", name,
+			(unsigned long long)bytes, r.c_str(), rts_n, (unsigned long long)rts_changes);
+		return b;
+	}
+};
+
 struct Cmd { uint64_t frame; std::string who, op, a1, a2; };
 
 static uint8_t buttons(const std::string& s) {
@@ -172,6 +248,12 @@ int main(int argc, char** argv) {
 	}
 
 	Screen sa, sb;
+	LinkTap ta, tb;
+	ta.name = "A>B"; tb.name = "B>A";
+	if (const char* s = arg("linklog=")) {
+		FILE* lf = fopen(std::string(s).substr(9).c_str(), "a");
+		ta.log = tb.log = lf;
+	}
 	uint64_t t_a = 0, t_b = HALF_B_PS / 2, edges_a = 0;
 	uint64_t hold_a = 0, hold_b = 0;   // frame at which the held buttons release
 	uint64_t frame = 0;
@@ -188,6 +270,9 @@ int main(int argc, char** argv) {
 		is >> *top;
 		is.close();
 		while (next_cmd < cmds.size() && cmds[next_cmd].frame < frame) next_cmd++;
+		// A checkpoint taken with +sameclock never advanced machine B's own
+		// schedule; continuing it on two clocks starts B's from here.
+		if (!same_clock && t_b + 1000000 < t_a) t_b = t_a + HALF_B_PS / 2;
 		printf("restored %s at frame %llu\n", restore.c_str(), (unsigned long long)frame);
 	}
 
@@ -211,6 +296,8 @@ int main(int argc, char** argv) {
 		if (edges_a == 64) top->reset = 0;
 		top->eval();
 
+		if (rise_a) ta.clk(top->so_a_o, frame);
+		if (rise_b) tb.clk(top->so_b_o, frame);
 		if (rise_a) {
 			uint64_t before = sa.frames;
 			sa.sample(top->ce_pix_a, top->hbl_a, top->vbl_a, top->r_a, top->g_a, top->b_a);
@@ -260,6 +347,8 @@ int main(int argc, char** argv) {
 						(unsigned long long)frame, (unsigned long long)sb.frames,
 						top->present_a, top->present_b, top->powered_a, top->powered_b,
 						top->link_en_a, top->link_en_b, s, (edges_a - edges0) / s / 1e6);
+					printf("    %s | %s\n", ta.summary().c_str(), tb.summary().c_str());
+					if (ta.log) fflush(ta.log);
 					fflush(stdout);
 				}
 			}

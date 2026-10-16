@@ -1,0 +1,6 @@
+# From k960: skip the intro with A, then A again at the title to open the menu.
+# Run with +restore=k960.ckpt +shot_every=20
+970  AB press A 4
+1060 AB press A 4
+1140 -  save k1140
+1141 -  end

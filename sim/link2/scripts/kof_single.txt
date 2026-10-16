@@ -1,0 +1,9 @@
+# From k1380 (both in VS SELECT, cursor on TEAM VS): A picks SINGLE VS; B
+# confirms later in case both sides must. Then watch character select.
+# Run with +restore=k1380.ckpt +shot_every=15 +linklog=<file>
+1385 A  press D 3
+1400 A  press A 4
+1430 B  press D 3
+1445 B  press A 4
+1560 -  save k1560
+1561 -  end
