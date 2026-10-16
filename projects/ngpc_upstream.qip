@@ -56,7 +56,8 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/t900/t900_biu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/t900/t900_cpu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/t900/t900_decode.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/t900/t900_muldiv.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/t900/t900_regfile.sv
+# The register file is the port's LUT-RAM version (same module name and ports).
+set_global_assignment -name SYSTEMVERILOG_FILE ../target/pocket/t900_regfile_mlab.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/t900/t900_seq.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/t900/t900_shifter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/video/k2ge.sv
