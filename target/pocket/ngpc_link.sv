@@ -297,17 +297,28 @@ module ngpc_link
 
 	// ---- the parent plug: SI held low ---------------------------------------
 	// No frame holds the line low longer than two bits, so 62 us is a cable,
-	// not traffic.
+	// not traffic. Once set, it clears only after SI has been high for two bits:
+	// a real frame on SI does that within one frame (its stop run is three bits),
+	// while a spike on the grounded wire never does, so a spike cannot make the
+	// parent forget its plug and stall the link while it re-learns it.
+	localparam integer CLEAR_CLKS = 2 * CLKS_PER_BIT;
+	localparam integer HW = $clog2(CLEAR_CLKS + 1);
 	reg [GW-1:0] low_cnt = {GW{1'b0}};
+	reg [HW-1:0] high_cnt = {HW{1'b0}};
 	reg          si_grounded = 1'b0;
 	always @(posedge clk) begin
-		if (reset || !gba || si_f) begin
+		if (reset || !gba) begin
 			low_cnt     <= {GW{1'b0}};
+			high_cnt    <= {HW{1'b0}};
 			si_grounded <= 1'b0;
-		end else if (low_cnt != GROUND_CLKS) begin
-			low_cnt <= low_cnt + 1'd1;
+		end else if (si_f) begin
+			low_cnt <= {GW{1'b0}};
+			if (high_cnt != CLEAR_CLKS) high_cnt <= high_cnt + 1'd1;
+			else                        si_grounded <= 1'b0;
 		end else begin
-			si_grounded <= 1'b1;
+			high_cnt <= {HW{1'b0}};
+			if (low_cnt != GROUND_CLKS) low_cnt <= low_cnt + 1'd1;
+			else                        si_grounded <= 1'b1;
 		end
 	end
 

@@ -95,9 +95,25 @@ module tb_link;
 		endcase
 	end
 
+	// Disturbances on top of the cable: spikes on the receiving pins, and an
+	// undriven line that floats as noise instead of idling high.
+	reg glitch_a = 0, glitch_b = 0, glitching = 0, float_noise = 0, noise = 1;
+	always #(37_000) noise = $urandom_range(0, 1);
+	initial forever begin
+		#($urandom_range(100, 1000) * 1_000_000);
+		if (glitching) begin glitch_a = 1; #($urandom_range(20_000, 60_000)); glitch_a = 0; end
+	end
+	initial forever begin
+		#($urandom_range(100, 1000) * 1_000_000);
+		if (glitching) begin glitch_b = 1; #($urandom_range(20_000, 60_000)); glitch_b = 0; end
+	end
+	wire floating = float_noise && cable == C_NONE;
+
 	assign w_so_a = v_so_a;  assign w_so_b = v_so_b;
-	assign w_si_a = v_si_a;  assign w_si_b = v_si_b;
-	assign w_sd_a = v_sd_a;  assign w_sd_b = v_sd_b;
+	assign w_si_a = (floating ? noise : v_si_a) ^ glitch_a;
+	assign w_si_b = (floating ? noise : v_si_b) ^ glitch_b;
+	assign w_sd_a = (cable == C_GBA) ? (v_sd_a ^ glitch_a) : v_sd_a;
+	assign w_sd_b = v_sd_b;
 
 	// Contention bookkeeping, sampled every nanosecond, and whether each side has
 	// driven SD at any moment since the phase began.
@@ -119,7 +135,11 @@ module tb_link;
 	reg        checking = 0;
 	byte unsigned sent_ab [$];
 	byte unsigned sent_ba [$];
-	int        n_ok = 0, n_bad = 0, n_unexpected = 0;
+	int        n_ok = 0, n_bad = 0, n_unexpected = 0, n_margin = 0;
+	// With spikes on the wire a lost frame delays one edge by a frame more than
+	// usual; the TMP95C061 samples a bit around its middle, so there a byte with
+	// the right value counts as delivered and the 30-70% margin miss is reported.
+	reg        strict = 1;
 
 	task automatic uart_send(input bit a_side, input byte unsigned b);
 		if (a_side) begin
@@ -179,6 +199,7 @@ module tb_link;
 				automatic byte unsigned want = at_b ? sent_ab.pop_front() : sent_ba.pop_front();
 				if (!checking) ;
 				else if (ok && b == want) n_ok++;
+				else if (!strict && b == want) begin n_ok++; n_margin++; end
 				else begin
 					n_bad++;
 					$display("%t BAD at %s: got %h want %h, margin %s", $time, at_b ? "B" : "A",
@@ -256,6 +277,13 @@ module tb_link;
 		check(!pres_a && !pres_b && rxd_a && rxd_b && cts_a && cts_b, "no cable: unplugged on both");
 		check(fight_ns == 0, "no cable: no wire ever had two drivers");
 
+		// 1b. Nothing plugged in, the open pins floating as noise.
+		float_noise = 1;
+		phase("no cable, floating noise", C_NONE, 2, 2);
+		#(10_000_000_000);
+		check(!pres_a && !pres_b && rxd_a && rxd_b && !sd_ever_a && !sd_ever_b, "floating noise: unplugged on both, SD never driven");
+		float_noise = 0;
+
 		// 2. GBC cable, GBC mode.
 		phase("GBC cable, both GBC mode", C_GBC, 1, 1);
 		#(2_000_000_000);
@@ -304,6 +332,18 @@ module tb_link;
 		#(20_000_000_000);
 		check(fight_max_ns < 3_000_000, $sformatf("straight/GBA: contention resolved (longest %0d us)", fight_max_ns / 1000));
 		check(!(soe_a && soe_b) && !sd_ever_a && !sd_ever_b, "straight/GBA: one SO driver at most, SD never driven");
+
+		// 8b. GBC and GBA cables with spikes on the receiving wires: still exact.
+		glitching = 1; strict = 0;
+		phase("GBC cable with spikes, GBC mode", C_GBC, 1, 1);
+		#(2_000_000_000);
+		both_ways(150, "GBC + spikes");
+		phase("GBA cable with spikes, GBA mode", C_GBA, 2, 2);
+		#(3_000_000_000);
+		both_ways(150, "GBA + spikes");
+		check(fight_ns == 0 && !sd_ever_a, "GBA + spikes: no contention, only the child drives SD");
+		$display("%t      spikes: %0d bytes right but under the strict margin", $time, n_margin);
+		glitching = 0; strict = 1;
 
 		// 9. Back to a GBC cable after all that: still links.
 		phase("GBC cable again", C_GBC, 1, 1);
