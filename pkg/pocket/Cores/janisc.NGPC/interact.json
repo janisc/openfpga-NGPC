@@ -110,7 +110,11 @@
           },
           {
             "value": 1,
-            "name": "On"
+            "name": "GBC cable"
+          },
+          {
+            "value": 2,
+            "name": "GBA cable"
           }
         ]
       }

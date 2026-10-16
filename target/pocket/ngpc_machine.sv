@@ -154,11 +154,16 @@ module ngpc_machine
 
 	output wire        led_user,
 
-	// The link port, through ngpc_link. `link_si` is the raw, asynchronous pin.
-	input  wire        link_enable,
+	// The link port, through ngpc_link. The inputs are the raw, asynchronous
+	// pins; SO and SD are read back too (ngpc_link listens before it drives).
+	input  wire [1:0]  link_mode,      // 0 off, 1 GBC cable, 2 GBA cable
 	input  wire        link_si,
 	output wire        link_so,
-	output wire        link_so_oe
+	output wire        link_so_oe,
+	input  wire        link_so_pin,
+	output wire        link_sd,
+	output wire        link_sd_oe,
+	input  wire        link_sd_pin
 );
 
 	//////////////////////////////// Reset ///////////////////////////////////
@@ -899,7 +904,7 @@ module ngpc_machine
 	(
 		.clk     (clk_sys),
 		.reset   (reset),
-		.enable  (link_enable),
+		.mode    (link_mode),
 		.txd     (link_txd),
 		.rts_n   (link_rts_n),
 		.rxd     (link_rxd),
@@ -907,7 +912,11 @@ module ngpc_machine
 		.present (link_present),
 		.so      (link_so),
 		.so_oe   (link_so_oe),
-		.si      (link_si)
+		.so_pin  (link_so_pin),
+		.si      (link_si),
+		.sd      (link_sd),
+		.sd_oe   (link_sd_oe),
+		.sd_pin  (link_sd_pin)
 	);
 
 	ngp_mainboard mainboard

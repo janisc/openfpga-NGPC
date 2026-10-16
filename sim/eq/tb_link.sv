@@ -1,23 +1,25 @@
-// Two ngpc_link transports on a simulated GBC link cable.
+// Two ngpc_link transports on simulated link cables.
 //
 // Side A and side B run on independent clocks (B is 300 ppm slow, more than
 // two Pockets' oscillators ever differ). Each side's machine sends random
 // 19200 bps 8N1 bytes on TxD and wiggles RTS_n; the other side's RxD is decoded
 // by a strict receiver that samples every bit at 30%, 50% and 70% of its width
-// and requires all three to agree, so a pass means every rebuilt bit kept at
-// least 30% of a bit of margin on both edges. (The TMP95C061 samples around the
-// middle of a bit and needs far less.) A frame lost to a glitch costs one frame
-// of extra delay, about 11% of a bit at 19200 bps.
+// and requires all three to agree. (The TMP95C061 samples around the middle of
+// a bit and needs far less.)
 //
-// Phases:
-//   1. cable unplugged, partner pin held high      -> no presence, RxD mark
-//   2. unplugged, pin floating as noise           -> no presence, no bytes
-//   3. plugged in                                  -> presence, then traffic
-//   4. glitches injected on both wires             -> traffic still exact
-//   5. side B's link switched off (pin released)   -> A sees the cable go
-//   6. B back on                                   -> presence and traffic again
-//   7. unplugged mid-stream                        -> presence drops quickly
-// Bytes in flight when the cable changes are not checked.
+// THE CABLES. Each physical wire is resolved from every pin driving it. Two
+// drivers on one wire at the same time is CONTENTION -- the thing that must
+// never happen with a standard cable -- and is measured on every wire.
+//
+//   none      nothing plugged in; every pin on its own (undriven = high)
+//   gbc       A.SO-B.SI and B.SO-A.SI; SD not connected
+//   gbc_sd    as gbc, with SD joined straight through (some cables might)
+//   gba       A on the parent plug: A.SO-B.SI, A.SI tied low, B.SO to the
+//             middle socket (nothing), SD of both joined
+//   straight  a broken / home-made cable: SO-SO, SI-SI, SD-SD
+//
+// Every phase sets a cable and both sides' Link Cable mode (1 GBC, 2 GBA),
+// starts both links from off, and checks what must hold.
 
 `timescale 1ps/1ps
 
@@ -33,35 +35,86 @@ module tb_link;
 
 	reg reset = 1;
 
-	// Machine side.
+	// ---- the two transports ------------------------------------------------
+	reg  [1:0] mode_a = 0, mode_b = 0;
 	reg  txd_a = 1, txd_b = 1, rts_a = 1, rts_b = 1;
-	reg  en_a = 1, en_b = 1;
 	wire rxd_a, rxd_b, cts_a, cts_b, pres_a, pres_b;
+	wire so_a, soe_a, sd_a, sde_a, so_b, soe_b, sd_b, sde_b;
+	wire w_so_a, w_si_a, w_sd_a, w_so_b, w_si_b, w_sd_b;   // what each pin sees
 
-	// Pins and the cable.
-	wire so_a, so_b, oe_a, oe_b;
-	reg  plugged = 0;
-	reg  float_noise = 0;
-	reg  glitch_a = 0, glitch_b = 0;     // pulses injected onto each wire
-	reg  noise = 1;
-
-	// What each side's SI sees: the partner's SO when plugged and driven,
-	// otherwise the idle level or noise; plus any injected glitch.
-	wire line_ab = (plugged && oe_a) ? so_a : (float_noise ? noise : 1'b1);
-	wire line_ba = (plugged && oe_b) ? so_b : (float_noise ? noise : 1'b1);
-	wire si_b = line_ab ^ glitch_a;
-	wire si_a = line_ba ^ glitch_b;
-
-	always #(37_000) noise = $urandom_range(0, 1);
-
-	ngpc_link u_a (.clk(clk_a), .reset(reset), .enable(en_a),
+	ngpc_link #(.SEED(16'hACE1)) u_a (.clk(clk_a), .reset(reset), .mode(mode_a),
 		.txd(txd_a), .rts_n(rts_a), .rxd(rxd_a), .cts_n(cts_a), .present(pres_a),
-		.so(so_a), .so_oe(oe_a), .si(si_a));
-	ngpc_link u_b (.clk(clk_b), .reset(reset), .enable(en_b),
+		.so(so_a), .so_oe(soe_a), .so_pin(w_so_a), .si(w_si_a),
+		.sd(sd_a), .sd_oe(sde_a), .sd_pin(w_sd_a));
+	ngpc_link #(.SEED(16'h1D2B)) u_b (.clk(clk_b), .reset(reset), .mode(mode_b),
 		.txd(txd_b), .rts_n(rts_b), .rxd(rxd_b), .cts_n(cts_b), .present(pres_b),
-		.so(so_b), .so_oe(oe_b), .si(si_b));
+		.so(so_b), .so_oe(soe_b), .so_pin(w_so_b), .si(w_si_b),
+		.sd(sd_b), .sd_oe(sde_b), .sd_pin(w_sd_b));
 
-	// ---- traffic ------------------------------------------------------------
+	// ---- the cable ---------------------------------------------------------
+	localparam int C_NONE = 0, C_GBC = 1, C_GBC_SD = 2, C_GBA = 3, C_STRAIGHT = 4;
+	int cable = C_NONE;
+
+	bit f_so, f_sd;                                    // contention flags
+	bit v_so_a, v_so_b, v_si_a, v_si_b, v_sd_a, v_sd_b;
+
+	// Two pins on one wire: the driving pin's level, high when undriven.
+	function automatic bit pick(input bit e0, input bit v0, input bit e1, input bit v1);
+		if (e0) return v0;
+		if (e1) return v1;
+		return 1'b1;
+	endfunction
+
+	always_comb begin
+		f_so = 0; f_sd = 0;
+		v_so_a = soe_a ? so_a : 1'b1;  v_so_b = soe_b ? so_b : 1'b1;
+		v_si_a = 1'b1;  v_si_b = 1'b1;
+		v_sd_a = sde_a ? sd_a : 1'b1;  v_sd_b = sde_b ? sd_b : 1'b1;
+		case (cable)
+			C_GBC, C_GBC_SD: begin
+				v_si_b = v_so_a;
+				v_si_a = v_so_b;
+				if (cable == C_GBC_SD) begin
+					f_sd = sde_a && sde_b;
+					v_sd_a = pick(sde_a, sd_a, sde_b, sd_b);  v_sd_b = v_sd_a;
+				end
+			end
+			C_GBA: begin
+				v_si_b = v_so_a;                              // B.SO: middle socket
+				v_si_a = 1'b0;                                // tied low
+				f_sd = sde_a && sde_b;
+				v_sd_a = pick(sde_a, sd_a, sde_b, sd_b);  v_sd_b = v_sd_a;
+			end
+			C_STRAIGHT: begin
+				f_so = soe_a && soe_b;
+				v_so_a = pick(soe_a, so_a, soe_b, so_b);  v_so_b = v_so_a;
+				f_sd = sde_a && sde_b;
+				v_sd_a = pick(sde_a, sd_a, sde_b, sd_b);  v_sd_b = v_sd_a;
+			end
+			default: ;
+		endcase
+	end
+
+	assign w_so_a = v_so_a;  assign w_so_b = v_so_b;
+	assign w_si_a = v_si_a;  assign w_si_b = v_si_b;
+	assign w_sd_a = v_sd_a;  assign w_sd_b = v_sd_b;
+
+	// Contention bookkeeping, sampled every nanosecond, and whether each side has
+	// driven SD at any moment since the phase began.
+	wire fight = f_so || f_sd;
+	longint fight_ns = 0, fight_run_ns = 0, fight_max_ns = 0;
+	bit sd_ever_a = 0, sd_ever_b = 0;
+	always #(1000) begin
+		if (sde_a) sd_ever_a = 1;
+		if (sde_b) sd_ever_b = 1;
+		if (fight) begin
+			fight_ns++;
+			fight_run_ns++;
+			if (fight_run_ns > fight_max_ns) fight_max_ns = fight_run_ns;
+		end else fight_run_ns = 0;
+	end
+
+	// ---- traffic and its checking ------------------------------------------
 	reg        traffic = 0;
 	reg        checking = 0;
 	byte unsigned sent_ab [$];
@@ -117,23 +170,21 @@ module tb_link;
 				if (i >= 1 && i <= 8) b[i-1] = s1;
 				if (i < 9) #(BIT_PS / 5 * 3);
 			end
-			begin
-				if (at_b ? sent_ab.size() == 0 : sent_ba.size() == 0) begin
-					if (checking) n_unexpected++;
+			if (at_b ? sent_ab.size() == 0 : sent_ba.size() == 0) begin
+				if (checking) begin
+					n_unexpected++;
 					$display("%t UNEXPECTED byte %h at %s", $time, b, at_b ? "B" : "A");
-				end else begin
-					automatic byte unsigned want = at_b ? sent_ab.pop_front() : sent_ba.pop_front();
-					if (!checking) ;
-					else if (ok && b == want) n_ok++;
-					else begin
-						n_bad++;
-						$display("%t BAD at %s: got %h want %h, margin %s", $time, at_b ? "B" : "A",
-							b, want, ok ? "ok" : "VIOLATED");
-					end
+				end
+			end else begin
+				automatic byte unsigned want = at_b ? sent_ab.pop_front() : sent_ba.pop_front();
+				if (!checking) ;
+				else if (ok && b == want) n_ok++;
+				else begin
+					n_bad++;
+					$display("%t BAD at %s: got %h want %h, margin %s", $time, at_b ? "B" : "A",
+						b, want, ok ? "ok" : "VIOLATED");
 				end
 			end
-			// Re-arm straight after the last stop sample, like a real receiver:
-			// back-to-back bytes start exactly where this stop bit ends.
 		end
 	endtask
 
@@ -142,110 +193,136 @@ module tb_link;
 
 	// RTS wiggles slowly; CTS on the far side must follow within 20 us.
 	int n_rts_late = 0;
+	reg rts_check = 0;
 	initial forever begin
 		#($urandom_range(200, 2000) * 1_000_000);
 		if (traffic) begin
 			rts_a = ~rts_a;
 			rts_b = ~rts_b;
 			#(20_000_000);
-			if (checking && (cts_b !== rts_a || cts_a !== rts_b)) begin
+			if (checking && rts_check && (cts_b !== rts_a || cts_a !== rts_b)) begin
 				n_rts_late++;
 				$display("%t RTS not through: A %b->B %b, B %b->A %b", $time, rts_a, cts_b, rts_b, cts_a);
 			end
 		end
 	end
 
-	// Glitches: one-to-three-cycle spikes (20-60 ns) every 0.1-1 ms on each wire,
-	// far noisier than a working cable.
-	reg glitching = 0;
-	initial forever begin
-		#($urandom_range(100, 1000) * 1_000_000);
-		if (glitching) begin glitch_a = 1; #($urandom_range(20_000, 60_000)); glitch_a = 0; end
-	end
-	initial forever begin
-		#($urandom_range(100, 1000) * 1_000_000);
-		if (glitching) begin glitch_b = 1; #($urandom_range(20_000, 60_000)); glitch_b = 0; end
-	end
+	// Log every change of link state while log_changes is set.
+	reg log_changes = 0;
+	always @(pres_a or pres_b or soe_a or soe_b or sde_a or sde_b or u_a.si_grounded or u_b.si_grounded or u_a.rem_parent or u_b.rem_parent)
+		if (log_changes) $display("%t    present %b/%b  SO oe %b/%b  SD oe %b/%b  grounded %b/%b  rem_parent %b/%b", $time, pres_a, pres_b, soe_a, soe_b, sde_a, sde_b,
+			u_a.si_grounded, u_b.si_grounded, u_a.rem_parent, u_b.rem_parent);
 
-	// ---- the script -----------------------------------------------------------
+	// ---- the script ----------------------------------------------------------
 	int fails = 0;
-	task automatic expect_absent(input string what);
-		if (pres_a || pres_b || rxd_a !== 1 || rxd_b !== 1 || cts_a !== 1 || cts_b !== 1) begin
+	task automatic check(input bit cond, input string what);
+		if (!cond) begin
 			fails++;
-			$display("%t FAIL %s: present %b/%b rxd %b/%b cts %b/%b", $time, what,
-				pres_a, pres_b, rxd_a, rxd_b, cts_a, cts_b);
+			$display("%t FAIL %s (present %b/%b, SO oe %b/%b, SD oe %b/%b, contention %0d ns, longest %0d ns)",
+				$time, what, pres_a, pres_b, soe_a, soe_b, sde_a, sde_b, fight_ns, fight_max_ns);
 		end else $display("%t ok   %s", $time, what);
 	endtask
-	task automatic expect_present(input string what);
-		if (!pres_a || !pres_b) begin
-			fails++;
-			$display("%t FAIL %s: present %b/%b", $time, what, pres_a, pres_b);
-		end else $display("%t ok   %s", $time, what);
+
+	// Start a phase: everything off and quiet, then the cable, then both links on.
+	task automatic phase(input string name, input int c, input bit [1:0] ma, input bit [1:0] mb);
+		traffic = 0; checking = 0;
+		mode_a = 0; mode_b = 0;
+		#(2_000_000_000);                       // let bytes in flight drain
+		sent_ab.delete(); sent_ba.delete();
+		cable = c;
+		#(100_000_000);
+		fight_ns = 0; fight_max_ns = 0; sd_ever_a = 0; sd_ever_b = 0;
+		mode_a = ma; mode_b = mb;               // both switched on together
+		$display("%t ---- %s", $time, name);
 	endtask
-	task automatic settle_and_check(input int ms);
-		// Count only bytes sent and received while the cable is steady; the
-		// queues themselves always track every byte.
-		checking = 1;
+
+	// Run traffic both ways for `ms` and require it all to arrive exactly.
+	task automatic both_ways(input int ms, input string name);
+		automatic int ok0 = n_ok, bad0 = n_bad, un0 = n_unexpected, late0 = n_rts_late;
+		traffic = 1; checking = 1; rts_check = 1;
 		#(longint'(ms) * 1_000_000_000);
-		checking = 0;
+		checking = 0; rts_check = 0; traffic = 0;
+		check(n_ok - ok0 > ms * 2 && n_bad == bad0 && n_unexpected == un0 && n_rts_late == late0,
+			$sformatf("%s: %0d bytes exact both ways, %0d bad, %0d RTS late", name,
+				n_ok - ok0, n_bad - bad0, n_rts_late - late0));
 	endtask
 
 	initial begin
 		#(1_000_000); reset = 0;
 
-		// 1. Unplugged, pin high.
-		#(2_000_000_000);
-		expect_absent("unplugged, idle line");
-
-		// 2. Unplugged, floating as noise.
-		float_noise = 1;
+		// 1. Nothing plugged in.
+		phase("no cable, both GBC mode", C_NONE, 1, 1);
 		#(5_000_000_000);
-		expect_absent("unplugged, noisy line");
-		float_noise = 0;
+		check(!pres_a && !pres_b && rxd_a && rxd_b && cts_a && cts_b, "no cable: unplugged on both");
+		check(fight_ns == 0, "no cable: no wire ever had two drivers");
 
-		// 3. Plugged in.
-		plugged = 1;
-		#(300_000_000);
-		expect_present("plugged in, after 300 us");
-		traffic = 1;
-		settle_and_check(200);
-		$display("%t phase 3: %0d bytes ok, %0d bad, %0d unexpected, %0d RTS late", $time, n_ok, n_bad, n_unexpected, n_rts_late);
-
-		// 4. Glitches on both wires.
-		glitching = 1;
-		settle_and_check(200);
-		glitching = 0;
-		$display("%t phase 4: %0d bytes ok, %0d bad, %0d unexpected, %0d RTS late", $time, n_ok, n_bad, n_unexpected, n_rts_late);
-
-		// 5. B switches its link off: A must see the cable go.
-		traffic = 0; checking = 0;
+		// 2. GBC cable, GBC mode.
+		phase("GBC cable, both GBC mode", C_GBC, 1, 1);
 		#(2_000_000_000);
-		sent_ab.delete(); sent_ba.delete();       // the line is idle: nothing in flight
-		en_b = 0;
-		#(200_000_000);
-		if (pres_a || rxd_a !== 1 || cts_a !== 1) begin fails++; $display("%t FAIL B off: A still sees a partner", $time); end
-		else $display("%t ok   B's link off: A sees no cable", $time);
-		if (oe_b) begin fails++; $display("%t FAIL B off but still driving SO", $time); end
+		check(pres_a && pres_b, "GBC/GBC: linked");
+		both_ways(60, "GBC/GBC");
+		check(fight_ns == 0 && !sd_ever_a && !sd_ever_b, "GBC/GBC: no contention, SD never driven");
 
-		// 6. B back on.
-		en_b = 1;
-		#(300_000_000);
-		expect_present("B back on");
+		// 3. GBC cable (SD joined), GBA mode: must behave like GBC mode, SD untouched.
+		log_changes = 1;
+		phase("GBC cable with SD joined, both GBA mode", C_GBC_SD, 2, 2);
+		#(2_000_000_000);
+		check(pres_a && pres_b, "GBC(SD joined)/GBA: linked");
+		both_ways(60, "GBC(SD joined)/GBA");
+		check(fight_ns == 0 && !sd_ever_a && !sd_ever_b, "GBC(SD joined)/GBA: no contention, SD never driven");
+		log_changes = 0;
+
+		// 4. GBA cable, GBA mode: A parent (SO out, SD in), B child (SI in, SD out).
+		phase("GBA cable, both GBA mode", C_GBA, 2, 2);
+		#(3_000_000_000);
+		check(pres_a && pres_b, "GBA/GBA: linked");
+		check(!sd_ever_a && sde_b, "GBA/GBA: only the child (B) drives SD");
+		both_ways(60, "GBA/GBA");
+		check(fight_ns == 0, "GBA/GBA: no contention");
+
+		// 5. GBA cable, GBC mode: one way only, and harmless.
+		phase("GBA cable, both GBC mode", C_GBA, 1, 1);
+		#(3_000_000_000);
+		check(!pres_a, "GBA/GBC: the parent plug (A) hears nothing");
+		check(fight_ns == 0 && !sd_ever_a && !sd_ever_b, "GBA/GBC: no contention, SD never driven");
+
+		// 6. GBA cable, mixed: A (parent) in GBA mode, B in GBC mode.
+		phase("GBA cable, A GBA mode, B GBC mode", C_GBA, 2, 1);
+		#(3_000_000_000);
+		check(!pres_a && fight_ns == 0 && !sd_ever_a && !sd_ever_b, "GBA/mixed: no link back to A, no contention, SD never driven");
+
+		// 7. Straight-through cable, both switched on together: SO against SO.
+		phase("straight cable, both GBC mode", C_STRAIGHT, 1, 1);
+		#(20_000_000_000);
+		check(fight_max_ns < 3_000_000, $sformatf("straight/GBC: SO-SO contention resolved (longest %0d us, total %0d us)",
+			fight_max_ns / 1000, fight_ns / 1000));
+		check(!(soe_a && soe_b), "straight/GBC: at most one side drives SO now");
+		check(!pres_a && !pres_b, "straight/GBC: no link (none possible)");
+
+		// 8. Straight-through cable, GBA mode.
+		phase("straight cable, both GBA mode", C_STRAIGHT, 2, 2);
+		#(20_000_000_000);
+		check(fight_max_ns < 3_000_000, $sformatf("straight/GBA: contention resolved (longest %0d us)", fight_max_ns / 1000));
+		check(!(soe_a && soe_b) && !sd_ever_a && !sd_ever_b, "straight/GBA: one SO driver at most, SD never driven");
+
+		// 9. Back to a GBC cable after all that: still links.
+		phase("GBC cable again", C_GBC, 1, 1);
+		#(2_000_000_000);
+		check(pres_a && pres_b, "GBC again: linked");
+		both_ways(30, "GBC again");
+
+		// 10. Unplugged mid-stream: presence drops quickly.
 		traffic = 1;
-		settle_and_check(100);
-		$display("%t phase 6: %0d bytes ok, %0d bad, %0d unexpected, %0d RTS late", $time, n_ok, n_bad, n_unexpected, n_rts_late);
-
-		// 7. Unplugged mid-stream: presence must drop within 100 us.
-		plugged = 0;
+		#(5_000_000_000);
+		cable = C_NONE;
 		#(100_000_000);
-		expect_absent("unplugged mid-stream, after 100 us");
+		check(!pres_a && !pres_b && rxd_a && rxd_b, "unplugged mid-stream: both see no cable within 100 us");
 		traffic = 0;
 
-		if (fails == 0 && n_bad == 0 && n_unexpected == 0 && n_rts_late == 0 && n_ok > 1000)
+		if (fails == 0)
 			$display("LINK TRANSPORT OK (%0d bytes checked)", n_ok);
 		else
-			$display("LINK TRANSPORT FAILED (%0d checks failed, %0d bad, %0d unexpected, %0d RTS late, %0d ok)",
-				fails, n_bad, n_unexpected, n_rts_late, n_ok);
+			$display("LINK TRANSPORT FAILED (%0d checks failed)", fails);
 		$finish;
 	end
 

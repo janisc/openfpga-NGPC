@@ -12,8 +12,9 @@
 // command per line, run at the start of the given frame:
 //
 //   <frame> A|B|AB press <buttons> <frames>   hold buttons (U D L R A B O)
-//   <frame> A|B|AB link on|off                the Link Cable menu option
-//   <frame> -  cable in|out                   plug or unplug the cable
+//   <frame> A|B|AB link on|gbc|gba|off        the Link Cable option (on = GBC cable)
+//   <frame> -  cable in|gba|out               a GBC cable, a GBA cable (A on the
+//                                             parent plug), or none
 //   <frame> -  shot [label]                   PNG of both screens
 //   <frame> -  save <name>                    checkpoint (resume with +restore)
 //   <frame> -  end
@@ -126,16 +127,17 @@ struct Screen {
 };
 
 // ---- what crosses the cable ----------------------------------------------
-// Decodes one side's link frames off its SO wire (the same 6-bit frames
-// ngpc_link.sv sends: start, TxD, RTS_n, tag, parity, stop at 48 clk_sys per
-// bit), which gives that machine's serial TxD0 and RTS_n as the other side
-// rebuilds them; then decodes TxD0 as 19200 bps 8N1 (2560 clk_sys per bit).
+// Decodes one side's link frames off its SO wire (the same 12-bit frames
+// ngpc_link.sv sends: start, four Manchester pairs, three stop bits, at 32
+// clk_sys per bit, a frame starting only after 2.5 bits of high), which gives
+// that machine's serial TxD0 and RTS_n as the other side rebuilds them; then
+// decodes TxD0 as 19200 bps 8N1 (2560 clk_sys per bit).
 // It only watches the wire, so it changes nothing in the simulated design.
 struct LinkTap {
 	// frame decoder
 	bool busy = false, prev = true;
-	int cnt = 0, bit = 0;
-	bool smp[6] = {};
+	int cnt = 0, bit = 0, high = 0;
+	bool smp[11] = {};
 	bool txd = true, rts_n = true;
 	uint64_t frames_ok = 0, frames_bad = 0;
 	// UART decoder on the rebuilt TxD
@@ -149,18 +151,21 @@ struct LinkTap {
 	const char* name = "";
 
 	void clk(bool s, uint64_t frame) {
+		bool start = prev && !s && high >= 80;
+		high = s ? (high < 80 ? high + 1 : 80) : 0;
 		if (!busy) {
-			if (prev && !s) { busy = true; cnt = 23; bit = 0; }
+			if (start) { busy = true; cnt = 15; bit = 0; }
 		} else if (cnt) {
 			cnt--;
 		} else {
 			smp[bit] = s;
 			if (bit == 0 && s) busy = false;
-			else if (bit == 5) {
+			else if (bit == 10) {
 				busy = false;
-				bool ok = s && (smp[1] ^ smp[2] ^ smp[3] ^ smp[4]);
-				if (ok) { txd = smp[1]; rts_n = smp[2]; frames_ok++; } else frames_bad++;
-			} else { bit++; cnt = 47; }
+				bool ok = smp[9] && s && smp[1] != smp[2] && smp[3] != smp[4] &&
+				          smp[5] != smp[6] && smp[7] != smp[8];
+				if (ok) { txd = smp[1]; rts_n = smp[3]; frames_ok++; } else frames_bad++;
+			} else { bit++; cnt = 31; }
 		}
 		prev = s;
 
@@ -261,7 +266,7 @@ int main(int argc, char** argv) {
 
 	top->clk_a = 0; top->clk_b = 0; top->reset = 1;
 	top->btn_a = 0; top->btn_b = 0;
-	top->link_en_a = 0; top->link_en_b = 0; top->cable = 1;
+	top->link_mode_a = 0; top->link_mode_b = 0; top->cable = 1;
 
 	if (!restore.empty()) {
 		VerilatedRestore is;
@@ -319,10 +324,11 @@ int main(int argc, char** argv) {
 						if (on_a) { top->btn_a = m; hold_a = frame + n; }
 						if (on_b) { top->btn_b = m; hold_b = frame + n; }
 					} else if (c.op == "link") {
-						if (on_a) top->link_en_a = (c.a1 == "on");
-						if (on_b) top->link_en_b = (c.a1 == "on");
+						int m = (c.a1 == "on" || c.a1 == "gbc") ? 1 : (c.a1 == "gba") ? 2 : 0;
+						if (on_a) top->link_mode_a = m;
+						if (on_b) top->link_mode_b = m;
 					} else if (c.op == "cable") {
-						top->cable = (c.a1 == "in");
+						top->cable = (c.a1 == "in") ? 1 : (c.a1 == "gba") ? 2 : 0;
 					} else if (c.op == "shot") {
 						char n[96]; snprintf(n, sizeof n, "/s%06llu%s%s", (unsigned long long)frame,
 							c.a1.empty() ? "" : "_", c.a1.c_str());
@@ -346,7 +352,7 @@ int main(int argc, char** argv) {
 					printf("frame %llu  B %llu  present %d/%d  powered %d/%d  link %d/%d  %.0f s wall, %.2f MHz\n",
 						(unsigned long long)frame, (unsigned long long)sb.frames,
 						top->present_a, top->present_b, top->powered_a, top->powered_b,
-						top->link_en_a, top->link_en_b, s, (edges_a - edges0) / s / 1e6);
+						top->link_mode_a, top->link_mode_b, s, (edges_a - edges0) / s / 1e6);
 					printf("    %s | %s\n", ta.summary().c_str(), tb.summary().c_str());
 					if (ta.log) fflush(ta.log);
 					fflush(stdout);
