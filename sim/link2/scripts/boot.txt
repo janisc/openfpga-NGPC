@@ -1,0 +1,8 @@
+# Boot both machines and look at the screens.
+60   -  shot boot
+120  -  shot boot
+240  -  shot boot
+360  -  shot boot
+480  -  shot boot
+480  -  save booted
+481  -  end
