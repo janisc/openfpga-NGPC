@@ -3,6 +3,7 @@ projects/db/
 projects/incremental_db/
 projects/output_files/
 projects/*.qws
+projects/*.rbf
 projects/build.log
 fit/
 dist/
@@ -23,8 +24,8 @@ sim/*.vvp
 # Timing investigation reports
 projects/*.rpt
 
-# Quartus 25.1 A/B workspace
-projects25/
+# Quartus 25.1 A/B workspaces
+projects25*/
 
 # Source photo (6.5 MB, public domain, canonical at Wikimedia)
 assets/ngpc_photo_pd_evanamos.jpg
