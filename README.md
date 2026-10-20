@@ -175,9 +175,6 @@ Memory that cannot rewind the game's save restarts the game).
 - **Cheats** — the cheat engine is compiled out (`NGPC_NO_CHEATS`).
 - **Skipping the BIOS animation** — not offered. The jingle stays; it's
   three seconds of 1998.
-- **Link cable** — the serial port code is in the tree but is
-  compiled out (`NGPC_NO_LINK`); the port terminates in a stub. Two Pockets
-  will not be trading Card Fighters cards.
 - **Analog video out / Analogizer** — not wired. Dock output is whatever
   Analogue's scaler does with it; untested here, no dock on hand.
 - **LCD effects and color saturation** — left to the Pocket's display
