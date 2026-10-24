@@ -37,6 +37,9 @@ Running on hardware:
   cartridge and lands in the BIOS menu; to restart a game, relaunch it. A
   menu Reset keeps your save.
 
+**New in 1.2.0, experimental:** a link cable between two Pockets. It has not
+yet run on two real Pockets; see [Link cable](#link-cable-experimental).
+
 ## BIOS
 
 Not included, never will be. Place your own dumps at
@@ -162,6 +165,69 @@ slept since), and any Memories of that game in
 from the moment it was taken, so the save may be recoverable from one;
 `savinfo.py` shows what each of them holds.
 
+## Link cable (experimental)
+
+Two Pockets running this core can be joined with a link cable for the games'
+link modes. **This has not yet run on two real Pockets.** It works in
+simulation: two complete NGPCs on a simulated cable linked up and fought a
+versus round of The King of Fighters R-2, over each cable type. Whether it
+works through a real cable between two real Pockets is what we need reports
+for.
+
+**Using it**
+
+- **Cable:** a Game Boy Color link cable, or a Game Boy Advance link cable
+  (either Pocket on either plug, the middle socket left empty). Only another
+  Pocket running this core understands what the core sends, so nothing else
+  goes on the other end.
+- **Cartridges out:** take any cartridge out of both Pockets. A cartridge can
+  change the link port's voltage, and two Pockets at different voltages have
+  not been tried.
+- **Setting:** on both Pockets, set **Link Cable** to the cable you use, then
+  start the game. *GBA cable* also works over a GBC cable; with a GBA cable it
+  has to be *GBA cable* on both, or only one Pocket sees the other.
+- **Finding each other:** a game sees the cable as connected only while the
+  other Pocket is running this core with Link Cable set, which takes about a
+  millisecond once both are up. A game that looks for the cable only once may
+  miss a partner that was started later; start the game again on that Pocket.
+- **Memories, sleep and Reset:** saving or loading a Memory, sleep, or a Reset
+  on either Pocket will most likely end the link session, as a pulled cable
+  would.
+- **Off:** Link Cable is Off at every launch. While it is Off, the core never
+  drives the link port.
+
+**How it works**
+
+The NGP's link port is a serial port: a UART on TXD and RXD (games use 4800
+to 19200 bps), an RTS/CTS handshake, and a cable-detect input. The NGP's own
+cable crosses TXD to RXD and RTS to CTS. A GBC cable has only one crossed pair
+of data wires, so the core does not pass those signals through. Instead each
+Pocket sends the current levels of its TXD and RTS continuously, in frames of
+7.8 µs: a start bit, four Manchester-coded bits (TXD, RTS, a toggling tag and
+a parent flag) and three stop bits, at 32 clocks of 49.152 MHz per bit. The
+other Pocket rebuilds them as its RXD and CTS. The NGP's serial port itself
+runs unchanged and sees its partner's levels 7 to 15 µs late, which is well
+inside a bit at the speeds games use; the transport carries up to 48000 bps.
+
+A frame is accepted only after a run of high long enough that it can only be
+a frame boundary, and only if every Manchester pair checks out. The partner
+counts as present after a run of good frames, and as gone after bad ones or
+62.5 µs of silence. While it is gone, the game sees an unplugged cable.
+
+On a GBC cable each Pocket sends on SO and listens on SI. A GBA cable is wired
+differently: the parent plug holds its Pocket's SI wire low, the parent's SO
+goes to the other Pocket's SI, and SD is shared. A Pocket set to *GBA cable*
+that finds its SI held low is the parent: it sends on SO and listens on SD.
+The other Pocket hears frames flagged "parent" on its SI and answers on SD.
+Only that side ever drives SD.
+
+The core drives SO and, on the child side of a GBA cable, SD; never SI or
+SCK. Before it drives a wire it listens for another Pocket's frames there,
+and it backs off for a few milliseconds when it hears them, so two Pockets on
+a cable wired the wrong way do not keep fighting over a wire. It cannot
+recognise any other kind of driver, which is why nothing else may be
+connected.
+
 ## Known behaviors
 
 See [docs/KNOWN_BEHAVIORS.md](docs/KNOWN_BEHAVIORS.md). It starts with what
@@ -213,13 +279,15 @@ verified and applied before boot. What that trades away, knowingly:
 And a word of expectation management: the design fills 98% of
 the Pocket's FPGA and does not formally close timing at this speed grade —
 every feature above was won through fit battles and seed sweeps. It
-only fits because the slow, non-critical blocks are now built for area;
-before that the fitter had run out of LABs while ALMs were still nominally
-free. Realistically **no new features are planned**; the remaining work is
-polish, testing and release. One is of course free to try — the fitter
-reports about 280 ALMs unused, scattered across the device
-(practically all of its 1,848 LABs are in use), and they are spoken for by
-whoever gets there first. 😃
+only fits because the slow, non-critical blocks are built for area, and
+since 1.2.0 because the register files of the main CPU and of the sound CPU
+sit in the FPGA's small RAM blocks (MLABs) instead of flip-flops. That freed
+roughly 900 ALMs, and the serial port and the link cable took most of them
+back. Realistically **no further features are planned**; the remaining work
+is polish, testing and release. One is of course free to try — the fitter
+reports about 280 ALMs unused, scattered across the device (1,847 of its
+1,848 LABs are in use), and they are spoken for by whoever gets there
+first. 😃
 
 ## Branches
 
@@ -233,13 +301,18 @@ whoever gets there first. 😃
 upstream/          the MiSTer core, cloned by scripts/setup.sh, patched from patches/
 patches/           our changes to upstream, as one reviewable diff
 platform/pocket/   Analogue's APF framework files
-target/pocket/     the Pocket side: bridge, savestate transport, cart save engine, clock feed
+target/pocket/     the Pocket side: bridge, savestate transport, cart save engine,
+                   clock feed, link cable transport, register files in LUT RAM
 projects/          the Quartus project
 pkg/pocket/        core definition JSON for the Pocket
 sim/               iverilog benches: save engine, savestate transport and
                    load path, staging, settings gate, RTC (run_all.sh runs
                    them all)
-scripts/           setup, seed sweep, packaging
+sim/eq/            Verilator benches: the CPU and Z80 register files, and the
+                   whole CPU, in lock step against upstream's; the link
+                   transport over simulated cables
+sim/link2/         two complete NGPCs on a simulated link cable (Verilator)
+scripts/           setup, seed sweep, packaging, author icon
 tools/             savinfo.py (reads a save, sleep or Memory file) and its
                    tests; cartdiag.py (for cartridge-load diagnostic builds)
 docs/              known behaviors and release notes
@@ -253,7 +326,7 @@ quartus_sh --flow compile projects/ngpc_pocket.qpf
 python scripts/package.py --zip
 ```
 
-Open `projects/ngpc_pocket.qpf` in Quartus and hit Compile. 1.1.1 is built
+Open `projects/ngpc_pocket.qpf` in Quartus and hit Compile. 1.2.0 is built
 and verified with **Quartus Prime Lite 25.1** (free, no license; install
 with Cyclone V device support). Expect a batch of benign warnings about
 ignored legacy assignments -- the modern fitter absorbed those knobs.
@@ -263,8 +336,9 @@ JSON.
 The design targets a Cyclone V 5CEBA4F23C8 at ~98% logic occupancy
 and does not formally close timing at this speed grade; see the commit
 history on `dev` for the measured reality and the disciplines that keep it
-honest. The 1.1.1 release bitstream is seed 51 (main clock −2.839 ns worst
-case), picked from a 62-seed search.
+honest. The 1.2.0 release bitstream is seed 2 (main clock −2.499 ns worst
+case). The six seeds tried for 1.2.0 averaged −2.9 ns, against −3.9 ns over
+the 62 seeds of 1.1.1's search.
 
 ## Credits
 
@@ -277,6 +351,11 @@ case), picked from a 62-seed search.
 - **supergarbo** — the packed save format and double-banked staging
   ([#5](https://github.com/janisc/openfpga-NGPC/pull/5)), reimplemented
   here with credit, and the two savestate transport fixes in 1.0.1.
+- **Keith Conger (kconger)** — link cable support in the original core
+  (MiSTer-devel/NGPC_MiSTer 238299f), whose cable-detect plumbing this
+  core's link cable uses.
+- **Spiritualized1997** — the platform image, from the openFPGA Platform Art
+  Set.
 - **Analogue** — the openFPGA platform.
 - **janisc** — port direction, hardware testing, and the patience to enter
   probe birthdays into the BIOS's own horoscope so the save-state diff could

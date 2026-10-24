@@ -17,3 +17,9 @@ relaunch it.
 If a game starts without its save, quit and launch it again:
 the save file is kept. If that doesn't help, switch the Pocket
 off and on. See docs/KNOWN_BEHAVIORS.md.
+
+Link Cable (experimental, not yet tried on two real
+Pockets): on both Pockets, set it to the cable used, a
+GBC or a GBA link cable. Cartridges out, and nothing but
+another Pocket running this core on the cable. It is Off
+at every launch. See the README.
