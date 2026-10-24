@@ -1,0 +1,4 @@
+# From k1290 (VS MODE chosen on both): no input, watch the link traffic.
+# Run with +restore=k1290.ckpt +shot_every=30 +linklog=<file>
+1500 -  save k1500
+1501 -  end

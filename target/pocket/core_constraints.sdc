@@ -23,3 +23,11 @@ set_clock_groups -asynchronous \
  -group [list $clk_sys_c $clk_ram_c $clk_sys90_c $clk_dot_c]
 
 derive_clock_uncertainty
+
+# The link port (ngpc_link.sv). The partner Pocket runs on its own clock, so SI,
+# and SO and SD read back, are asynchronous and land on two-flop synchronisers;
+# SO, SD and their directions change at most once per 32 clk_sys cycles and
+# nothing samples them against this design's clock. No link pin has an I/O
+# timing requirement.
+set_false_path -from [get_ports {port_tran_si port_tran_so port_tran_sd}]
+set_false_path -to   [get_ports {port_tran_so port_tran_so_dir port_tran_sd port_tran_sd_dir}]

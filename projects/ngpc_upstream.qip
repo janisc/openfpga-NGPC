@@ -30,7 +30,9 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/snd/z80/ngp_z80.s
 set_global_assignment -name VERILOG_FILE ../upstream/rtl/snd/z80/tv80/tv80_alu.v
 set_global_assignment -name VERILOG_FILE ../upstream/rtl/snd/z80/tv80/tv80_core.v
 set_global_assignment -name VERILOG_FILE ../upstream/rtl/snd/z80/tv80/tv80_mcode.v
-set_global_assignment -name VERILOG_FILE ../upstream/rtl/snd/z80/tv80/tv80_reg.v
+# The Z80 register file is the port's LUT-RAM version (same module name and ports).
+set_global_assignment -name VERILOG_FILE ../target/pocket/tv80_reg_mlab.v
+set_global_assignment -name SYSTEMVERILOG_FILE ../target/pocket/pocket_lutram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/soc/k2_soc.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/soc/k2_soc_fabric.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/soc/ngp_adc.sv
@@ -56,7 +58,8 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/t900/t900_biu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/t900/t900_cpu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/t900/t900_decode.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/t900/t900_muldiv.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/t900/t900_regfile.sv
+# The register file is the port's LUT-RAM version (same module name and ports).
+set_global_assignment -name SYSTEMVERILOG_FILE ../target/pocket/t900_regfile_mlab.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/t900/t900_seq.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/t900/t900_shifter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../upstream/rtl/video/k2ge.sv

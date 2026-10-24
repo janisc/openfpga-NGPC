@@ -1,0 +1,8 @@
+# From k1140 (MAIN menu, cursor on K.O.F.): MAKING is greyed out and skipped,
+# so two downs reach VS MODE (K.O.F. -> SPARRING -> VS MODE); then A on both.
+# Run with +restore=k1140.ckpt +shot_every=15
+1145 AB press D 3
+1157 AB press D 3
+1175 AB press A 4
+1290 -  save k1290
+1291 -  end

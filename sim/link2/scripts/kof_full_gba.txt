@@ -1,0 +1,68 @@
+# kof_full.txt on a GBA cable (A on the parent plug), both in GBA cable mode.
+# KOF R-2, both machines, the whole linked session in one run: boot, MAIN menu,
+# VS MODE (B confirms half a second after A), SINGLE VS, both pick a
+# character, ROUND 1, and two exchanges of blows. The inputs are the ones the
+# step-by-step scripts (kof_boot ... kof_fight2) found. For the GBA cable, run
+# kof_full_gba.txt (the same, with the GBA cable and GBA mode).
+# Run with +shot_every=120 +linklog=<file>
+1    -  cable gba
+1    AB link gba
+480  -  save f480
+970  AB press A 4
+1060 AB press A 4
+1140 -  shot menu
+1145 AB press D 3
+1157 AB press D 3
+1175 A  press A 4
+1205 B  press A 4
+1290 -  shot vs_select
+1380 -  save f1380
+1385 A  press D 3
+1400 A  press A 4
+1430 B  press D 3
+1445 B  press A 4
+1440 -  shot mode_select
+1565 A  press A 4
+1620 -  shot player_select
+1640 A  press A 4
+1655 B  press R 3
+1670 B  press A 4
+1680 -  shot picked
+1700 A  press A 4
+1715 B  press A 4
+1740 -  shot stage
+1860 A  press R 40
+1860 B  press L 25
+1900 -  shot kyo_vs_kyo
+1905 A  press A 3
+1912 B  press B 3
+1925 A  press A 3
+1932 B  press DB 6
+1950 A  press RA 4
+1960 B  press A 3
+1975 A  press B 3
+1990 B  press LB 4
+2010 A  press A 3
+2020 B  press A 3
+2080 -  shot go
+2125 A  press R 30
+2125 B  press L 30
+2160 A  press A 3
+2166 B  press B 3
+2172 A  press B 3
+2178 B  press A 3
+2180 -  shot fight1
+2184 A  press A 3
+2190 B  press DB 4
+2198 A  press A 3
+2204 B  press B 3
+2212 A  press RB 3
+2220 B  press A 3
+2228 A  press A 3
+2236 B  press B 3
+2240 -  shot fight2
+2244 A  press B 3
+2252 B  press A 3
+2300 -  shot fight3
+2340 -  save f2340
+2341 -  end

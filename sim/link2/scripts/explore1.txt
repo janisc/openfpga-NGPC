@@ -1,0 +1,5 @@
+# From the "booted" checkpoint (frame 480): watch the games start, no input.
+# Run with +restore=booted.ckpt +shot_every=30
+720  -  save t720
+900  -  save t900
+901  -  end

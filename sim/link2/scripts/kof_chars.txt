@@ -1,0 +1,11 @@
+# From k1560 (MODE SELECT; B has confirmed): A confirms its mode, then both
+# pick a character a little apart, then watch the fight start.
+# Run with +restore=k1560.ckpt +shot_every=20 +linklog=<file>
+1565 A  press A 4
+1640 A  press A 4
+1655 B  press R 3
+1670 B  press A 4
+1700 A  press A 4
+1715 B  press A 4
+1840 -  save k1840
+1841 -  end

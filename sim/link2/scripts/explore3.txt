@@ -1,0 +1,5 @@
+# From t1080 (title screen): press A, see the menu.
+# Run with +restore=t1080.ckpt +shot_every=15
+1090 AB press A 4
+1170 -  save t1170
+1171 -  end

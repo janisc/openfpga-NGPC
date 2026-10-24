@@ -1,0 +1,6 @@
+# KOF R-2 on both machines, link cable on from the start. Boot to the game.
+# Run with +shot_every=60
+1    AB link on
+480  -  save k480
+960  -  save k960
+961  -  end
