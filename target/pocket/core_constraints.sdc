@@ -26,7 +26,7 @@ derive_clock_uncertainty
 
 # The link port (ngpc_link.sv). The partner Pocket runs on its own clock, so SI,
 # and SO and SD read back, are asynchronous and land on two-flop synchronisers;
-# SO, SD and their directions change at most once per 48 clk_sys cycles and
+# SO, SD and their directions change at most once per 32 clk_sys cycles and
 # nothing samples them against this design's clock. No link pin has an I/O
 # timing requirement.
 set_false_path -from [get_ports {port_tran_si port_tran_so port_tran_sd}]

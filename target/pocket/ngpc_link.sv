@@ -4,7 +4,8 @@
 // THE PROBLEM
 //
 // The NGP's link connector (CON2) carries four signals: TxD0 and RxD0 of the
-// TMP95C061's serial channel 0 (19200 bps 8N1 in every SNK title), RTS_n out of
+// TMP95C061's serial channel 0 (the BIOS links at 19200 bps 8N1; 4800 and 9600
+// bps set-ups also occur), RTS_n out of
 // system register 0xB2 bit 0, and CTS0_n in. A Game Boy link cable gives each
 // direction ONE wire, and there are two signals to carry on it.
 //
@@ -32,9 +33,10 @@
 // one, so the two Pockets' clocks never need to agree beyond a bit-time.
 //
 // At 32 cycles per bit (1.536 Mbit/s on the wire) a frame is 7.8 us, so a TxD
-// edge is rebuilt 8-16 us late with up to 7.8 us of jitter -- 15% of a 52 us
+// edge is rebuilt 7-15 us late with up to 7.8 us of jitter -- 15% of a 52 us
 // bit at 19200 bps, well inside what the NGP's 16x-oversampling receiver
-// tolerates.
+// tolerates. The jitter stays under half a bit up to 48000 bps; faster
+// settings are not carried.
 //
 // THE CABLES (`mode`: 0 off, 1 GBC cable, 2 GBA cable)
 //
@@ -54,7 +56,7 @@
 //
 // CABLE DETECT
 //
-// The partner counts as present after PRESENT_FRAMES valid frames in a row,
+// The partner counts as present after PRESENT_FRAMES + 1 valid frames in a row,
 // and absent after BAD_FRAMES invalid ones or QUIET_CLKS without a valid one.
 // While absent, RxD is mark (1), CTS_n deasserted (1) and `present` low --
 // exactly an unplugged NGP cable. A Pocket running another core, a Game Boy, or
@@ -69,8 +71,11 @@
 // else's frames are on that wire, and while no partner is linked it keeps
 // pausing briefly to listen again, so two Pockets that started driving the
 // same wire together separate within a few milliseconds. While a link is up it
-// never pauses. With `mode` 0 every pin is released and the receiver reports an
-// unplugged cable.
+// never pauses. The guard recognises only this module's frames: it keeps two
+// Pockets running this core off each other's wires, but any other driver on a
+// wire it drives goes unnoticed, so nothing but another Pocket running this
+// core belongs on the cable. With `mode` 0 every pin is released and the
+// receiver reports an unplugged cable.
 
 // Two synchroniser stages, then a five-sample majority so a glitch of up to two
 // clk_sys cycles cannot start a frame or flip a bit.
@@ -162,7 +167,8 @@ module ngpc_link_rx
 	end
 endmodule
 
-// Drive a pin only when no one else is driving it. `want` asks for the pin;
+// Drive a pin only when no other Pocket running this module is transmitting on
+// it (any other kind of driver goes unseen). `want` asks for the pin;
 // `oe` grants it. Before granting, and -- while `recheck` is set -- every
 // RECHECK_CLKS or so while driving, the pin is released and watched: two or
 // more valid link frames on it mean another transmitter owns the wire, and the

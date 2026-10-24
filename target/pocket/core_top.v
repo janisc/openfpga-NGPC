@@ -255,9 +255,9 @@ module core_top (
 
   // The link port carries the NGP link cable (ngpc_link, inside ngpc_machine)
   // over a GBC or GBA link cable. ngpc_link may drive SO (when the Link Cable
-  // option is on) and SD (GBA cable, child plug only), each only after checking
-  // that no one else drives that wire; SI and SCK are never driven. SO and SD
-  // are also read back for that check.
+  // option is on) and SD (GBA cable, child plug only), each only after listening
+  // for another Pocket's link frames on that wire; SI and SCK are never driven.
+  // SO and SD are also read back for that check.
   wire link_so, link_so_oe, link_sd, link_sd_oe;
   assign port_tran_so            = link_so_oe ? link_so : 1'bz;
   assign port_tran_so_dir        = link_so_oe;
