@@ -179,7 +179,8 @@ for.
 - **Cable:** a Game Boy Color link cable, or a Game Boy Advance link cable
   (either Pocket on either plug, the middle socket left empty). Only another
   Pocket running this core understands what the core sends, so nothing else
-  goes on the other end.
+  goes on the other end: not a real Neo Geo Pocket, a Dreamcast, a GBA
+  wireless adapter or any other device.
 - **Cartridges out:** take any cartridge out of both Pockets. A cartridge can
   change the link port's voltage, and two Pockets at different voltages have
   not been tried.
