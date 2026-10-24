@@ -42,6 +42,15 @@ def main() -> int:
     meta = core_json["core"]["metadata"]
     rev_name = core_json["core"]["cores"][0]["filename"]
 
+    # The link port is powered from the cartridge slot's rail, and any value
+    # with bit 31 set (-1 included, which the Pocket reads as 0x80000000)
+    # leaves that rail off: the link would be dead on every Pocket.
+    hw = core_json["core"]["framework"]["hardware"]
+    if hw.get("link_port") and hw.get("cartridge_adapter") != 0:
+        print("error: link_port needs cartridge_adapter 0 (the link port shares cart power)",
+              file=sys.stderr)
+        return 1
+
     if DIST.exists():
         shutil.rmtree(DIST)
     out_core = DIST / "Cores" / CORE_DIR_NAME

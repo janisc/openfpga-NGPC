@@ -99,7 +99,7 @@
         "id": 23,
         "type": "list",
         "enabled": true,
-        "persist": true,
+        "persist": false,
         "writeonly": true,
         "address": "0x10C",
         "defaultval": 0,
